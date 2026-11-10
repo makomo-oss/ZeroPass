@@ -26,6 +26,21 @@ pub enum VaultError {
     /// The vault file is internally inconsistent.
     #[error("the vault file is corrupt: {0}")]
     Corrupt(&'static str),
+    /// The key domain is locked (or has locked itself after being idle).
+    #[error("the {0:?} domain is locked")]
+    Locked(zp_crypto::DomainId),
+    /// This vault was created without the given domain (no hardware key store).
+    #[error("the {0:?} domain is not available in this vault")]
+    DomainUnavailable(zp_crypto::DomainId),
+    /// The master password is wrong.
+    #[error("wrong master password")]
+    WrongPassword,
+    /// The master password is too short.
+    #[error("the master password must be at least 12 characters long")]
+    WeakPassword,
+    /// The key-derivation parameters are below the allowed minimum.
+    #[error("the key-derivation parameters are weaker than the allowed minimum")]
+    WeakKdf,
     /// No live item has the given identifier.
     #[error("the item does not exist")]
     ItemNotFound,

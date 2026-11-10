@@ -6,12 +6,17 @@
 mod clock;
 mod error;
 mod items;
+mod keyslots;
 pub mod model;
 mod schema;
 mod store;
+mod vault;
 
 pub use clock::Clock;
 pub use error::VaultError;
 pub use items::HistoryEntry;
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;
+pub use vault::{
+    AutoLock, CreateOptions, KdfChoice, MIN_MASTER_PASSWORD_CHARS, Vault, is_user_cancelled,
+};
