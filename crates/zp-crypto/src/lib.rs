@@ -13,6 +13,7 @@ mod keywrap;
 mod mem;
 pub mod rng;
 mod secret;
+mod signature_store;
 
 pub use context::{DeviceId, ItemContext, ItemId, VaultId};
 pub use domain::{Domain, DomainId, Passkey, Password, Totp};
@@ -24,3 +25,4 @@ pub use keywrap::{RecoveryKey, WRAPPED_KEY_LEN};
 pub use secret::{
     Generate, ItemKey, KEY_LEN, PasswordKek, RecoveryKek, Role, SecretKey, VaultKey, Wrap, role,
 };
+pub use signature_store::{SignatureKeyStore, UserVerifyingSigner};

@@ -13,7 +13,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
 use zp_crypto::{
-    DomainId, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey, Password, Totp,
+    DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey,
+    Password, Totp,
 };
 use zp_vault::model::{Content, Login, SecureNote};
 use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError, totp};
@@ -32,8 +33,36 @@ struct Cli {
     #[arg(long, global = true)]
     insecure_software_keystore: bool,
 
+    /// Do not use the platform's hardware key store (Windows Hello, ...). A vault
+    /// created this way has no TOTP and passkey domains.
+    #[arg(long, global = true, conflicts_with = "insecure_software_keystore")]
+    no_hardware_keystore: bool,
+
     #[command(subcommand)]
     command: TopCommand,
+}
+
+/// Which key store protects the TOTP and passkey domains.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyStoreChoice {
+    /// The platform's hardware key store, if this device has one.
+    Platform,
+    /// None: password domain only.
+    None,
+    /// The development-only software key store.
+    InsecureSoftware,
+}
+
+impl KeyStoreChoice {
+    fn from_flags(cli: &Cli) -> Self {
+        if cli.insecure_software_keystore {
+            KeyStoreChoice::InsecureSoftware
+        } else if cli.no_hardware_keystore {
+            KeyStoreChoice::None
+        } else {
+            KeyStoreChoice::Platform
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -201,12 +230,26 @@ fn dev_key_path(vault: &Path) -> PathBuf {
 
 /// Sets up the hardware key store for the TOTP and passkey domains.
 fn hardware_key_store(
-    insecure_software: bool,
+    choice: KeyStoreChoice,
     vault: &Path,
     create: bool,
 ) -> CliResult<Option<Box<dyn HardwareKeyStore>>> {
-    if !insecure_software {
-        return Ok(None);
+    match choice {
+        KeyStoreChoice::None => return Ok(None),
+        KeyStoreChoice::Platform => {
+            return match zp_hwkey::platform_key_store(create) {
+                Ok(store) => Ok(Some(store)),
+                // No biometrics on this device: carry on with the password domain only.
+                Err(HardwareKeyError::Unavailable(reason)) => {
+                    if create {
+                        writeln!(io::stderr(), "note: no hardware key store ({reason})")?;
+                    }
+                    Ok(None)
+                }
+                Err(error) => Err(error.into()),
+            };
+        }
+        KeyStoreChoice::InsecureSoftware => {}
     }
     let path = dev_key_path(vault);
     writeln!(
@@ -503,13 +546,13 @@ fn shell(session: &mut Session, out: &mut impl Write) -> CliResult<()> {
     Ok(())
 }
 
-fn init(insecure_software: bool, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {
+fn init(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {
     if vault_path.exists() {
         return Err(VaultError::AlreadyExists.into());
     }
     let input = Input::new();
     let password = input.new_master_password()?;
-    let hardware = hardware_key_store(insecure_software, vault_path, true)?;
+    let hardware = hardware_key_store(choice, vault_path, true)?;
     let created = Vault::create(
         vault_path,
         &password,
@@ -519,7 +562,7 @@ fn init(insecure_software: bool, vault_path: &Path, out: &mut impl Write) -> Cli
     let vault = match created {
         Ok(vault) => vault,
         Err(error) => {
-            if insecure_software {
+            if choice == KeyStoreChoice::InsecureSoftware {
                 let _ = std::fs::remove_file(dev_key_path(vault_path));
             }
             return Err(error.into());
@@ -552,13 +595,13 @@ fn run(cli: Cli) -> CliResult<()> {
         .clone()
         .ok_or("no vault file given: pass --vault <PATH> or set ZEROPASS_VAULT")?;
     let mut out = io::stdout().lock();
-    let insecure_software = cli.insecure_software_keystore;
+    let choice = KeyStoreChoice::from_flags(&cli);
     if matches!(cli.command, TopCommand::Init) {
-        return init(insecure_software, &vault_path, &mut out);
+        return init(choice, &vault_path, &mut out);
     }
     let mut session = Session {
         vault: Vault::open(&vault_path)?,
-        hardware: hardware_key_store(insecure_software, &vault_path, false)?,
+        hardware: hardware_key_store(choice, &vault_path, false)?,
         input: Input::new(),
     };
     match cli.command {
