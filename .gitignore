@@ -46,6 +46,7 @@ Pods/
 *.sqlite-wal
 *.sqlite3
 *.zpvault
+*.devkey
 
 # --- Fuzzing / benchmarks / coverage ---
 fuzz/corpus/
