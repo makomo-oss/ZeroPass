@@ -7,7 +7,24 @@ rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
+# This crate does not inherit the workspace lints: it needs `unsafe_code = "deny"`
+# instead of "forbid" so that the single `mem` module can opt in to the unsafe code
+# required for page-locked key storage. Keep the rest in sync with the workspace table.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
 
 [dependencies]
+getrandom = "0.4.3"
+region = "4.0.1"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+zeroize = "1.9.1"
