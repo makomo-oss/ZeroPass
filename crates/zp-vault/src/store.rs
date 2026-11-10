@@ -143,6 +143,11 @@ impl Store {
             .ok_or(VaultError::ClockExhausted)
     }
 
+    /// The current time according to this store's time source.
+    pub(crate) fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+
     /// The schema version of the open file.
     pub fn schema_version(&self) -> Result<u32, VaultError> {
         schema::user_version(&self.conn)
