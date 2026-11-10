@@ -448,6 +448,16 @@ impl Vault {
         self.store.list_items(key)
     }
 
+    /// The key domain a live item is stored in, or `None` if there is no such
+    /// item. This is plaintext metadata and needs no unlocked domain.
+    pub fn item_domain(&self, item_id: ItemId) -> Result<Option<DomainId>, VaultError> {
+        Ok(self
+            .store
+            .current_row(item_id)?
+            .filter(|row| row.payload.is_some())
+            .map(|row| row.domain))
+    }
+
     /// Deletes an item of domain `D`. The domain must be unlocked.
     pub fn delete<D: Domain>(&mut self, item_id: ItemId) -> Result<(), VaultError> {
         Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
