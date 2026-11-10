@@ -1,15 +1,17 @@
 //! The vault file: a single SQLite database holding ciphertext and key slots.
 //!
-//! [`Store`] never sees plaintext or keys; it creates, opens and migrates the file
-//! and reads and writes opaque rows.
+//! [`Store`] creates, opens and migrates the file and reads and writes rows. The
+//! rows it handles are opaque: encryption happens in the `items` module, with keys
+//! supplied by the caller for the duration of a call.
 
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use zp_crypto::{DeviceId, VaultId};
 
 use crate::VaultError;
+use crate::clock::{Clock, Hlc};
 use crate::schema::{self, APPLICATION_ID, MIGRATIONS};
 
 const META_VAULT_ID: &str = "vault_id";
@@ -19,9 +21,11 @@ const META_CREATED_AT_MS: &str = "created_at_ms";
 /// An open vault file.
 #[derive(Debug)]
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     vault_id: VaultId,
     device_id: DeviceId,
+    clock: Clock,
+    hlc: Hlc,
 }
 
 impl Store {
@@ -29,10 +33,15 @@ impl Store {
     ///
     /// Fails with [`VaultError::AlreadyExists`] rather than touching an existing file.
     pub fn create(path: &Path) -> Result<Self, VaultError> {
+        Self::create_with_clock(path, Clock::system())
+    }
+
+    /// Like [`Self::create`], with an explicit time source.
+    pub fn create_with_clock(path: &Path, clock: Clock) -> Result<Self, VaultError> {
         if path.exists() {
             return Err(VaultError::AlreadyExists);
         }
-        let result = Self::create_new(path);
+        let result = Self::create_new(path, clock);
         if result.is_err() {
             // Do not leave a half-initialised file behind.
             let _ = std::fs::remove_file(path);
@@ -40,7 +49,7 @@ impl Store {
         result
     }
 
-    fn create_new(path: &Path) -> Result<Self, VaultError> {
+    fn create_new(path: &Path, clock: Clock) -> Result<Self, VaultError> {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
         let mut conn = Connection::open_with_flags(path, flags)?;
         configure(&conn)?;
@@ -49,12 +58,7 @@ impl Store {
 
         let vault_id = VaultId::generate()?;
         let device_id = DeviceId::generate()?;
-        let created_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            });
-
+        let created_at_ms = clock.now_ms();
         let tx = conn.transaction()?;
         set_meta(&tx, META_VAULT_ID, vault_id.as_bytes())?;
         set_meta(&tx, META_DEVICE_ID, device_id.as_bytes())?;
@@ -65,11 +69,18 @@ impl Store {
             conn,
             vault_id,
             device_id,
+            clock,
+            hlc: Hlc::resume_after(0),
         })
     }
 
     /// Opens an existing vault file, applying pending schema migrations.
     pub fn open(path: &Path) -> Result<Self, VaultError> {
+        Self::open_with_clock(path, Clock::system())
+    }
+
+    /// Like [`Self::open`], with an explicit time source.
+    pub fn open_with_clock(path: &Path, clock: Clock) -> Result<Self, VaultError> {
         if !path.exists() {
             return Err(VaultError::NotFound);
         }
@@ -96,10 +107,21 @@ impl Store {
             .and_then(DeviceId::from_slice)
             .ok_or(VaultError::Corrupt("missing or malformed device_id"))?;
 
+        let newest_hlc: i64 = conn.query_row(
+            "SELECT max(coalesce((SELECT max(hlc) FROM items), 0),
+                        coalesce((SELECT max(hlc) FROM item_history), 0))",
+            [],
+            |row| row.get(0),
+        )?;
+        let newest_hlc =
+            u64::try_from(newest_hlc).map_err(|_| VaultError::Corrupt("negative clock stamp"))?;
+
         Ok(Self {
             conn,
             vault_id,
             device_id,
+            clock,
+            hlc: Hlc::resume_after(newest_hlc),
         })
     }
 
@@ -111,6 +133,14 @@ impl Store {
     /// The identifier of this device's copy of the vault.
     pub fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    /// Issues the clock stamp for a new item version: greater than every stamp
+    /// already in this vault.
+    pub(crate) fn next_hlc(&mut self) -> Result<u64, VaultError> {
+        self.hlc
+            .tick(self.clock.now_ms())
+            .ok_or(VaultError::ClockExhausted)
     }
 
     /// The schema version of the open file.
