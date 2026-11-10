@@ -103,7 +103,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P0-05** `scripts/check-offline-deps.sh`（`cargo tree` ベース。cargo-deny の禁止リストはワークスペース全体に効き `zp-syncd` まで縛るため不採用）で `zp-crypto` / `zp-vault` / `zp-vaultd` の依存ツリーにネットワーク系クレート（`tokio` の net、`socket2`、`mio`、`reqwest` 等）が入ったら失敗する検査を追加 — 故意に依存を足すと CI が赤になる（依存: P0-02）
 
 ### Phase 1: 暗号コア PoC（最難関①）
-- [ ] **P1-01** `docs/spec/crypto.md`: 鍵階層、エンベロープ形式（バージョンバイト・ノンス・AAD）、Argon2id パラメータ方針、ドメイン分離ラベルを仕様化 — 仕様書（依存: P0-04）
+- [x] **P1-01** `docs/spec/crypto.md`: 鍵階層、エンベロープ形式（バージョンバイト・ノンス・AAD）、Argon2id パラメータ方針、ドメイン分離ラベルを仕様化 — 仕様書（依存: P0-04）
 - [ ] **P1-02** `zp-crypto`: 秘密型（`SecretKey<Domain>` 型でドメインを型レベル区別、`Zeroize`/`ZeroizeOnDrop`、`Debug` 非表示、ページロック） — P/T/K の鍵を取り違えるコードがコンパイルエラーになる（依存: P0-01）
 - [ ] **P1-03** `zp-crypto`: XChaCha20-Poly1305 エンベロープ seal/open（AAD 束縛、形式バージョン付き） — 公式テストベクタ + 改ざん・AAD 不一致で失敗するテスト（依存: P1-01, P1-02）
 - [ ] **P1-04** `zp-crypto`: Argon2id による KEK-P 導出とパラメータ自動較正（目標 ~500ms、下限あり）、パラメータを金庫ヘッダに保存 — RFC 9106 ベクタ一致（依存: P1-02）
