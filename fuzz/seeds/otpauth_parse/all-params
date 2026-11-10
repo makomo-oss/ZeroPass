@@ -1,0 +1,1 @@
+OTPAUTH://TOTP/ACME%20Co:%20john?Secret=jbswy3dpehpk3pxp&ISSUER=ACME+Co&algorithm=sha512&digits=8&period=60

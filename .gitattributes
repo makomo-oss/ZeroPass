@@ -12,3 +12,6 @@
 *.ico binary
 *.icns binary
 *.woff2 binary
+
+# Fuzzing seed inputs are byte-exact.
+fuzz/seeds/** binary

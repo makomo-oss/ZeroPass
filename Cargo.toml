@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "bins/*"]
+# Fuzz targets form their own workspace (nightly + libFuzzer).
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"

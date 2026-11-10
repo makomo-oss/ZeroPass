@@ -1,0 +1,42 @@
+[package]
+name = "zp-fuzz"
+description = "Fuzz targets for ZeroPass parsers (run with cargo-fuzz on nightly)."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A workspace of its own: fuzzing needs nightly and libFuzzer, which the main
+# workspace must not depend on.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+zp-crypto = { path = "../crates/zp-crypto" }
+zp-vault = { path = "../crates/zp-vault" }
+
+[[bin]]
+name = "envelope_open"
+path = "fuzz_targets/envelope_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "item_decode"
+path = "fuzz_targets/item_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "otpauth_parse"
+path = "fuzz_targets/otpauth_parse.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

@@ -114,7 +114,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P1-09** `zp-vault`: 金庫ライフサイクル（作成・解錠・施錠・マスターパスワード変更・自動ロック）。ドメイン別に独立した解錠状態 — P を解錠しても T/K がロックのままである統合テスト（依存: P1-06, P1-08）
 - [x] **P1-10** `zp-vault`: TOTP エンジン（RFC 6238、SHA1/256/512、`otpauth://` URI パース） — RFC 6238 付録 B ベクタ一致（依存: P1-09）
 - [x] **P1-11** `zp-cli`: `init / unlock / add / get / list / totp / lock` — 手動 E2E デモが通る（依存: P1-09, P1-10）
-- [ ] **P1-12** ファジング（エンベロープ open、protobuf デコード、otpauth パース）と proptest（seal→open 往復） — 各ターゲット 10 分以上クラッシュなし（依存: P1-08, P1-10）
+- [x] **P1-12** ファジング（エンベロープ open、protobuf デコード、otpauth パース）と proptest（seal→open 往復） — 各ターゲット 10 分以上クラッシュなし（依存: P1-08, P1-10）
 - [ ] **P1-13** Windows 実装: `HardwareKeyStore` を Windows Hello（`KeyCredentialManager`）+ TPM で実装 — 実機で指紋／顔／PIN 承認なしに VK-T が開かない（依存: P1-06）
 - [ ] **P1-14** リカバリーキット: 紙出力用の復旧鍵（VK-* を復旧鍵でラップした暗号化エクスポート）と復元 — 新規環境で復元できる（依存: P1-09）
 - [ ] **P1-15** `criterion` ベンチ（解錠時間、1 万件の一覧・検索） — 解錠 <1s、一覧 <100ms を計測記録（依存: P1-11）
