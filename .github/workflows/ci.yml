@@ -55,3 +55,5 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit --deny warnings
+      - name: Offline crates have no networking dependencies
+        run: bash scripts/check-offline-deps.sh

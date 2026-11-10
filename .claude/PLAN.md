@@ -100,7 +100,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P0-02** GitHub Actions（Windows/Linux/macOS）で fmt・clippy・test・`cargo-deny`・`cargo-audit` を実行 — PR で自動実行され緑（依存: P0-01）
 - [x] **P0-03** `docs/threat-model.md` 初版（資産・攻撃者・信頼境界・スコープ外。例: 解錠中の端末を完全掌握したマルウェアは防御範囲外、を明記） — レビュー可能な文書がある（依存: なし）
 - [x] **P0-04** `docs/adr/` に §1・§2 の決定を ADR として記録（スタック、鍵階層、同期モデル、プロセス構成） — ADR 4 本（依存: P0-03）
-- [ ] **P0-05** `cargo-deny` で `zp-crypto` / `zp-vault` / `zp-vaultd` の依存ツリーにネットワーク系クレート（`tokio` の net、`socket2`、`mio`、`reqwest` 等）が入ったら失敗する検査を追加 — 故意に依存を足すと CI が赤になる（依存: P0-02）
+- [x] **P0-05** `scripts/check-offline-deps.sh`（`cargo tree` ベース。cargo-deny の禁止リストはワークスペース全体に効き `zp-syncd` まで縛るため不採用）で `zp-crypto` / `zp-vault` / `zp-vaultd` の依存ツリーにネットワーク系クレート（`tokio` の net、`socket2`、`mio`、`reqwest` 等）が入ったら失敗する検査を追加 — 故意に依存を足すと CI が赤になる（依存: P0-02）
 
 ### Phase 1: 暗号コア PoC（最難関①）
 - [ ] **P1-01** `docs/spec/crypto.md`: 鍵階層、エンベロープ形式（バージョンバイト・ノンス・AAD）、Argon2id パラメータ方針、ドメイン分離ラベルを仕様化 — 仕様書（依存: P0-04）
