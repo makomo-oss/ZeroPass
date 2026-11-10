@@ -1,0 +1,76 @@
+# --- Rust ---
+target/
+**/*.rs.bk
+# Cargo.lock is committed on purpose (application workspace).
+
+# --- Node / browser extension / Tauri ---
+node_modules/
+dist/
+.output/
+.wxt/
+apps/desktop/src-tauri/gen/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+# --- Android ---
+.gradle/
+build/
+local.properties
+*.keystore
+*.jks
+*.apk
+*.aab
+captures/
+.cxx/
+
+# --- iOS / macOS ---
+DerivedData/
+xcuserdata/
+Pods/
+*.xcuserstate
+*.ipa
+
+# --- Secrets and local data (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.zpvault
+
+# --- Fuzzing / benchmarks / coverage ---
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+*.profraw
+*.profdata
+lcov.info
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Claude Code (PLAN.md is tracked; local state is not) ---
+.claude/settings.local.json
+.claude/worktrees/
+
+# --- Logs / temp ---
+*.log
+*.tmp
