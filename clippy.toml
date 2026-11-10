@@ -1,0 +1,4 @@
+# Tests may use unwrap/expect freely; production code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
