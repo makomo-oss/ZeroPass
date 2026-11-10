@@ -26,3 +26,8 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Build dependencies with optimisations even in dev/test builds: unoptimised
+# Argon2id and SQLite make the test suite needlessly slow.
+[profile.dev.package."*"]
+opt-level = 2

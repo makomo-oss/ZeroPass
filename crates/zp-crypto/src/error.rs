@@ -21,4 +21,10 @@ pub enum CryptoError {
     /// The envelope was written by an unknown format version.
     #[error("unsupported envelope version {0:#04x}")]
     UnsupportedEnvelopeVersion(u8),
+    /// Argon2id parameters are out of the accepted range.
+    #[error("key derivation parameters are out of range")]
+    InvalidKdfParams,
+    /// Key derivation failed (for example, the memory could not be allocated).
+    #[error("key derivation failed")]
+    Kdf,
 }
