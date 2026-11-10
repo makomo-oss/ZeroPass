@@ -1,0 +1,13 @@
+[package]
+name = "zp-nmh"
+description = "ZeroPass native messaging host bridging the browser extension to the vault daemon."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

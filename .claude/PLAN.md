@@ -96,7 +96,7 @@ docs/    threat-model.md  adr/  spec/
 
 ### Phase 0: 基盤整備
 - [x] **P0-00** `.gitignore`（§7.2 の内容）と `.gitattributes`（改行コード正規化 `* text=auto eol=lf`）を追加し、`.claude/PLAN.md` と合わせて最初の PR として push・マージ — `git status` がクリーン、GitHub の `main` に反映（依存: なし）
-- [ ] **P0-01** Cargo ワークスペースと §2.4 のディレクトリ骨格を作成、`rust-toolchain.toml`・`rustfmt`・`clippy`（`unsafe_code = forbid` を既定、例外クレートのみ明示許可）を設定 — `cargo build` / `cargo test` が通る（依存: P0-00）
+- [x] **P0-01** Cargo ワークスペースと §2.4 のディレクトリ骨格を作成、`rust-toolchain.toml`・`rustfmt`・`clippy`（`unsafe_code = forbid` を既定、例外クレートのみ明示許可）を設定 — `cargo build` / `cargo test` が通る（依存: P0-00）
 - [ ] **P0-02** GitHub Actions（Windows/Linux/macOS）で fmt・clippy・test・`cargo-deny`・`cargo-audit` を実行 — PR で自動実行され緑（依存: P0-01）
 - [ ] **P0-03** `docs/threat-model.md` 初版（資産・攻撃者・信頼境界・スコープ外。例: 解錠中の端末を完全掌握したマルウェアは防御範囲外、を明記） — レビュー可能な文書がある（依存: なし）
 - [ ] **P0-04** `docs/adr/` に §1・§2 の決定を ADR として記録（スタック、鍵階層、同期モデル、プロセス構成） — ADR 4 本（依存: P0-03）
