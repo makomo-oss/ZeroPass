@@ -21,7 +21,7 @@
 | `zp-cli` / デスクトップ / モバイル UI | L2 | なし | 持たない | 人が操作するインターフェース |
 
 1. **ネットワーク不能を 3 段で強制する。**
-   - ビルド: `zp-crypto` / `zp-vault` / `zp-vaultd` の依存ツリーにネットワーク系クレートが入ったら CI を失敗させる（P0-05）。
+   - ビルド: `zp-crypto` / `zp-vault` / `zp-vaultd` の依存ツリーにネットワーク系クレートが入ったら CI を失敗させる（P0-05、`scripts/check-offline-deps.sh`）。
    - OS: Windows は AppContainer（ネットワーク capability なし）または制限トークン、macOS は App Sandbox（network entitlement なし）、Linux は seccomp / Landlock で、vaultd のソケット作成を禁止する（P3-03、P6-09、P6-10）。
    - 検証: サンドボックス下でソケット作成が失敗することをテストで確認する。
 2. **IPC** は Windows の名前付きパイプ / Unix ドメインソケットとし、Protobuf でメッセージを定義する（`zp-ipc`）。vaultd は接続元プロセスを検証する（実行ファイルのパス・署名、同一ユーザー）。
