@@ -16,7 +16,7 @@ use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
 use crate::secret::KEY_LEN;
-use crate::{CryptoError, Password, WrappingKey};
+use crate::{CryptoError, PasswordKek};
 
 /// Length of the Argon2id salt.
 pub const KDF_SALT_LEN: usize = 16;
@@ -156,11 +156,11 @@ pub fn derive_password_kek(
     master_password: &str,
     salt: &[u8; KDF_SALT_LEN],
     params: &KdfParams,
-) -> Result<WrappingKey<Password>, CryptoError> {
+) -> Result<PasswordKek, CryptoError> {
     let normalized = Zeroizing::new(master_password.nfkc().collect::<String>());
     let mut ikm = Zeroizing::new([0u8; KEY_LEN]);
     argon2id(params, normalized.as_bytes(), salt, &mut ikm)?;
-    WrappingKey::from_fn(|out| hkdf_sha256(salt, ikm.as_slice(), INFO_KEK_PASSWORD, out))
+    PasswordKek::from_fn(|out| hkdf_sha256(salt, ikm.as_slice(), INFO_KEK_PASSWORD, out))
 }
 
 #[cfg(test)]
@@ -228,7 +228,7 @@ mod tests {
     };
     const SALT: [u8; KDF_SALT_LEN] = [0x5A; KDF_SALT_LEN];
 
-    fn same(a: &WrappingKey<Password>, b: &WrappingKey<Password>) -> bool {
+    fn same(a: &PasswordKek, b: &PasswordKek) -> bool {
         a.ct_eq(b).into()
     }
 
