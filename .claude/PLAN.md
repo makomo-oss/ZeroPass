@@ -105,7 +105,7 @@ docs/    threat-model.md  adr/  spec/
 ### Phase 1: 暗号コア PoC（最難関①）
 - [x] **P1-01** `docs/spec/crypto.md`: 鍵階層、エンベロープ形式（バージョンバイト・ノンス・AAD）、Argon2id パラメータ方針、ドメイン分離ラベルを仕様化 — 仕様書（依存: P0-04）
 - [x] **P1-02** `zp-crypto`: 秘密型（`SecretKey<Domain>` 型でドメインを型レベル区別、`Zeroize`/`ZeroizeOnDrop`、`Debug` 非表示、ページロック） — P/T/K の鍵を取り違えるコードがコンパイルエラーになる（依存: P0-01）
-- [ ] **P1-03** `zp-crypto`: XChaCha20-Poly1305 エンベロープ seal/open（AAD 束縛、形式バージョン付き） — 公式テストベクタ + 改ざん・AAD 不一致で失敗するテスト（依存: P1-01, P1-02）
+- [x] **P1-03** `zp-crypto`: XChaCha20-Poly1305 エンベロープ seal/open（AAD 束縛、形式バージョン付き） — 公式テストベクタ + 改ざん・AAD 不一致で失敗するテスト（依存: P1-01, P1-02）
 - [ ] **P1-04** `zp-crypto`: Argon2id による KEK-P 導出とパラメータ自動較正（目標 ~500ms、下限あり）、パラメータを金庫ヘッダに保存 — RFC 9106 ベクタ一致（依存: P1-02）
 - [ ] **P1-05** `zp-crypto`: 鍵ラップ／アンラップと HKDF ドメイン分離、VK-P/VK-T/VK-K 生成 — VK-P から VK-T を導出・復号できないことを示すテスト（依存: P1-03, P1-04）
 - [ ] **P1-06** `zp-crypto`: `HardwareKeyStore` トレイト（生体認証必須のラップ鍵の抽象）とテスト用ソフトウェア実装 — トレイト経由で VK-T をラップ／アンラップ（依存: P1-05）

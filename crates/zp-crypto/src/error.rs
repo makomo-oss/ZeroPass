@@ -9,4 +9,16 @@ pub enum CryptoError {
     /// The operating system's random number generator failed.
     #[error("the operating system random number generator failed")]
     Rng,
+    /// Encryption failed. Only possible for inputs beyond the cipher's size limits.
+    #[error("encryption failed")]
+    Encrypt,
+    /// Authentication failed: wrong key, wrong context, or modified ciphertext.
+    #[error("decryption failed")]
+    Decrypt,
+    /// The envelope is too short to be valid.
+    #[error("malformed envelope")]
+    MalformedEnvelope,
+    /// The envelope was written by an unknown format version.
+    #[error("unsupported envelope version {0:#04x}")]
+    UnsupportedEnvelopeVersion(u8),
 }
