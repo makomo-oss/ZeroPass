@@ -10,6 +10,7 @@ mod keyslots;
 pub mod model;
 mod schema;
 mod store;
+pub mod totp;
 mod vault;
 
 pub use clock::Clock;

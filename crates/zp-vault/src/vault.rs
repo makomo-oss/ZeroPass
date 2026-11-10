@@ -22,7 +22,8 @@ use zp_crypto::{
 
 use crate::clock::Clock;
 use crate::keyslots::{PasswordSlot, PlainSlot, SlotKind};
-use crate::model::{Content, Item};
+use crate::model::{Content, Item, TotpEntry};
+use crate::totp::{self, TotpCode};
 use crate::{HistoryEntry, Store, VaultError};
 
 /// Minimum length of a master password, in characters.
@@ -451,6 +452,13 @@ impl Vault {
     pub fn delete<D: Domain>(&mut self, item_id: ItemId) -> Result<(), VaultError> {
         Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
         self.store.delete_item::<D>(item_id)
+    }
+
+    /// Generates the current one-time code of a TOTP entry. The TOTP domain must
+    /// be unlocked.
+    pub fn totp_code(&mut self, item_id: ItemId) -> Result<TotpCode, VaultError> {
+        let entry: TotpEntry = self.get(item_id)?;
+        Ok(totp::generate(&entry, self.store.now_ms() / 1000)?)
     }
 
     /// The superseded versions of an item of domain `D`, newest first.
