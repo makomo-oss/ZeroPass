@@ -26,6 +26,18 @@ pub enum VaultError {
     /// The vault file is internally inconsistent.
     #[error("the vault file is corrupt: {0}")]
     Corrupt(&'static str),
+    /// No live item has the given identifier.
+    #[error("the item does not exist")]
+    ItemNotFound,
+    /// The item exists but is of a different kind than requested.
+    #[error("the item is of a different kind")]
+    WrongItemKind,
+    /// The item belongs to a different key domain than the one used.
+    #[error("the item belongs to a different key domain")]
+    DomainMismatch,
+    /// No further version stamps can be issued.
+    #[error("the version clock is exhausted")]
+    ClockExhausted,
     /// A decrypted item could not be parsed.
     #[error("the item content is malformed")]
     MalformedItem,

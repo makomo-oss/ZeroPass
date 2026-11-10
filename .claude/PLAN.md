@@ -110,7 +110,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P1-05** `zp-crypto`: 鍵ラップ／アンラップと HKDF ドメイン分離、VK-P/VK-T/VK-K 生成 — VK-P から VK-T を導出・復号できないことを示すテスト（依存: P1-03, P1-04）
 - [x] **P1-06** `zp-crypto`: `HardwareKeyStore` トレイト（生体認証必須のラップ鍵の抽象）とテスト用ソフトウェア実装 — トレイト経由で VK-T をラップ／アンラップ（依存: P1-05）
 - [x] **P1-07** `zp-vault`: データモデル（Login / TOTP / Passkey / Note、protobuf 定義）と SQLite スキーマ（平文は item_id・domain・HLC・バージョンのみ） — マイグレーション付きで DB 作成（依存: P1-01）
-- [ ] **P1-08** `zp-vault`: アイテム CRUD（DEK 生成 → VK ラップ → 保存、tombstone 削除、履歴保持） — DB ファイルを `strings` 相当で走査しても平文が出ないテスト（依存: P1-05, P1-07）
+- [x] **P1-08** `zp-vault`: アイテム CRUD（DEK 生成 → VK ラップ → 保存、tombstone 削除、履歴保持） — DB ファイルを `strings` 相当で走査しても平文が出ないテスト（依存: P1-05, P1-07）
 - [ ] **P1-09** `zp-vault`: 金庫ライフサイクル（作成・解錠・施錠・マスターパスワード変更・自動ロック）。ドメイン別に独立した解錠状態 — P を解錠しても T/K がロックのままである統合テスト（依存: P1-06, P1-08）
 - [ ] **P1-10** `zp-vault`: TOTP エンジン（RFC 6238、SHA1/256/512、`otpauth://` URI パース） — RFC 6238 付録 B ベクタ一致（依存: P1-09）
 - [ ] **P1-11** `zp-cli`: `init / unlock / add / get / list / totp / lock` — 手動 E2E デモが通る（依存: P1-09, P1-10）
