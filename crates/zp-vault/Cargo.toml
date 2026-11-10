@@ -11,8 +11,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+hmac = "0.13.0"
 prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
 zeroize = { version = "1.9.1", features = ["derive"] }
 zp-crypto = { version = "0.0.0", path = "../zp-crypto" }

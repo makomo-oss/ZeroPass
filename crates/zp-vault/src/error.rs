@@ -56,6 +56,9 @@ pub enum VaultError {
     /// A decrypted item could not be parsed.
     #[error("the item content is malformed")]
     MalformedItem,
+    /// A TOTP entry is invalid.
+    #[error(transparent)]
+    Totp(#[from] crate::totp::TotpError),
     /// A cryptographic operation failed.
     #[error(transparent)]
     Crypto(#[from] CryptoError),
