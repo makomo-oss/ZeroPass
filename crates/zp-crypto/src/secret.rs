@@ -72,9 +72,15 @@ pub trait Role: sealed::Sealed + 'static {
 /// Marker for roles whose keys are created from fresh randomness.
 pub trait Generate: Role {}
 
+/// Marker for key-encryption roles: keys that wrap a vault key into a key slot.
+pub trait Wrap: Role {
+    /// The AAD label of the key slot kind this role writes (`crypto.md` §4.1).
+    const SLOT_LABEL: &'static str;
+}
+
 /// Role markers.
 pub mod role {
-    use super::{Generate, Role, sealed};
+    use super::{Generate, Role, Wrap, sealed};
 
     /// A vault key (`VK-D`): wraps the item keys of one domain.
     #[derive(Debug)]
@@ -82,13 +88,17 @@ pub mod role {
     /// An item key (`DEK`): encrypts one version of one item.
     #[derive(Debug)]
     pub enum Item {}
-    /// A key-encryption key (`KEK-*`): wraps a vault key.
+    /// The key-encryption key derived from the master password (`KEK-P`).
     #[derive(Debug)]
-    pub enum Wrapping {}
+    pub enum PasswordKek {}
+    /// A key-encryption key derived from the recovery key (`KEK-R-D`).
+    #[derive(Debug)]
+    pub enum RecoveryKek {}
 
     impl sealed::Sealed for Vault {}
     impl sealed::Sealed for Item {}
-    impl sealed::Sealed for Wrapping {}
+    impl sealed::Sealed for PasswordKek {}
+    impl sealed::Sealed for RecoveryKek {}
 
     impl Role for Vault {
         const NAME: &'static str = "VaultKey";
@@ -99,13 +109,24 @@ pub mod role {
         // Item keys live for the duration of a single seal/open call.
         const PINNED: bool = false;
     }
-    impl Role for Wrapping {
-        const NAME: &'static str = "WrappingKey";
+    impl Role for PasswordKek {
+        const NAME: &'static str = "PasswordKek";
+        const PINNED: bool = true;
+    }
+    impl Role for RecoveryKek {
+        const NAME: &'static str = "RecoveryKek";
         const PINNED: bool = true;
     }
 
     impl Generate for Vault {}
     impl Generate for Item {}
+
+    impl Wrap for PasswordKek {
+        const SLOT_LABEL: &'static str = "zeropass/v1/vk-wrap/password";
+    }
+    impl Wrap for RecoveryKek {
+        const SLOT_LABEL: &'static str = "zeropass/v1/vk-wrap/recovery";
+    }
 }
 
 /// A 32-byte secret key bound to a [`Domain`] and a [`Role`].
@@ -121,8 +142,13 @@ pub struct SecretKey<D: Domain, R: Role> {
 pub type VaultKey<D> = SecretKey<D, role::Vault>;
 /// The key of one item version in domain `D`.
 pub type ItemKey<D> = SecretKey<D, role::Item>;
-/// A key-encryption key allowed to wrap the vault key of domain `D`.
-pub type WrappingKey<D> = SecretKey<D, role::Wrapping>;
+/// `KEK-P`, derived from the master password.
+///
+/// It exists for the password domain only: nothing derived from the master
+/// password can wrap or unwrap the TOTP or passkey vault keys.
+pub type PasswordKek = SecretKey<crate::Password, role::PasswordKek>;
+/// `KEK-R-D`, derived from the recovery key for domain `D`.
+pub type RecoveryKek<D> = SecretKey<D, role::RecoveryKek>;
 
 impl<D: Domain, R: Role> SecretKey<D, R> {
     /// Builds a key by letting `fill` write the key material in place, so that no
@@ -240,6 +266,6 @@ mod tests {
     fn keys_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<VaultKey<Password>>();
-        assert_send_sync::<WrappingKey<Password>>();
+        assert_send_sync::<PasswordKek>();
     }
 }

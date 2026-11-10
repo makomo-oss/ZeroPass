@@ -8,6 +8,7 @@ mod domain;
 mod envelope;
 mod error;
 mod kdf;
+mod keywrap;
 mod mem;
 pub mod rng;
 mod secret;
@@ -17,4 +18,7 @@ pub use domain::{Domain, DomainId, Passkey, Password, Totp};
 pub use envelope::{ENVELOPE_OVERHEAD, ENVELOPE_VERSION, NONCE_LEN, TAG_LEN};
 pub use error::CryptoError;
 pub use kdf::{KDF_SALT_LEN, KdfParams, derive_password_kek};
-pub use secret::{Generate, ItemKey, KEY_LEN, Role, SecretKey, VaultKey, WrappingKey, role};
+pub use keywrap::{RecoveryKey, WRAPPED_KEY_LEN};
+pub use secret::{
+    Generate, ItemKey, KEY_LEN, PasswordKek, RecoveryKek, Role, SecretKey, VaultKey, Wrap, role,
+};

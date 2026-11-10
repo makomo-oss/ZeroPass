@@ -66,12 +66,21 @@ id_type!(
 );
 
 pub(crate) const LABEL_ITEM: &str = "zeropass/v1/item";
+pub(crate) const LABEL_DEK_WRAP: &str = "zeropass/v1/dek-wrap";
 
 fn aad_with_capacity(label: &str, fields_len: usize) -> Vec<u8> {
     debug_assert!(!label.as_bytes().contains(&0));
     let mut aad = Vec::with_capacity(label.len() + 1 + fields_len);
     aad.extend_from_slice(label.as_bytes());
     aad.push(0x00);
+    aad
+}
+
+/// `label ‖ 0x00 ‖ vault_id ‖ domain`: the AAD of a wrapped vault key (a key slot).
+pub(crate) fn vault_key_aad(label: &str, vault_id: &VaultId, domain: DomainId) -> Vec<u8> {
+    let mut aad = aad_with_capacity(label, 16 + 1);
+    aad.extend_from_slice(vault_id.as_bytes());
+    aad.push(domain.as_u8());
     aad
 }
 
