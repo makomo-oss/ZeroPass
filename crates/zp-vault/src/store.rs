@@ -11,7 +11,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use zp_crypto::{DeviceId, VaultId};
 
 use crate::VaultError;
-use crate::clock::{Clock, Hlc};
+use zp_sync::Hlc;
+
+use crate::clock::Clock;
 use crate::schema::{self, APPLICATION_ID, MIGRATIONS};
 
 const META_VAULT_ID: &str = "vault_id";

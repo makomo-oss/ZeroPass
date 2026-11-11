@@ -639,6 +639,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zp-sync"
+version = "0.0.0"
+dependencies = [
+ "zp-crypto",
+]
+
+[[package]]
 name = "zp-vault"
 version = "0.0.0"
 dependencies = [
@@ -650,4 +657,5 @@ dependencies = [
  "thiserror",
  "zeroize",
  "zp-crypto",
+ "zp-sync",
 ]

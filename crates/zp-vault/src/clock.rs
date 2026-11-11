@@ -1,4 +1,5 @@
-//! Time sources and the hybrid logical clock that stamps item versions.
+//! Time sources. The hybrid logical clock that stamps item versions lives in
+//! `zp_sync::hlc`.
 
 use core::fmt;
 use std::sync::Arc;
@@ -40,93 +41,11 @@ impl fmt::Debug for Clock {
     }
 }
 
-/// Number of low bits of an HLC stamp used for the logical counter.
-const COUNTER_BITS: u32 = 16;
-/// Largest stamp that still fits the database's signed 64-bit integer column.
-const MAX_STAMP: u64 = i64::MAX as u64;
-
-/// A hybrid logical clock: `stamp = unix_ms << 16 | counter`
-/// (`docs/spec/crypto.md` §1).
-///
-/// Stamps are strictly increasing even if the wall clock stalls or jumps back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Hlc {
-    last: u64,
-}
-
-impl Hlc {
-    /// Resumes after the newest stamp already present in the vault.
-    pub(crate) const fn resume_after(last: u64) -> Self {
-        Self { last }
-    }
-
-    /// Returns a stamp greater than every stamp issued or observed so far, or
-    /// `None` if the clock is exhausted (not before the year 6429).
-    pub(crate) fn tick(&mut self, now_ms: u64) -> Option<u64> {
-        let physical = now_ms
-            .checked_shl(COUNTER_BITS)
-            .filter(|p| p >> COUNTER_BITS == now_ms);
-        let next = match physical {
-            Some(physical) if physical > self.last => physical,
-            _ => self.last.checked_add(1)?,
-        };
-        if next > MAX_STAMP {
-            return None;
-        }
-        self.last = next;
-        Some(next)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-
-    #[test]
-    fn stamps_follow_the_wall_clock() {
-        let mut hlc = Hlc::resume_after(0);
-        assert_eq!(hlc.tick(1_000), Some(1_000 << 16));
-        assert_eq!(hlc.tick(1_001), Some(1_001 << 16));
-    }
-
-    #[test]
-    fn same_millisecond_increments_the_counter() {
-        let mut hlc = Hlc::resume_after(0);
-        assert_eq!(hlc.tick(5), Some(5 << 16));
-        assert_eq!(hlc.tick(5), Some((5 << 16) + 1));
-        assert_eq!(hlc.tick(5), Some((5 << 16) + 2));
-    }
-
-    #[test]
-    fn stamps_never_go_backwards() {
-        let mut hlc = Hlc::resume_after(0);
-        let first = hlc.tick(10_000).unwrap();
-        let second = hlc.tick(3).unwrap();
-        assert_eq!(second, first + 1);
-        // Once the wall clock catches up it takes over again.
-        assert_eq!(hlc.tick(10_001), Some(10_001 << 16));
-    }
-
-    #[test]
-    fn resumes_after_stamps_already_in_the_vault() {
-        let existing = (9_000 << 16) + 7;
-        let mut hlc = Hlc::resume_after(existing);
-        assert_eq!(hlc.tick(8_000), Some(existing + 1));
-    }
-
-    #[test]
-    fn exhaustion_is_reported_instead_of_wrapping() {
-        let mut hlc = Hlc::resume_after(MAX_STAMP);
-        assert_eq!(hlc.tick(1), None);
-        let mut hlc = Hlc::resume_after(0);
-        assert_eq!(
-            hlc.tick(u64::MAX),
-            Some(1),
-            "an absurd wall clock falls back to last + 1"
-        );
-    }
 
     #[test]
     fn clocks_can_be_injected() {
