@@ -132,6 +132,8 @@ enum Command {
         #[arg(long)]
         replace: bool,
     },
+    /// List the devices of this vault.
+    Devices,
     /// Change the master password.
     Passwd,
 }
@@ -431,6 +433,29 @@ impl Session {
                     out,
                     "To recover you need this key AND a backup copy of the vault file."
                 )?;
+            }
+            Command::Devices => {
+                let registry = self.vault.registry()?;
+                let vector = self.vault.version_vector()?;
+                let own = self.vault.device_id();
+                for record in registry.records() {
+                    let state = if registry.is_revoked(&record.device_id) {
+                        "revoked"
+                    } else if record.device_id == own {
+                        "this device"
+                    } else {
+                        "active"
+                    };
+                    writeln!(
+                        out,
+                        "{}  {:<11}  {} change(s) held  {}",
+                        record.device_id,
+                        state,
+                        vector.get(&record.device_id),
+                        record.name
+                    )?;
+                }
+                writeln!(out, "{} device(s)", registry.records().count())?;
             }
             Command::Passwd => {
                 let current = self.input.secret("Current master password: ")?;

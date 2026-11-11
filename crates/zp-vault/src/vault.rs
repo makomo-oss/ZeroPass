@@ -21,6 +21,8 @@ use zp_crypto::{
     derive_password_kek, rng,
 };
 
+use zp_sync::{Registry, VersionVector};
+
 use crate::clock::Clock;
 use crate::device::default_device_name;
 use crate::keyslots::{PasswordSlot, PlainSlot, SlotKind};
@@ -315,6 +317,17 @@ impl Vault {
     /// The identifier of this device's copy of the vault.
     pub fn device_id(&self) -> DeviceId {
         self.store.device_id()
+    }
+
+    /// The devices of this vault, as far as this device knows. Readable while
+    /// locked: the registry is public information among the devices.
+    pub fn registry(&self) -> Result<Registry, VaultError> {
+        self.store.registry()
+    }
+
+    /// For each device, up to which sequence number its changes are held here.
+    pub fn version_vector(&self) -> Result<VersionVector, VaultError> {
+        self.store.version_vector()
     }
 
     /// The Argon2id parameters currently protecting the master password.
