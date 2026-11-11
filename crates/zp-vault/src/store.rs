@@ -40,7 +40,7 @@ impl Store {
         if path.exists() {
             return Err(VaultError::AlreadyExists);
         }
-        let result = Self::create_new(path, clock);
+        let result = Self::create_new(path, clock, None);
         if result.is_err() {
             // Do not leave a half-initialised file behind.
             let _ = std::fs::remove_file(path);
@@ -48,14 +48,39 @@ impl Store {
         result
     }
 
-    fn create_new(path: &Path, clock: Clock) -> Result<Self, VaultError> {
+    /// Creates an empty vault file for an **existing** vault: the local copy of a
+    /// device that is joining it. The file gets the given vault identifier and a
+    /// fresh device identifier; its content arrives by syncing.
+    pub fn create_for_vault(
+        path: &Path,
+        vault_id: VaultId,
+        clock: Clock,
+    ) -> Result<Self, VaultError> {
+        if path.exists() {
+            return Err(VaultError::AlreadyExists);
+        }
+        let result = Self::create_new(path, clock, Some(vault_id));
+        if result.is_err() {
+            let _ = std::fs::remove_file(path);
+        }
+        result
+    }
+
+    fn create_new(
+        path: &Path,
+        clock: Clock,
+        vault_id: Option<VaultId>,
+    ) -> Result<Self, VaultError> {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
         let mut conn = Connection::open_with_flags(path, flags)?;
         configure(&conn)?;
         conn.pragma_update(None, "application_id", APPLICATION_ID)?;
         schema::migrate(&mut conn, MIGRATIONS)?;
 
-        let vault_id = VaultId::generate()?;
+        let vault_id = match vault_id {
+            Some(vault_id) => vault_id,
+            None => VaultId::generate()?,
+        };
         let device_id = DeviceId::generate()?;
         let created_at_ms = clock.now_ms();
         let tx = conn.transaction()?;

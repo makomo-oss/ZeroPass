@@ -12,6 +12,7 @@ pub mod model;
 mod recovery;
 mod schema;
 mod store;
+mod sync;
 pub mod totp;
 mod vault;
 

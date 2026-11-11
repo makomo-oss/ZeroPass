@@ -7,12 +7,16 @@
 
 mod error;
 pub mod hlc;
+mod memory;
+mod merge;
 mod op;
 mod registry;
 mod vector;
 
 pub use error::SyncError;
 pub use hlc::Hlc;
+pub use memory::{MemoryLog, Snapshot};
+pub use merge::{ApplyReport, Incoming, OpLog, Placement, check_incoming, place};
 pub use op::{Op, OpBody, Payload, Stamp};
 pub use registry::{ChannelPublicKey, DeviceRecord, MAX_DEVICE_NAME_LEN, Registry, Revocation};
 pub use vector::VersionVector;

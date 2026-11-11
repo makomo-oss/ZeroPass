@@ -55,6 +55,20 @@ impl ItemRow {
         }
     }
 
+    pub(crate) fn from_op(op: Op) -> Self {
+        let Op { body, signature } = op;
+        Self {
+            item_id: body.item_id,
+            domain: body.domain,
+            hlc: body.hlc,
+            device_id: body.device_id,
+            seq: body.seq,
+            key_epoch: body.key_epoch,
+            payload: body.payload,
+            signature: Some(signature),
+        }
+    }
+
     /// The row as a signed op, if it has been signed.
     pub(crate) fn to_op(&self) -> Option<Op> {
         self.signature.map(|signature| Op {
