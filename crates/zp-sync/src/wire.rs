@@ -286,6 +286,38 @@ impl TryFrom<OpMsg> for Op {
     }
 }
 
+/// Serialises device records and revocations, for protocols other than the sync
+/// session that need to carry a registry (pairing).
+pub fn encode_registry<'a>(
+    records: impl IntoIterator<Item = &'a DeviceRecord>,
+    revocations: impl IntoIterator<Item = &'a Revocation>,
+) -> Vec<u8> {
+    Devices {
+        records: records.into_iter().map(Into::into).collect(),
+        revocations: revocations.into_iter().map(Into::into).collect(),
+    }
+    .encode_to_vec()
+}
+
+/// Parses what [`encode_registry`] produced. The records are not verified here;
+/// build a [`Registry`](crate::Registry) from them for that.
+pub fn decode_registry(bytes: &[u8]) -> Result<(Vec<DeviceRecord>, Vec<Revocation>), SyncError> {
+    let devices =
+        Devices::decode(bytes).map_err(|_| SyncError::MalformedMessage("not a device registry"))?;
+    Ok((
+        devices
+            .records
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, _>>()?,
+        devices
+            .revocations
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, _>>()?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use zp_crypto::DeviceSigningKey;

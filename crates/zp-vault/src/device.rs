@@ -101,16 +101,22 @@ impl Store {
     /// The returned signing key is not stored anywhere yet; wrap it for each
     /// domain with [`Self::add_device_key_slot`].
     pub fn create_identity(&mut self) -> Result<DeviceSigningKey, VaultError> {
+        let signing_key = DeviceSigningKey::generate()?;
+        self.adopt_channel_key(&ChannelKey::generate()?)?;
+        Ok(signing_key)
+    }
+
+    /// Stores the channel key of a device that generated its keys before this
+    /// file existed (a device joining through pairing).
+    pub fn adopt_channel_key(&mut self, channel_key: &ChannelKey) -> Result<(), VaultError> {
         if self.is_provisioned()? {
             return Err(VaultError::Corrupt("this device already has an identity"));
         }
-        let signing_key = DeviceSigningKey::generate()?;
-        let channel_key = ChannelKey::generate()?;
         let tx = self.conn.transaction()?;
         set_meta(&tx, META_CHANNEL_KEY, channel_key.secret_bytes())?;
         tx.execute("DELETE FROM device_keys", [])?;
         tx.commit()?;
-        Ok(signing_key)
+        Ok(())
     }
 
     /// Gives the founding device of a vault its identity: fresh keys and a

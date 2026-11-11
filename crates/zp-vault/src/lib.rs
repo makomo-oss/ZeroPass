@@ -7,6 +7,7 @@ mod clock;
 mod device;
 mod error;
 mod items;
+mod join;
 mod keyslots;
 pub mod model;
 mod recovery;
@@ -20,6 +21,7 @@ pub use clock::Clock;
 pub use device::default_device_name;
 pub use error::VaultError;
 pub use items::HistoryEntry;
+pub use join::{GrantedKey, JoinIdentity, VaultGrant};
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;
 pub use vault::{

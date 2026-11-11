@@ -185,6 +185,31 @@ impl<D: Domain, R: Generate> SecretKey<D, R> {
     }
 }
 
+impl<D: Domain> VaultKey<D> {
+    /// Copies the raw vault key out so it can be handed to another device.
+    ///
+    /// This is the one place where a vault key leaves its type. The bytes may
+    /// only travel inside an authenticated, encrypted channel between devices of
+    /// the same user (the pairing channel, `docs/spec/pairing.md` §3.3) and must
+    /// never be stored or logged.
+    pub fn to_transfer_bytes(&self) -> zeroize::Zeroizing<[u8; KEY_LEN]> {
+        zeroize::Zeroizing::new(*self.expose())
+    }
+
+    /// Rebuilds a vault key received from another device over the pairing
+    /// channel. The caller states the domain; a key imported under the wrong
+    /// domain opens nothing, because the domain is bound into every ciphertext.
+    pub fn from_transfer_bytes(bytes: &[u8; KEY_LEN]) -> Self {
+        match Self::from_fn(|out| -> Result<(), core::convert::Infallible> {
+            out.copy_from_slice(bytes);
+            Ok(())
+        }) {
+            Ok(key) => key,
+            Err(never) => match never {},
+        }
+    }
+}
+
 impl<D: Domain, R: Role> Zeroize for SecretKey<D, R> {
     fn zeroize(&mut self) {
         self.bytes.zeroize();

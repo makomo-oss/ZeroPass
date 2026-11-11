@@ -1747,11 +1747,14 @@ name = "zp-pairing"
 version = "0.0.0"
 dependencies = [
  "proptest",
+ "prost",
  "snow",
+ "tempfile",
  "thiserror",
  "zeroize",
  "zp-crypto",
  "zp-sync",
+ "zp-vault",
 ]
 
 [[package]]
