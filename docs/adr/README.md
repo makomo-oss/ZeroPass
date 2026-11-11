@@ -8,6 +8,7 @@
 | [0002](0002-key-hierarchy.md) | 鍵階層とドメイン分離 | 採用 |
 | [0003](0003-sync-model.md) | 同期モデル | 採用 |
 | [0004](0004-process-architecture.md) | プロセス構成と権限分離 | 採用 |
+| [0005](0005-noise-patterns-and-sans-io.md) | Noise のパターンと入出力を持たないプロトコル実装 | 採用 |
 
 ## テンプレート
 
