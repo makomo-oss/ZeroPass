@@ -69,7 +69,7 @@ IPC は Windows 名前付きパイプ / Unix ドメインソケット + 接続�
 
 ### 2.4 リポジトリ構成
 ```
-crates/  zp-crypto  zp-vault  zp-sync  zp-pairing  zp-transport  zp-passkey  zp-ipc  zp-ffi
+crates/  zp-crypto  zp-vault  zp-hwkey  zp-sync  zp-pairing  zp-transport  zp-passkey  zp-ipc  zp-ffi
 bins/    zp-vaultd  zp-syncd  zp-broker  zp-nmh  zp-cli
 apps/    desktop(Tauri)  extension(WXT)  android  ios
 docs/    threat-model.md  adr/  spec/
@@ -116,6 +116,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P1-11** `zp-cli`: `init / unlock / add / get / list / totp / lock` — 手動 E2E デモが通る（依存: P1-09, P1-10）
 - [x] **P1-12** ファジング（エンベロープ open、protobuf デコード、otpauth パース）と proptest（seal→open 往復） — 各ターゲット 10 分以上クラッシュなし（依存: P1-08, P1-10）
 - [ ] **P1-13** Windows 実装: `HardwareKeyStore` を Windows Hello（`KeyCredentialManager`）+ TPM で実装 — 実機で指紋／顔／PIN 承認なしに VK-T が開かない（依存: P1-06）
+  - 実装済み（`crates/zp-hwkey`、`zp-cli` は既定で Windows Hello を使用）。**完了条件の実機確認だけが未了**: 認証ダイアログの操作が必要なため自動化できない。確認手順: `cargo test -p zp-hwkey -- --ignored --nocapture windows_hello_protects_the_totp_vault_key` を実行し、表示に従って 1・2 回目は承認、3 回目はキャンセルする。テストが通ればこの行を削除して `[x]` にする。
 - [ ] **P1-14** リカバリーキット: 紙出力用の復旧鍵（VK-* を復旧鍵でラップした暗号化エクスポート）と復元 — 新規環境で復元できる（依存: P1-09）
 - [ ] **P1-15** `criterion` ベンチ（解錠時間、1 万件の一覧・検索） — 解錠 <1s、一覧 <100ms を計測記録（依存: P1-11）
 

@@ -37,9 +37,12 @@ impl Cli {
     fn run_with(&self, software_keystore: bool, args: &[&str], input: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_zp-cli"));
         command.arg("--vault").arg(&self.vault);
-        if software_keystore {
-            command.arg("--insecure-software-keystore");
-        }
+        // Never touch the real platform key store (Windows Hello would prompt).
+        command.arg(if software_keystore {
+            "--insecure-software-keystore"
+        } else {
+            "--no-hardware-keystore"
+        });
         let mut child = command
             .args(args)
             .env_remove("ZEROPASS_VAULT")
