@@ -104,14 +104,14 @@ struct Unlocked {
 
 /// The keys of the currently unlocked domains.
 #[derive(Default)]
-struct Keys([Option<Unlocked>; 3]);
+pub(crate) struct Keys([Option<Unlocked>; 3]);
 
 impl Keys {
     const fn index(domain: DomainId) -> usize {
         domain.as_u8() as usize - 1
     }
 
-    fn insert<D: Domain>(&mut self, key: VaultKey<D>, now_ms: u64) {
+    pub(crate) fn insert<D: Domain>(&mut self, key: VaultKey<D>, now_ms: u64) {
         self.0[Self::index(D::ID)] = Some(Unlocked {
             key: Box::new(key),
             last_used_ms: now_ms,
@@ -119,7 +119,7 @@ impl Keys {
     }
 
     /// Borrows the key of domain `D` and records the use.
-    fn get<D: Domain>(&mut self, now_ms: u64) -> Result<&VaultKey<D>, VaultError> {
+    pub(crate) fn get<D: Domain>(&mut self, now_ms: u64) -> Result<&VaultKey<D>, VaultError> {
         let unlocked = self.0[Self::index(D::ID)]
             .as_mut()
             .ok_or(VaultError::Locked(D::ID))?;
@@ -136,7 +136,7 @@ impl Keys {
     }
 
     /// Locks every domain that has been idle for at least its timeout.
-    fn expire(&mut self, now_ms: u64, auto_lock: &AutoLock) {
+    pub(crate) fn expire(&mut self, now_ms: u64, auto_lock: &AutoLock) {
         for domain in DomainId::ALL {
             let Some(timeout) = auto_lock.for_domain(domain) else {
                 continue;
@@ -154,9 +154,9 @@ impl Keys {
 
 /// An open vault.
 pub struct Vault {
-    store: Store,
-    keys: Keys,
-    auto_lock: AutoLock,
+    pub(crate) store: Store,
+    pub(crate) keys: Keys,
+    pub(crate) auto_lock: AutoLock,
 }
 
 impl core::fmt::Debug for Vault {
@@ -172,14 +172,14 @@ impl core::fmt::Debug for Vault {
     }
 }
 
-fn check_master_password(password: &str) -> Result<(), VaultError> {
+pub(crate) fn check_master_password(password: &str) -> Result<(), VaultError> {
     if password.chars().count() < MIN_MASTER_PASSWORD_CHARS {
         return Err(VaultError::WeakPassword);
     }
     Ok(())
 }
 
-fn new_password_slot(
+pub(crate) fn new_password_slot(
     vault_key: &VaultKey<Password>,
     vault_id: &VaultId,
     master_password: &str,

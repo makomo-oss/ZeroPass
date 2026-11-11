@@ -8,6 +8,7 @@ mod error;
 mod items;
 mod keyslots;
 pub mod model;
+mod recovery;
 mod schema;
 mod store;
 pub mod totp;

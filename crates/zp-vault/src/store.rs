@@ -148,6 +148,15 @@ impl Store {
         self.clock.now_ms()
     }
 
+    /// Gives this copy of the vault a fresh device identifier. Used when a vault
+    /// file is restored on a new device, so two devices never share an identity.
+    pub(crate) fn assign_new_device_id(&mut self) -> Result<(), VaultError> {
+        let device_id = DeviceId::generate()?;
+        set_meta(&self.conn, META_DEVICE_ID, device_id.as_bytes())?;
+        self.device_id = device_id;
+        Ok(())
+    }
+
     /// The schema version of the open file.
     pub fn schema_version(&self) -> Result<u32, VaultError> {
         schema::user_version(&self.conn)
