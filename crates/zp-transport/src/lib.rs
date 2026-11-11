@@ -7,7 +7,9 @@
 pub mod discovery;
 pub mod driver;
 mod error;
+pub mod lan;
 mod link;
+pub mod local_net;
 mod transport;
 
 pub use driver::{
@@ -15,5 +17,6 @@ pub use driver::{
     sync_as_initiator, sync_as_responder,
 };
 pub use error::DriveError;
+pub use lan::LanTransport;
 pub use link::{Connection, Link, MemoryLink};
 pub use transport::{Address, Discovered, LoopbackNetwork, LoopbackTransport, Transport};
