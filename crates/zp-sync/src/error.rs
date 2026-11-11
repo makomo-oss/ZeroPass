@@ -45,6 +45,24 @@ pub enum SyncError {
     /// An op's clock stamp lies too far in the future.
     #[error("an op's clock stamp is too far in the future; check the device clocks")]
     ClockSkew,
+    /// A message could not be decoded.
+    #[error("malformed message: {0}")]
+    MalformedMessage(&'static str),
+    /// A message exceeds the size limit.
+    #[error("a message exceeds the size limit")]
+    MessageTooLarge,
+    /// The peer speaks a protocol version this build does not.
+    #[error("unsupported sync protocol version {0}")]
+    UnsupportedVersion(u32),
+    /// The peer belongs to a different vault.
+    #[error("the peer belongs to a different vault")]
+    VaultMismatch,
+    /// The peer is not the device the channel was established with.
+    #[error("the peer is not the expected device")]
+    UnexpectedPeer,
+    /// The peer sent a message that is not allowed at this point.
+    #[error("protocol violation: {0}")]
+    ProtocolViolation(&'static str),
     /// A cryptographic primitive failed (for example the random number generator).
     #[error(transparent)]
     Crypto(#[from] zp_crypto::CryptoError),

@@ -737,6 +737,7 @@ dependencies = [
 name = "zp-sync"
 version = "0.0.0"
 dependencies = [
+ "prost",
  "sha2",
  "thiserror",
  "zp-crypto",
