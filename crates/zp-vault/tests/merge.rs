@@ -576,3 +576,143 @@ fn device_ids_are_distinct_and_registries_agree() {
         assert_eq!(Store::registry(&device.store).unwrap(), reference);
     }
 }
+
+/// The acceptance test of P2-06: two vault files converge by running the sync
+/// session against each other, with no vault key involved.
+#[test]
+fn two_vault_files_converge_through_a_session() {
+    let mut w = world(2);
+    let on_0 = w.devices[0]
+        .store
+        .insert_item(&w.vk_p, login("written on device 0"))
+        .unwrap();
+    let totp = w.devices[0]
+        .store
+        .insert_item(&w.vk_t, TotpEntry::new("Example", "alice", vec![5; 20]))
+        .unwrap();
+    let on_1 = w.devices[1]
+        .store
+        .insert_item(&w.vk_p, login("written on device 1"))
+        .unwrap();
+    w.devices[1]
+        .store
+        .update_item(&w.vk_p, on_1, login("updated on device 1"))
+        .unwrap();
+
+    let (a, b) = w.devices.split_at_mut(1);
+    let (report_0, report_1) = zp_sync::sync_in_memory(&mut a[0].store, &mut b[0].store).unwrap();
+    assert_eq!((report_0.sent, report_0.received.applied), (2, 2));
+    assert_eq!((report_1.sent, report_1.received.applied), (2, 2));
+    assert_eq!(report_0.peer, Some(Store::device_id(&w.devices[1].store)));
+
+    assert_eq!(snapshot(&w.devices[0]), snapshot(&w.devices[1]));
+    for device in &w.devices {
+        assert_eq!(
+            device.store.get_item::<Login>(&w.vk_p, on_0).unwrap(),
+            login("written on device 0")
+        );
+        assert_eq!(
+            device.store.get_item::<Login>(&w.vk_p, on_1).unwrap(),
+            login("updated on device 1")
+        );
+        assert_eq!(
+            device
+                .store
+                .get_item::<TotpEntry>(&w.vk_t, totp)
+                .unwrap()
+                .secret,
+            vec![5; 20]
+        );
+    }
+
+    // Nothing left to exchange.
+    let (a, b) = w.devices.split_at_mut(1);
+    let (report_0, report_1) = zp_sync::sync_in_memory(&mut a[0].store, &mut b[0].store).unwrap();
+    assert_eq!((report_0.sent, report_1.sent), (0, 0));
+}
+
+/// The same session carried over a byte stream that delivers the frames in
+/// arbitrary pieces, as a real transport does.
+#[test]
+fn a_session_survives_a_fragmenting_byte_stream() {
+    use zp_sync::{FrameDecoder, Session, encode_frame};
+
+    let mut w = world(2);
+    w.devices[0]
+        .store
+        .insert_items(&w.vk_p, (0..40).map(|n| login(&format!("pw-{n}"))))
+        .unwrap();
+    w.devices[1]
+        .store
+        .insert_item(&w.vk_p, login("other side"))
+        .unwrap();
+    let (a, b) = w.devices.split_at_mut(1);
+    let (a, b) = (&mut a[0].store, &mut b[0].store);
+
+    let mut session_a = Session::start(a, Some(Store::device_id(b))).unwrap();
+    let mut session_b = Session::start(b, Some(Store::device_id(a))).unwrap();
+    let (mut decoder_a, mut decoder_b) = (FrameDecoder::new(), FrameDecoder::new());
+    loop {
+        let mut progressed = false;
+        // A → B, cut into 7-byte pieces.
+        while let Some(message) = session_a.poll_send(a).unwrap() {
+            for piece in encode_frame(&message).unwrap().chunks(7) {
+                decoder_b.push(piece);
+                while let Some(message) = decoder_b.next_message().unwrap() {
+                    session_b.receive(b, &message).unwrap();
+                }
+            }
+            progressed = true;
+        }
+        // B → A, cut into 1000-byte pieces.
+        while let Some(message) = session_b.poll_send(b).unwrap() {
+            for piece in encode_frame(&message).unwrap().chunks(1000) {
+                decoder_a.push(piece);
+                while let Some(message) = decoder_a.next_message().unwrap() {
+                    session_a.receive(a, &message).unwrap();
+                }
+            }
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    assert!(session_a.is_complete() && session_b.is_complete());
+    assert!(!decoder_a.has_partial() && !decoder_b.has_partial());
+    assert_eq!(session_a.report().sent, 40);
+    assert_eq!(session_b.report().received.applied, 40);
+    assert_eq!(snapshot(&w.devices[0]), snapshot(&w.devices[1]));
+}
+
+/// A device that joins later receives the whole history, including ops authored
+/// by a device it has never met.
+#[test]
+fn a_new_device_catches_up_through_one_session() {
+    let mut w = world(3);
+    let from_1 = w.devices[1]
+        .store
+        .insert_item(&w.vk_p, login("from device 1"))
+        .unwrap();
+    {
+        let (a, b) = w.devices.split_at_mut(1);
+        zp_sync::sync_in_memory(&mut a[0].store, &mut b[0].store).unwrap();
+    }
+    w.devices[0]
+        .store
+        .insert_item(&w.vk_p, login("from device 0"))
+        .unwrap();
+
+    // Device 2 has only ever been introduced; it syncs with device 0 alone.
+    let (a, rest) = w.devices.split_at_mut(1);
+    let (_, report_2) = zp_sync::sync_in_memory(&mut a[0].store, &mut rest[1].store).unwrap();
+    assert_eq!(report_2.received.applied, 2);
+    assert_eq!(
+        w.devices[2]
+            .store
+            .get_item::<Login>(&w.vk_p, from_1)
+            .unwrap(),
+        login("from device 1")
+    );
+    assert_eq!(snapshot(&w.devices[2]), snapshot(&w.devices[0]));
+}
