@@ -137,8 +137,9 @@ fn sync_over(
     store_b: &mut Store,
     air: &mut Vec<u8>,
 ) {
-    let mut session_a = Session::start(store_a, Some(Store::device_id(store_b))).unwrap();
-    let mut session_b = Session::start(store_b, Some(Store::device_id(store_a))).unwrap();
+    // Each side binds the session to the channel key the handshake authenticated.
+    let mut session_a = Session::start(store_a, Some(*a.channel.remote_static())).unwrap();
+    let mut session_b = Session::start(store_b, Some(*b.channel.remote_static())).unwrap();
     loop {
         let mut progressed = false;
         while let Some(message) = session_a.poll_send(store_a).unwrap() {

@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use zp_crypto::DeviceId;
 
 use crate::wire::{self, Body, Envelope, Hello, Ops};
-use crate::{ApplyReport, Op, OpLog, SyncError, VersionVector};
+use crate::{ApplyReport, ChannelPublicKey, Op, OpLog, SyncError, VersionVector};
 
 /// The version of the session protocol implemented here.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -65,7 +65,8 @@ struct Pending {
 /// One side of a sync session.
 #[derive(Debug)]
 pub struct Session {
-    expected_peer: Option<DeviceId>,
+    /// The channel key the transport authenticated for the peer, if any.
+    channel_peer: Option<ChannelPublicKey>,
     expect: Expect,
     /// Messages ready to be sent.
     outbox: VecDeque<Vec<u8>>,
@@ -78,12 +79,20 @@ pub struct Session {
 }
 
 impl Session {
-    /// Starts a session over a channel to `expected_peer`.
+    /// Starts a session over a channel whose far end the transport
+    /// authenticated as the owner of `channel_peer` (the static key of the Noise
+    /// handshake).
     ///
-    /// When the channel has authenticated the peer (the Noise handshake), pass
-    /// its device identifier: the session then refuses a peer that introduces
-    /// itself as someone else. The opening messages are queued immediately.
-    pub fn start<L: OpLog>(log: &L, expected_peer: Option<DeviceId>) -> Result<Self, L::Error> {
+    /// The session then only talks to the device that the registry lists with
+    /// exactly that channel key. This is checked after the registries have been
+    /// exchanged, so a device this side had not heard of yet is accepted if it
+    /// brings a valid record of itself; someone who merely completed the
+    /// handshake is not. Pass `None` only where there is no channel to bind to
+    /// (in-memory tests). The opening messages are queued immediately.
+    pub fn start<L: OpLog>(
+        log: &L,
+        channel_peer: Option<ChannelPublicKey>,
+    ) -> Result<Self, L::Error> {
         let registry = log.registry()?;
         let mut outbox = VecDeque::new();
         outbox.push_back(Envelope::encode_body(Body::Hello(Hello {
@@ -100,7 +109,7 @@ impl Session {
         ))?);
 
         Ok(Self {
-            expected_peer,
+            channel_peer,
             expect: Expect::Hello,
             outbox,
             pending: None,
@@ -137,9 +146,7 @@ impl Session {
                     return Err(SyncError::VaultMismatch.into());
                 }
                 let peer = wire::device_id(&hello.device_id)?;
-                if peer == log.device_id()
-                    || self.expected_peer.is_some_and(|expected| expected != peer)
-                {
+                if peer == log.device_id() {
                     return Err(SyncError::UnexpectedPeer.into());
                 }
                 self.report.peer = Some(peer);
@@ -167,8 +174,11 @@ impl Session {
                 if registry.is_revoked(&peer) {
                     return Err(SyncError::RevokedDevice(peer).into());
                 }
-                if registry.get(&peer).is_none() {
+                let Some(record) = registry.get(&peer) else {
                     return Err(SyncError::UnknownDevice(peer).into());
+                };
+                if self.channel_peer.is_some_and(|key| key != record.noise_pk) {
+                    return Err(SyncError::UnexpectedPeer.into());
                 }
                 if registry.is_revoked(&log.device_id()) {
                     return Err(SyncError::RevokedDevice(log.device_id()).into());
@@ -277,8 +287,8 @@ pub fn sync_in_memory<A: OpLog, B: OpLog>(
     a: &mut A,
     b: &mut B,
 ) -> Result<(SessionReport, SessionReport), InMemoryError<A::Error, B::Error>> {
-    let mut session_a = Session::start(a, Some(b.device_id())).map_err(InMemoryError::A)?;
-    let mut session_b = Session::start(b, Some(a.device_id())).map_err(InMemoryError::B)?;
+    let mut session_a = Session::start(a, None).map_err(InMemoryError::A)?;
+    let mut session_b = Session::start(b, None).map_err(InMemoryError::B)?;
     loop {
         let mut progressed = false;
         while let Some(message) = session_a.poll_send(a).map_err(InMemoryError::A)? {
@@ -507,14 +517,21 @@ mod tests {
             Err(InMemoryError::B(SyncError::VaultMismatch))
         );
 
-        // The channel authenticated device B, but the peer says it is someone else.
-        let mut session = Session::start(a, Some(DeviceId::from_bytes([9; 16]))).unwrap();
-        let hello = Session::start(b, None)
-            .unwrap()
-            .poll_send(b)
-            .unwrap()
-            .unwrap();
-        assert_eq!(session.receive(a, &hello), Err(SyncError::UnexpectedPeer));
+        // The channel authenticated some other key than the one the registry
+        // lists for the device the peer claims to be.
+        let mut session = Session::start(a, Some([9; 32])).unwrap();
+        let mut peer = Session::start(b, None).unwrap();
+        let hello = peer.poll_send(b).unwrap().unwrap();
+        let devices_message = peer.poll_send(b).unwrap().unwrap();
+        session.receive(a, &hello).unwrap();
+        assert_eq!(
+            session.receive(a, &devices_message),
+            Err(SyncError::UnexpectedPeer)
+        );
+        // With the right channel key (device 1 has key [1; 32]) it goes through.
+        let mut session = Session::start(a, Some([1; 32])).unwrap();
+        session.receive(a, &hello).unwrap();
+        session.receive(a, &devices_message).unwrap();
 
         // A device talking to itself.
         let mut session = Session::start(a, None).unwrap();
@@ -692,10 +709,9 @@ mod tests {
 
     /// Runs a session but stops after `budget` delivered messages.
     fn interrupted(a: &mut MemoryLog, b: &mut MemoryLog, mut budget: usize) {
-        let (Ok(mut session_a), Ok(mut session_b)) = (
-            Session::start(a, Some(b.device_id())),
-            Session::start(b, Some(a.device_id())),
-        ) else {
+        let (Ok(mut session_a), Ok(mut session_b)) =
+            (Session::start(a, None), Session::start(b, None))
+        else {
             return;
         };
         loop {

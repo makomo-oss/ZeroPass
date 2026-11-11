@@ -656,8 +656,8 @@ fn a_session_survives_a_fragmenting_byte_stream() {
     let (a, b) = w.devices.split_at_mut(1);
     let (a, b) = (&mut a[0].store, &mut b[0].store);
 
-    let mut session_a = Session::start(a, Some(Store::device_id(b))).unwrap();
-    let mut session_b = Session::start(b, Some(Store::device_id(a))).unwrap();
+    let mut session_a = Session::start(a, None).unwrap();
+    let mut session_b = Session::start(b, None).unwrap();
     let (mut decoder_a, mut decoder_b) = (FrameDecoder::new(), FrameDecoder::new());
     loop {
         let mut progressed = false;
