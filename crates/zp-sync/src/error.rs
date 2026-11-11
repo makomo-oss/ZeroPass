@@ -45,6 +45,9 @@ pub enum SyncError {
     /// An op's clock stamp lies too far in the future.
     #[error("an op's clock stamp is too far in the future; check the device clocks")]
     ClockSkew,
+    /// A cryptographic primitive failed (for example the random number generator).
+    #[error(transparent)]
+    Crypto(#[from] zp_crypto::CryptoError),
     /// An op tries to move an item to another key domain.
     #[error("an op changes the key domain of an existing item")]
     DomainChanged,
