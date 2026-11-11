@@ -15,10 +15,6 @@ pub(crate) enum SlotKind {
     /// Wrapped by a hardware key store. TOTP and passkey domains only.
     Hardware = 2,
     /// Wrapped by a key derived from the recovery key.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "recovery slots arrive with P1-14")
-    )]
     Recovery = 3,
 }
 

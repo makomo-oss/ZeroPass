@@ -95,6 +95,16 @@ fn added_id(stdout: &str) -> String {
     id
 }
 
+/// Extracts the recovery key from the output of `recovery-kit`.
+fn recovery_code(stdout: &str) -> String {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.len() == 65 && line.matches('-').count() == 10)
+        .unwrap_or_else(|| panic!("no recovery key in: {stdout}"))
+        .to_owned()
+}
+
 fn file_contains(path: &Path, needle: &str) -> bool {
     let bytes = std::fs::read(path).unwrap();
     bytes
@@ -287,4 +297,61 @@ fn bad_invocations_fail_cleanly() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no vault file given"));
+}
+
+#[test]
+fn recovery_kit_restores_the_vault_in_a_new_location() {
+    let cli = Cli::new();
+    cli.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let login_id = added_id(&cli.ok(
+        &["add", "login", "--title", "Bank"],
+        &[PASSWORD, "login-password"],
+    ));
+    let totp_id = added_id(&cli.ok(&["add", "totp"], &[TOTP_URI]));
+
+    // Create the kit: the master password unlocks the password domain, the key
+    // store the other two.
+    let out = cli.ok(&["recovery-kit"], &[PASSWORD]);
+    let code = recovery_code(&out);
+    assert!(!file_contains(&cli.vault, &code));
+    // A second kit needs an explicit --replace.
+    let stderr = cli.fails(&["recovery-kit"], &[PASSWORD]);
+    assert!(stderr.contains("--replace"), "{stderr}");
+
+    // A new device: only the backup of the vault file and the paper survive.
+    let restored = Cli::new();
+    std::fs::copy(&cli.vault, &restored.vault).unwrap();
+    assert!(!restored.vault.with_extension("devkey").exists());
+
+    let stderr = restored.fails(
+        &["recover"],
+        &["not a recovery key", NEW_PASSWORD, NEW_PASSWORD],
+    );
+    assert!(stderr.contains("recovery key is not valid"), "{stderr}");
+    // A well-formed key that belongs to a different vault.
+    let other = Cli::new();
+    assert!(
+        other
+            .run_with(false, &["init"], &[PASSWORD, PASSWORD])
+            .success
+    );
+    let other_out = other.run_with(false, &["recovery-kit"], &[PASSWORD]).stdout;
+    let other_key = recovery_code(&other_out);
+    let stderr = restored.fails(&["recover"], &[&other_key, NEW_PASSWORD, NEW_PASSWORD]);
+    assert!(stderr.contains("does not match this vault"), "{stderr}");
+
+    // Typed in lower case with spaces, as a person might.
+    let typed = code.to_lowercase().replace('-', " ");
+    let out = restored.ok(&["recover"], &[&typed, NEW_PASSWORD, NEW_PASSWORD]);
+    assert!(out.contains("password: restored"), "{out}");
+    assert!(out.contains("totp:    restored"), "{out}");
+
+    restored.fails(&["list"], &[PASSWORD]);
+    let out = restored.ok(&["get", &login_id, "--reveal"], &[NEW_PASSWORD]);
+    assert!(out.contains("password: login-password"), "{out}");
+    let out = restored.ok(&["totp", &totp_id], &[]);
+    assert!(out.contains("(valid for "), "{out}");
+
+    // The original device is unaffected.
+    assert!(cli.ok(&["list"], &[PASSWORD]).contains("1 item(s)"));
 }

@@ -11,6 +11,7 @@ mod hardware;
 mod kdf;
 mod keywrap;
 mod mem;
+mod recovery_code;
 pub mod rng;
 mod secret;
 mod signature_store;

@@ -27,6 +27,9 @@ pub enum CryptoError {
     /// Key derivation failed (for example, the memory could not be allocated).
     #[error("key derivation failed")]
     Kdf,
+    /// The recovery key code is malformed or mistyped.
+    #[error("the recovery key is not valid; check it for typing mistakes")]
+    InvalidRecoveryKey,
     /// A hardware key store operation failed.
     #[error(transparent)]
     HardwareKey(#[from] crate::HardwareKeyError),

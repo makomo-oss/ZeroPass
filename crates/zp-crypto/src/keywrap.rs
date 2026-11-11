@@ -134,7 +134,7 @@ impl<D: Domain> VaultKey<D> {
 /// It is never stored. From it, one independent key-encryption key per domain is
 /// derived with HKDF, so that recovery slots of different domains (and vaults) are
 /// cryptographically separated.
-pub struct RecoveryKey(SecretBytes);
+pub struct RecoveryKey(pub(crate) SecretBytes);
 
 impl RecoveryKey {
     /// Generates a fresh recovery key.

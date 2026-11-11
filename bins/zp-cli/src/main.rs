@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
 use zp_crypto::{
     DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey,
-    Password, Totp,
+    Password, RecoveryKey, Totp,
 };
 use zp_vault::model::{Content, Login, SecureNote};
 use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError, totp};
@@ -69,6 +69,9 @@ impl KeyStoreChoice {
 enum TopCommand {
     /// Create a new vault.
     Init,
+    /// Restore access to a vault file with its recovery key: sets a new master
+    /// password and re-binds the TOTP and passkey domains to this device.
+    Recover,
     /// Open an interactive session in which domains stay unlocked until locked.
     Shell,
     #[command(flatten)]
@@ -122,6 +125,12 @@ enum Command {
     Delete {
         /// Item identifier (32 hex digits).
         id: String,
+    },
+    /// Create a recovery kit and print the recovery key to write down.
+    RecoveryKit {
+        /// Replace an existing kit; the previous recovery key stops working.
+        #[arg(long)]
+        replace: bool,
     },
     /// Change the master password.
     Passwd,
@@ -401,6 +410,28 @@ impl Session {
                 }
                 writeln!(out, "deleted {id}")?;
             }
+            Command::RecoveryKit { replace } => {
+                if self.vault.has_recovery_kit()? && !replace {
+                    return Err("a recovery kit already exists; pass --replace to create a new one and invalidate the old recovery key".into());
+                }
+                for domain in DomainId::ALL {
+                    if self.vault.has_domain(domain)? {
+                        self.ensure_unlocked(domain)?;
+                    }
+                }
+                let recovery_key = self.vault.create_recovery_kit()?;
+                writeln!(
+                    out,
+                    "Recovery key (write it down and keep it offline; it is shown only once):"
+                )?;
+                writeln!(out)?;
+                writeln!(out, "    {}", recovery_key.to_code().as_str())?;
+                writeln!(out)?;
+                writeln!(
+                    out,
+                    "To recover you need this key AND a backup copy of the vault file."
+                )?;
+            }
             Command::Passwd => {
                 let current = self.input.secret("Current master password: ")?;
                 let new = self.input.new_master_password()?;
@@ -589,6 +620,36 @@ fn init(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliR
     Ok(())
 }
 
+fn recover(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {
+    if !vault_path.exists() {
+        return Err(VaultError::NotFound.into());
+    }
+    let input = Input::new();
+    let code = input.secret("Recovery key: ")?;
+    let recovery_key = RecoveryKey::from_code(&code)?;
+    let password = input.new_master_password()?;
+    let hardware = hardware_key_store(choice, vault_path, true)?;
+    let mut vault = Vault::recover(
+        vault_path,
+        &recovery_key,
+        &password,
+        hardware.as_deref(),
+        CreateOptions::default(),
+    )?;
+    writeln!(out, "recovered vault {}", vault.vault_id())?;
+    for domain in DomainId::ALL {
+        let state = if vault.is_unlocked(domain) {
+            "restored"
+        } else if vault.has_domain(domain)? {
+            "NOT restored (no hardware key store on this device)"
+        } else {
+            "not part of this vault"
+        };
+        writeln!(out, "  {:<8} {state}", format!("{}:", domain_name(domain)))?;
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> CliResult<()> {
     let vault_path = cli
         .vault
@@ -596,6 +657,9 @@ fn run(cli: Cli) -> CliResult<()> {
         .ok_or("no vault file given: pass --vault <PATH> or set ZEROPASS_VAULT")?;
     let mut out = io::stdout().lock();
     let choice = KeyStoreChoice::from_flags(&cli);
+    if matches!(cli.command, TopCommand::Recover) {
+        return recover(choice, &vault_path, &mut out);
+    }
     if matches!(cli.command, TopCommand::Init) {
         return init(choice, &vault_path, &mut out);
     }
@@ -605,7 +669,7 @@ fn run(cli: Cli) -> CliResult<()> {
         input: Input::new(),
     };
     match cli.command {
-        TopCommand::Init => unreachable!("handled above"),
+        TopCommand::Init | TopCommand::Recover => unreachable!("handled above"),
         TopCommand::Shell => shell(&mut session, &mut out),
         TopCommand::Session(command) => session.run(command, &mut out),
     }

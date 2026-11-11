@@ -35,6 +35,12 @@ pub enum VaultError {
     /// The master password is wrong.
     #[error("wrong master password")]
     WrongPassword,
+    /// The vault has no recovery kit.
+    #[error("no recovery kit has been created for this vault")]
+    NoRecoveryKit,
+    /// The recovery key does not belong to this vault.
+    #[error("the recovery key does not match this vault")]
+    WrongRecoveryKey,
     /// The master password is too short.
     #[error("the master password must be at least 12 characters long")]
     WeakPassword,
