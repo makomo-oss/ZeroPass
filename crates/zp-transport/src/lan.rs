@@ -19,6 +19,7 @@ use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener
 use std::time::{Duration, Instant};
 
 use mdns_sd::{IfKind, Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::discovery::{TAG_LEN, Tag};
 use crate::link::{Link, READ_POLL};
@@ -30,6 +31,26 @@ pub const SERVICE_TYPE: &str = "_zeropass._tcp.local.";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
+/// Hop limit of every packet this transport sends. A packet that would have to
+/// pass a router to reach its destination is discarded by that router, so
+/// nothing can leave the local link even if an address check were wrong.
+pub const HOP_LIMIT: u32 = 1;
+
+/// Opens a TCP connection whose packets, including the very first one, carry
+/// [`HOP_LIMIT`].
+fn connect_local(address: &SocketAddr) -> io::Result<TcpStream> {
+    let socket = Socket::new(
+        Domain::for_address(*address),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )?;
+    match address {
+        SocketAddr::V4(_) => socket.set_ttl_v4(HOP_LIMIT)?,
+        SocketAddr::V6(_) => socket.set_unicast_hops_v6(HOP_LIMIT)?,
+    }
+    socket.connect_timeout(&(*address).into(), CONNECT_TIMEOUT)?;
+    Ok(socket.into())
+}
 
 fn other(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::other(error)
@@ -62,6 +83,8 @@ impl TcpLink {
     fn new(stream: TcpStream) -> io::Result<Self> {
         stream.set_nonblocking(false)?;
         stream.set_nodelay(true)?;
+        // Also for accepted connections, whose listener already limits it.
+        stream.set_ttl(HOP_LIMIT)?;
         Ok(Self { stream })
     }
 }
@@ -97,6 +120,13 @@ impl Link for TcpLink {
         self.stream
             .peer_addr()
             .map_or_else(|_| "tcp:?".to_owned(), |address| address.to_string())
+    }
+}
+
+impl TcpLink {
+    /// The hop limit of this link's packets.
+    pub fn hop_limit(&self) -> io::Result<u32> {
+        self.stream.ttl()
     }
 }
 
@@ -140,6 +170,8 @@ impl LanTransport {
                 Ok(listener) => {
                     port = listener.local_addr()?.port();
                     listener.set_nonblocking(true)?;
+                    // Replies to incoming connections must not travel either.
+                    listener.set_ttl(HOP_LIMIT)?;
                     listeners.push(listener);
                     bound.push(address);
                 }
@@ -283,7 +315,7 @@ impl Transport for LanTransport {
                 "refusing to connect outside the local network",
             ));
         }
-        let stream = TcpStream::connect_timeout(address, CONNECT_TIMEOUT)?;
+        let stream = connect_local(address)?;
         Ok(Box::new(TcpLink::new(stream)?))
     }
 
@@ -395,6 +427,63 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{address}");
         }
         assert!(transport.connect(&Address::Loopback(1)).is_err());
+    }
+
+    #[test]
+    fn every_socket_is_limited_to_one_hop() {
+        let transport = loopback_transport();
+        for listener in &transport.listeners {
+            assert_eq!(listener.ttl().unwrap(), HOP_LIMIT);
+        }
+
+        // An outgoing connection carries the limit from its first packet on.
+        let address = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), transport.port());
+        let outgoing = connect_local(&address).unwrap();
+        assert_eq!(outgoing.ttl().unwrap(), HOP_LIMIT);
+
+        // So does the accepted side.
+        let deadline = Instant::now() + WAIT;
+        let incoming = loop {
+            match transport.listeners[0].accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline);
+                    std::thread::sleep(ACCEPT_POLL);
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        assert_eq!(
+            TcpLink::new(incoming).unwrap().hop_limit().unwrap(),
+            HOP_LIMIT
+        );
+        assert_eq!(
+            TcpLink::new(outgoing).unwrap().hop_limit().unwrap(),
+            HOP_LIMIT
+        );
+    }
+
+    #[test]
+    fn the_transport_listens_on_local_addresses_only() {
+        let transport = match LanTransport::new() {
+            Ok(transport) => transport,
+            // A machine without any local network has nothing to listen on.
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => return,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(!transport.listeners.is_empty());
+        assert_eq!(transport.listeners.len(), transport.addresses().len());
+        for listener in &transport.listeners {
+            let address = listener.local_addr().unwrap();
+            // Never the wildcard address, never a public one.
+            assert!(!address.ip().is_unspecified(), "{address}");
+            assert!(
+                is_local(address.ip()) && !address.ip().is_loopback(),
+                "{address}"
+            );
+            assert_eq!(address.port(), transport.port());
+            assert_eq!(listener.ttl().unwrap(), HOP_LIMIT);
+        }
     }
 
     /// Discovery over real mDNS. Needs a network interface with a private
