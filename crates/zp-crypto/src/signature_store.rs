@@ -133,7 +133,10 @@ mod tests {
             let mut signature = Zeroizing::new(vec![0u8; 64]);
             hkdf_sha256(&self.key, challenge, b"fake signature", &mut signature).unwrap();
             if self.randomised {
-                signature[0] ^= rng::array::<1>().unwrap()[0] | 1;
+                // A different signature on every call, as a randomised scheme
+                // gives. Derived from the call counter rather than from random
+                // bytes, so that two calls can never happen to agree.
+                signature[0] ^= (self.prompts.get() % 255) as u8 + 1;
             }
             Ok(signature)
         }
