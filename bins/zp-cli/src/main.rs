@@ -5,6 +5,8 @@
 //! what it needs. `zp-cli shell` keeps one session open so that `unlock`, `lock`
 //! and the idle auto-lock can be exercised.
 
+mod nearby;
+
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -72,6 +74,13 @@ enum TopCommand {
     /// Restore access to a vault file with its recovery key: sets a new master
     /// password and re-binds the TOTP and passkey domains to this device.
     Recover,
+    /// Join an existing vault from this device: enter the pairing code that
+    /// `pair` shows on a device which already has the vault.
+    Join {
+        /// The name of this device, shown to the user of the other device.
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Open an interactive session in which domains stay unlocked until locked.
     Shell,
     #[command(flatten)]
@@ -131,6 +140,14 @@ enum Command {
         /// Replace an existing kit; the previous recovery key stops working.
         #[arg(long)]
         replace: bool,
+    },
+    /// Show a pairing code and admit the device that enters it.
+    Pair,
+    /// Sync with the other devices of this vault on the local network.
+    Sync {
+        /// How long to look for other devices, in seconds.
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
     },
     /// List the devices of this vault.
     Devices,
@@ -297,6 +314,7 @@ fn parse_id(text: &str) -> CliResult<ItemId> {
 }
 
 struct Session {
+    path: PathBuf,
     vault: Vault,
     hardware: Option<Box<dyn HardwareKeyStore>>,
     input: Input,
@@ -434,6 +452,8 @@ impl Session {
                     "To recover you need this key AND a backup copy of the vault file."
                 )?;
             }
+            Command::Pair => self.pair(out)?,
+            Command::Sync { seconds } => self.sync(seconds, out)?,
             Command::Devices => {
                 let registry = self.vault.registry()?;
                 let vector = self.vault.version_vector()?;
@@ -685,16 +705,22 @@ fn run(cli: Cli) -> CliResult<()> {
     if matches!(cli.command, TopCommand::Recover) {
         return recover(choice, &vault_path, &mut out);
     }
+    if let TopCommand::Join { name } = &cli.command {
+        return nearby::join(choice, &vault_path, name.clone(), &mut out);
+    }
     if matches!(cli.command, TopCommand::Init) {
         return init(choice, &vault_path, &mut out);
     }
     let mut session = Session {
         vault: Vault::open(&vault_path)?,
+        path: vault_path.clone(),
         hardware: hardware_key_store(choice, &vault_path, false)?,
         input: Input::new(),
     };
     match cli.command {
-        TopCommand::Init | TopCommand::Recover => unreachable!("handled above"),
+        TopCommand::Init | TopCommand::Recover | TopCommand::Join { .. } => {
+            unreachable!("handled above")
+        }
         TopCommand::Shell => shell(&mut session, &mut out),
         TopCommand::Session(command) => session.run(command, &mut out),
     }
