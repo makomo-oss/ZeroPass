@@ -135,6 +135,13 @@ docs/    threat-model.md  adr/  spec/
 - [ ] **P2-12** LAN のインターネット遮断: プライベート／リンクローカル IF のみに bind、TTL/Hop Limit=1、非ローカル宛先を拒否 — パケットキャプチャで LAN 外宛が 0 件（依存: P2-11）
   - 実装済み（ローカルアドレスへのみ bind・接続・受け入れ、全ソケットで TTL=1。仕様は `docs/spec/lan.md`）。ソケット単位の検査は自動テストで確認済み。**完了条件のパケットキャプチャによる確認だけが未了**: この環境にはキャプチャツールも管理者権限もない。手順は `docs/spec/lan.md` §6「手動での確認」。確認できたらこの行を削除して `[x]` にする。
 - [ ] **P2-13** `zp-syncd` 最小版 + `zp-cli pair / sync`: PC 2 台で QR 文字列ペアリング → LAN 自動同期 — 片方の変更が数秒で他方に反映（依存: P2-09, P2-11）
+  - 実装済み（`zp-syncd`、`zp-cli pair` / `join` / `sync` / `devices`）。同じ PC 上の 2 つの金庫ファイルで、実 LAN インターフェース経由のペアリングと自動同期を確認済み（`zp-syncd` を 2 プロセス起動して A→B 約 0.9 秒、B→A 約 3.1 秒。`cargo test -p zp-cli --test e2e -- --ignored`）。**完了条件の「PC 2 台」での確認だけが未了**（P2-11 と共通）。確認できたらこの行を削除して `[x]` にする。手順:
+    1. 両方の PC でビルドする: `cargo build --release -p zp-cli -p zp-syncd`
+    2. PC-A: `zp-cli --vault a.zpvault init` → `zp-cli --vault a.zpvault pair`（表示されたコードを控える。60 秒有効）
+    3. PC-B: `zp-cli --vault b.zpvault join`（新しいマスターパスワードを決め、コードを入力）→ PC-A で端末名を確認して `y`
+    4. 両方で `zp-syncd --vault <ファイル>` を起動したままにする
+    5. PC-A で `zp-cli --vault a.zpvault add login --title test` → 数秒後に PC-B の `zp-cli --vault b.zpvault list` に出ること、逆方向も同様であることを確認する
+    6. Windows ファイアウォールの確認が出たら「プライベート ネットワーク」のみ許可する
 - [ ] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
 - [ ] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
 - [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）

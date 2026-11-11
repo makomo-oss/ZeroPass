@@ -11,3 +11,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive", "env"] }
+zp-transport = { version = "0.0.0", path = "../../crates/zp-transport" }
+zp-vault = { version = "0.0.0", path = "../../crates/zp-vault" }

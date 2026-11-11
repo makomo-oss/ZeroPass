@@ -370,3 +370,135 @@ fn recovery_kit_restores_the_vault_in_a_new_location() {
     // The original device is unaffected.
     assert!(cli.ok(&["list"], &[PASSWORD]).contains("1 item(s)"));
 }
+
+/// Pairing and sync between two vault files through the real binaries and the
+/// real local network (mDNS + TCP), both "devices" being on this machine.
+///
+/// Needs a network interface with a private address and working multicast,
+/// which CI machines do not reliably have:
+///
+/// ```text
+/// cargo test -p zp-cli --test e2e -- --ignored
+/// ```
+#[test]
+#[ignore = "needs a local network interface with multicast"]
+fn two_vaults_pair_and_sync_on_the_local_network() {
+    use std::io::{BufRead, BufReader, Read};
+
+    let pc = Cli::new();
+    pc.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let from_pc = added_id(&pc.ok(
+        &["add", "login", "--title", "From the PC"],
+        &[PASSWORD, "pc-password"],
+    ));
+    let totp_id = added_id(&pc.ok(&["add", "totp"], &[TOTP_URI]));
+
+    // The PC shows a pairing code and waits. Its prompts are answered in order:
+    // the master password, then the confirmation of the new device.
+    let mut pairing = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
+        .arg("--vault")
+        .arg(&pc.vault)
+        .args(["--insecure-software-keystore", "pair"])
+        .env_remove("ZEROPASS_VAULT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = pairing.stdin.take().unwrap();
+    writeln!(stdin, "{PASSWORD}").unwrap();
+    writeln!(stdin, "y").unwrap();
+    let mut stdout = BufReader::new(pairing.stdout.take().unwrap());
+    let code = loop {
+        let mut line = String::new();
+        assert!(
+            stdout.read_line(&mut line).unwrap() > 0,
+            "`pair` ended without showing a code"
+        );
+        if line.starts_with("ZP1:") {
+            break line.trim().to_owned();
+        }
+    };
+
+    // The phone joins with the code and its own master password.
+    let phone = Cli::new();
+    let out = phone.ok(
+        &["join", "--name", "Test phone"],
+        &[NEW_PASSWORD, NEW_PASSWORD, &code],
+    );
+    assert!(out.contains("joined vault"), "{out}");
+    assert!(out.contains("as \"Test phone\""), "{out}");
+    assert!(out.contains("totp:    available"), "{out}");
+    assert!(
+        out.contains("first sync: sent 0 change(s), received 2"),
+        "{out}"
+    );
+
+    let mut rest = String::new();
+    stdout.read_to_string(&mut rest).unwrap();
+    assert!(pairing.wait().unwrap().success());
+    assert!(rest.contains("added device \"Test phone\""), "{rest}");
+    drop(stdin);
+
+    // The phone has the PC's items and opens them with its own credentials.
+    let out = phone.ok(&["get", &from_pc, "--reveal"], &[NEW_PASSWORD]);
+    assert!(out.contains("password: pc-password"), "{out}");
+    assert!(phone.ok(&["totp", &totp_id], &[]).contains("(valid for "));
+    phone.fails(&["list"], &[PASSWORD]);
+    // The code cannot be used a second time.
+    let other = Cli::new();
+    other.fails(&["join"], &[NEW_PASSWORD, NEW_PASSWORD, &code]);
+    assert!(!other.vault.exists());
+
+    // Later changes travel with `sync`, run on both devices at the same time.
+    let from_phone = added_id(&phone.ok(
+        &["add", "login", "--title", "From the phone"],
+        &[NEW_PASSWORD, "phone-password"],
+    ));
+    pc.ok(&["delete", &from_pc], &[PASSWORD]);
+    let pc_sync = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
+        .arg("--vault")
+        .arg(&pc.vault)
+        .args(["--insecure-software-keystore", "sync", "--seconds", "15"])
+        .env_remove("ZEROPASS_VAULT")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let phone_out = phone.ok(&["sync", "--seconds", "15"], &[]);
+    let pc_out = String::from_utf8(pc_sync.wait_with_output().unwrap().stdout).unwrap();
+    assert!(
+        phone_out.contains("synced with \"") && pc_out.contains("synced with \""),
+        "{phone_out}\n{pc_out}"
+    );
+
+    let out = pc.ok(&["get", &from_phone, "--reveal"], &[PASSWORD]);
+    assert!(out.contains("password: phone-password"), "{out}");
+    phone.fails(&["get", &from_pc], &[NEW_PASSWORD]);
+    for cli in [&pc, &phone] {
+        let out = cli.ok(&["devices"], &[]);
+        assert!(
+            out.contains("2 device(s)") && out.contains("Test phone"),
+            "{out}"
+        );
+    }
+}
+
+#[test]
+fn nearby_commands_fail_cleanly_without_a_partner() {
+    let cli = Cli::new();
+    // Joining needs a valid code; nothing is created without one.
+    let stderr = cli.fails(&["join"], &[PASSWORD, PASSWORD, "not a pairing code"]);
+    assert!(stderr.contains("not a valid pairing code"), "{stderr}");
+    assert!(!cli.vault.exists());
+    assert!(!cli.vault.with_extension("devkey").exists());
+
+    // A vault with a single device has nobody to sync with.
+    cli.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let out = cli.ok(&["sync", "--seconds", "1"], &[]);
+    assert!(out.contains("no other devices yet"), "{out}");
+    // An existing vault cannot be joined over.
+    let stderr = cli.fails(&["join"], &[PASSWORD, PASSWORD, "ZP1:AAAA"]);
+    assert!(stderr.contains("already exists"), "{stderr}");
+}
