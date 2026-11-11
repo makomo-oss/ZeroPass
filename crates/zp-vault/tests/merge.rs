@@ -37,7 +37,9 @@ fn world(count: usize) -> World {
         let store = if let Some(first) = devices.first_mut() {
             // A joining device: introduced by the first one.
             let vault_id = Store::vault_id(&first.store);
-            let mut store = Store::create_for_vault(&path, vault_id, Clock::system()).unwrap();
+            let device_id = DeviceId::generate().unwrap();
+            let mut store =
+                Store::create_for_vault(&path, vault_id, device_id, Clock::system()).unwrap();
             let signer = store.create_identity().unwrap();
             first
                 .store
@@ -440,8 +442,13 @@ fn an_op_from_the_far_future_is_refused() {
     // A device whose clock is two days ahead writes an item.
     let ahead = Clock::from_fn(|| Clock::system().now_ms() + 2 * 24 * 60 * 60 * 1000);
     let mut w = w;
-    let mut fast =
-        Store::create_for_vault(&dir.path().join("fast.zpvault"), vault_id, ahead).unwrap();
+    let mut fast = Store::create_for_vault(
+        &dir.path().join("fast.zpvault"),
+        vault_id,
+        DeviceId::generate().unwrap(),
+        ahead,
+    )
+    .unwrap();
     let signer = fast.create_identity().unwrap();
     w.devices[0]
         .store

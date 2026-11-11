@@ -4,7 +4,11 @@
 //! state machine without I/O (ADR-0005): callers move the bytes.
 
 mod error;
+pub mod flow;
 pub mod noise;
+pub mod qr;
 
 pub use error::PairingError;
+pub use flow::{JoinRequest, Joiner, admit};
 pub use noise::{ChannelPublicKey, Handshake, SecureChannel};
+pub use qr::{Hint, OfferRole, PairingOffer};

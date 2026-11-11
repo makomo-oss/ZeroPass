@@ -25,4 +25,4 @@ pub use op::{Op, OpBody, Payload, Stamp};
 pub use registry::{ChannelPublicKey, DeviceRecord, MAX_DEVICE_NAME_LEN, Registry, Revocation};
 pub use session::{InMemoryError, PROTOCOL_VERSION, Session, SessionReport, sync_in_memory};
 pub use vector::VersionVector;
-pub use wire::MAX_MESSAGE_LEN;
+pub use wire::{MAX_MESSAGE_LEN, decode_registry, encode_registry};

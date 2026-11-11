@@ -71,6 +71,9 @@ pub enum VaultError {
     /// A sync rule was violated.
     #[error(transparent)]
     Sync(#[from] zp_sync::SyncError),
+    /// A grant received while joining a vault is unusable.
+    #[error("the grant is not valid: {0}")]
+    InvalidGrant(&'static str),
     /// A decrypted item could not be parsed.
     #[error("the item content is malformed")]
     MalformedItem,
