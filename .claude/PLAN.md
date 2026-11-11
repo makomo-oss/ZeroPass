@@ -120,7 +120,7 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P1-15** `criterion` ベンチ（解錠時間、1 万件の一覧・検索） — 解錠 <1s、一覧 <100ms を計測記録（依存: P1-11）
 
 ### Phase 2: 近接同期 PoC（最難関②）
-- [ ] **P2-01** `docs/spec/sync.md`: op 形式、バージョンベクタ交換、HLC、競合解決、tombstone GC、端末失効を仕様化 — 仕様書（依存: P1-01）
+- [x] **P2-01** `docs/spec/sync.md`: op 形式、バージョンベクタ交換、HLC、競合解決、tombstone GC、端末失効を仕様化 — 仕様書（依存: P1-01）
 - [ ] **P2-02** `docs/spec/pairing.md`: QR ペイロード（静的公開鍵指紋 + 32byte 使い捨て秘密 + 接続ヒント、有効期限 60s）、Noise `XXpsk3`、VK 配布手順を仕様化 — 仕様書（依存: P1-01）
 - [ ] **P2-03** `zp-sync`: HLC とバージョンベクタ — proptest で単調性・比較則を検証（依存: P0-01）
 - [ ] **P2-04** `zp-sync`: 暗号文 oplog（追記、`(device_id, seq)` 索引、差分抽出）を `zp-vault` に統合 — CRUD が op を生成する（依存: P1-08, P2-01, P2-03）
