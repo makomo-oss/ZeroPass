@@ -458,6 +458,22 @@ impl Vault {
             .map(|row| row.domain))
     }
 
+    /// Stores several new items of one kind atomically; see
+    /// [`Store::insert_items`].
+    pub fn insert_many<I: Item>(
+        &mut self,
+        items: impl IntoIterator<Item = I>,
+    ) -> Result<Vec<ItemId>, VaultError> {
+        let key = Self::key::<I::Domain>(&mut self.keys, &self.store, &self.auto_lock)?;
+        self.store.insert_items(key, items)
+    }
+
+    /// The live items of domain `D` matching `query`; see [`Content::matches`].
+    pub fn search<D: Domain>(&mut self, query: &str) -> Result<Vec<(ItemId, Content)>, VaultError> {
+        let key = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
+        self.store.search_items(key, query)
+    }
+
     /// Deletes an item of domain `D`. The domain must be unlocked.
     pub fn delete<D: Domain>(&mut self, item_id: ItemId) -> Result<(), VaultError> {
         Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;

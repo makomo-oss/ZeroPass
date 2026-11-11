@@ -259,6 +259,25 @@ impl Content {
         }
     }
 
+    /// Whether the item matches a search query: a case-insensitive substring
+    /// match against its non-secret, human-facing fields (titles, user names,
+    /// URLs, issuers). Passwords, note bodies and seeds are never searched. An
+    /// empty query matches everything.
+    pub fn matches(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        let hit = |field: &str| field.to_lowercase().contains(&query);
+        match self {
+            Content::Login(login) => {
+                hit(&login.title) || hit(&login.username) || login.urls.iter().any(|url| hit(url))
+            }
+            Content::SecureNote(note) => hit(&note.title),
+            Content::Totp(totp) => hit(&totp.issuer) || hit(&totp.account),
+            Content::Passkey(passkey) => {
+                hit(&passkey.rp_id) || hit(&passkey.rp_name) || hit(&passkey.user_name)
+            }
+        }
+    }
+
     /// Serialises the content for encryption.
     pub fn to_plaintext(&self) -> Zeroizing<Vec<u8>> {
         let record = ItemRecord {

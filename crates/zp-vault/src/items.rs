@@ -105,22 +105,19 @@ impl Store {
     /// Makes `row` the current version of its item, moving the version it replaces
     /// (if any) to the history. Both happen in one transaction.
     pub(crate) fn write_row(&mut self, row: &ItemRow) -> Result<(), VaultError> {
-        let hlc = i64::try_from(row.hlc).map_err(|_| VaultError::ClockExhausted)?;
-        let (wrapped_dek, ciphertext) = match &row.payload {
-            Some(payload) => (Some(&payload.wrapped_dek), Some(&payload.ciphertext)),
-            None => (None, None),
-        };
+        self.write_rows(std::slice::from_ref(row))
+    }
 
+    /// Writes several item versions in a single transaction: either all of them
+    /// become current, or none.
+    pub(crate) fn write_rows(&mut self, rows: &[ItemRow]) -> Result<(), VaultError> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            &format!(
+        {
+            let mut archive = tx.prepare(&format!(
                 "INSERT OR IGNORE INTO item_history ({COLUMNS})
                  SELECT {COLUMNS} FROM items WHERE item_id = ?1"
-            ),
-            params![row.item_id.as_bytes()],
-        )?;
-        tx.execute(
-            &format!(
+            ))?;
+            let mut upsert = tx.prepare(&format!(
                 "INSERT INTO items ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (item_id) DO UPDATE SET
                      domain = excluded.domain,
@@ -129,17 +126,25 @@ impl Store {
                      deleted = excluded.deleted,
                      wrapped_dek = excluded.wrapped_dek,
                      ciphertext = excluded.ciphertext"
-            ),
-            params![
-                row.item_id.as_bytes(),
-                row.domain.as_u8(),
-                hlc,
-                row.device_id.as_bytes(),
-                row.payload.is_none(),
-                wrapped_dek,
-                ciphertext,
-            ],
-        )?;
+            ))?;
+            for row in rows {
+                let hlc = i64::try_from(row.hlc).map_err(|_| VaultError::ClockExhausted)?;
+                let (wrapped_dek, ciphertext) = match &row.payload {
+                    Some(payload) => (Some(&payload.wrapped_dek), Some(&payload.ciphertext)),
+                    None => (None, None),
+                };
+                archive.execute(params![row.item_id.as_bytes()])?;
+                upsert.execute(params![
+                    row.item_id.as_bytes(),
+                    row.domain.as_u8(),
+                    hlc,
+                    row.device_id.as_bytes(),
+                    row.payload.is_none(),
+                    wrapped_dek,
+                    ciphertext,
+                ])?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }
@@ -196,6 +201,23 @@ impl Store {
         let row = self.seal_version(key, item_id, &item.into_content())?;
         self.write_row(&row)?;
         Ok(item_id)
+    }
+
+    /// Stores several new items of one kind atomically and returns their
+    /// identifiers in order. Much faster than repeated [`Self::insert_item`] calls,
+    /// which each wait for the disk.
+    pub fn insert_items<I: Item>(
+        &mut self,
+        key: &VaultKey<I::Domain>,
+        items: impl IntoIterator<Item = I>,
+    ) -> Result<Vec<ItemId>, VaultError> {
+        let mut rows = Vec::new();
+        for item in items {
+            let item_id = ItemId::generate()?;
+            rows.push(self.seal_version(key, item_id, &item.into_content())?);
+        }
+        self.write_rows(&rows)?;
+        Ok(rows.iter().map(|row| row.item_id).collect())
     }
 
     /// Replaces the content of an existing item. The previous version is kept in
@@ -261,6 +283,19 @@ impl Store {
             let content = self.open_version(key, &row)?.ok_or_else(|| corrupt(()))?;
             items.push((row.item_id, content));
         }
+        Ok(items)
+    }
+
+    /// Decrypts the live items of domain `D` and returns those matching `query`
+    /// (see [`Content::matches`]). Matching happens in memory after decryption;
+    /// nothing searchable is stored in the clear.
+    pub fn search_items<D: Domain>(
+        &self,
+        key: &VaultKey<D>,
+        query: &str,
+    ) -> Result<Vec<(ItemId, Content)>, VaultError> {
+        let mut items = self.list_items(key)?;
+        items.retain(|(_, content)| content.matches(query));
         Ok(items)
     }
 
@@ -416,6 +451,90 @@ mod tests {
             f.store.get_item::<SecureNote>(&f.vk_p, id),
             Err(VaultError::WrongItemKind)
         ));
+    }
+
+    #[test]
+    fn many_items_are_inserted_atomically() {
+        let mut f = fixture();
+        let logins: Vec<Login> = (0..50).map(|n| login(&format!("pw-{n}"))).collect();
+        let ids = f.store.insert_items(&f.vk_p, logins.clone()).unwrap();
+        assert_eq!(ids.len(), 50);
+        for (id, expected) in ids.iter().zip(&logins) {
+            assert_eq!(&f.store.get_item::<Login>(&f.vk_p, *id).unwrap(), expected);
+        }
+        // Stamps are distinct and increasing in insertion order.
+        let stamps: Vec<u64> = ids
+            .iter()
+            .map(|id| f.store.current_row(*id).unwrap().unwrap().hlc)
+            .collect();
+        assert!(stamps.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(f.store.list_items(&f.vk_p).unwrap().len(), 50);
+        assert!(
+            f.store
+                .insert_items(&f.vk_p, Vec::<Login>::new())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_failed_batch_writes_nothing() {
+        let mut f = fixture();
+        let existing = f.store.insert_item(&f.vk_p, login("pw")).unwrap();
+        let mut rows = vec![f.store.current_row(existing).unwrap().unwrap()];
+        rows[0].item_id = ItemId::from_bytes([1; 16]);
+        // A second row that violates the schema (a clock stamp that does not fit).
+        let mut invalid = rows[0].clone();
+        invalid.item_id = ItemId::from_bytes([2; 16]);
+        invalid.hlc = u64::MAX;
+        rows.push(invalid);
+        assert!(matches!(
+            f.store.write_rows(&rows),
+            Err(VaultError::ClockExhausted)
+        ));
+        assert!(
+            f.store
+                .current_row(ItemId::from_bytes([1; 16]))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn search_matches_visible_fields_only() {
+        let mut f = fixture();
+        let bank = Login::new("My Bank", "alice@example.com", "secret-bank-pw")
+            .with_url("https://bank.example.com/login");
+        let bank_id = f.store.insert_item(&f.vk_p, bank).unwrap();
+        let note_id = f
+            .store
+            .insert_item(&f.vk_p, SecureNote::new("Bank PIN", "1234"))
+            .unwrap();
+        f.store
+            .insert_item(&f.vk_p, Login::new("Forum", "bob", "bank"))
+            .unwrap();
+
+        let ids = |query: &str| {
+            let mut ids: Vec<ItemId> = f
+                .store
+                .search_items(&f.vk_p, query)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mut both = vec![bank_id, note_id];
+        both.sort();
+        // Case-insensitive, on titles; the forum login only has "bank" as password.
+        assert_eq!(ids("BANK"), both);
+        assert_eq!(ids("alice@"), [bank_id]);
+        assert_eq!(ids("bank.example.com"), [bank_id]);
+        assert!(ids("secret-bank-pw").is_empty());
+        assert!(ids("1234").is_empty());
+        assert_eq!(ids("  ").len(), 3);
+        assert!(ids("no such thing").is_empty());
     }
 
     #[test]
