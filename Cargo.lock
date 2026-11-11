@@ -1329,6 +1329,10 @@ version = "0.0.0"
 [[package]]
 name = "zp-sync"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "zp-crypto",
+]
 
 [[package]]
 name = "zp-syncd"
@@ -1353,6 +1357,7 @@ dependencies = [
  "thiserror",
  "zeroize",
  "zp-crypto",
+ "zp-sync",
 ]
 
 [[package]]
