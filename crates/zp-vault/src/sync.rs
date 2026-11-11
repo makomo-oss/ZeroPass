@@ -150,3 +150,45 @@ impl OpLog for Store {
         Ok(report)
     }
 }
+
+/// A vault syncs through its file, whether or not any domain is unlocked.
+impl OpLog for crate::Vault {
+    type Error = VaultError;
+
+    fn vault_id(&self) -> VaultId {
+        Store::vault_id(&self.store)
+    }
+
+    fn device_id(&self) -> DeviceId {
+        Store::device_id(&self.store)
+    }
+
+    fn registry(&self) -> Result<Registry, VaultError> {
+        Store::registry(&self.store)
+    }
+
+    fn merge_registry(
+        &mut self,
+        records: Vec<DeviceRecord>,
+        revocations: Vec<Revocation>,
+    ) -> Result<bool, VaultError> {
+        self.store.merge_registry(records, revocations)
+    }
+
+    fn version_vector(&self) -> Result<VersionVector, VaultError> {
+        Store::version_vector(&self.store)
+    }
+
+    fn ops_after(
+        &self,
+        device: DeviceId,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Op>, VaultError> {
+        Store::ops_after(&self.store, device, after_seq, limit)
+    }
+
+    fn apply(&mut self, ops: Vec<Op>) -> Result<ApplyReport, VaultError> {
+        self.store.apply(ops)
+    }
+}
