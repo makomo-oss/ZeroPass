@@ -124,6 +124,12 @@ fn init_add_get_list_totp_and_lock() {
     let stderr = cli.fails(&["init"], &[PASSWORD, PASSWORD]);
     assert!(stderr.contains("already exists"), "{stderr}");
 
+    // devices: readable without unlocking anything
+    let out = cli.ok(&["devices"], &[]);
+    assert!(out.contains("this device"), "{out}");
+    assert!(out.contains("0 change(s) held"), "{out}");
+    assert!(out.contains("1 device(s)"), "{out}");
+
     // add: the master password is prompted first, then the item's secret
     let login_id = added_id(&cli.ok(
         &[
@@ -351,6 +357,15 @@ fn recovery_kit_restores_the_vault_in_a_new_location() {
     assert!(out.contains("password: login-password"), "{out}");
     let out = restored.ok(&["totp", &totp_id], &[]);
     assert!(out.contains("(valid for "), "{out}");
+
+    // The restored copy is a new device; the old one is revoked in its registry.
+    let out = restored.ok(&["devices"], &[]);
+    assert!(
+        out.contains("revoked") && out.contains("this device"),
+        "{out}"
+    );
+    assert!(out.contains("2 device(s)"), "{out}");
+    assert!(cli.ok(&["devices"], &[]).contains("1 device(s)"));
 
     // The original device is unaffected.
     assert!(cli.ok(&["list"], &[PASSWORD]).contains("1 item(s)"));
