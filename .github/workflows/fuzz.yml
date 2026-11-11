@@ -2,8 +2,13 @@ name: Fuzz
 
 on:
   pull_request:
+    # Changes to the targets themselves. The lock file is left out on purpose:
+    # it changes whenever a workspace dependency does, and the weekly run covers
+    # those.
     paths:
-      - "fuzz/**"
+      - "fuzz/fuzz_targets/**"
+      - "fuzz/seeds/**"
+      - "fuzz/Cargo.toml"
       - ".github/workflows/fuzz.yml"
   schedule:
     # Weekly, after the Monday CI run.

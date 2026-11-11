@@ -59,6 +59,18 @@ pub enum VaultError {
     /// No further version stamps can be issued.
     #[error("the version clock is exhausted")]
     ClockExhausted,
+    /// This device has no identity yet (a vault file from an earlier format that
+    /// has not been unlocked since).
+    #[error("this device has no identity yet; unlock the vault once")]
+    NotProvisioned,
+    /// The device signing key is not available to this domain yet.
+    #[error(
+        "the device signing key is not available to the {0:?} domain; unlock the password domain together with it once"
+    )]
+    DeviceKeyUnavailable(zp_crypto::DomainId),
+    /// A sync rule was violated.
+    #[error(transparent)]
+    Sync(#[from] zp_sync::SyncError),
     /// A decrypted item could not be parsed.
     #[error("the item content is malformed")]
     MalformedItem,

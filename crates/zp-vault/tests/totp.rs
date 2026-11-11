@@ -24,6 +24,7 @@ fn a_totp_code_requires_the_totp_domain_to_be_unlocked() {
     let options = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: Some(clock.clone()),
+        device_name: None,
     };
 
     let mut vault = Vault::create(&path, PASSWORD, Some(&hardware), options).unwrap();
@@ -84,6 +85,7 @@ fn an_invalid_stored_entry_is_reported() {
     let options = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: None,
+        device_name: None,
     };
     let mut vault = Vault::create(
         &dir.path().join("v.zpvault"),

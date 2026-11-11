@@ -4,6 +4,7 @@
 //! never gain a networking dependency (see ADR-0004).
 
 mod clock;
+mod device;
 mod error;
 mod items;
 mod keyslots;
@@ -15,6 +16,7 @@ pub mod totp;
 mod vault;
 
 pub use clock::Clock;
+pub use device::default_device_name;
 pub use error::VaultError;
 pub use items::HistoryEntry;
 pub use schema::SCHEMA_VERSION;

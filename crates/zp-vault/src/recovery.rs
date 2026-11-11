@@ -14,6 +14,7 @@ use zp_crypto::{
 };
 
 use crate::clock::Clock;
+use crate::device::default_device_name;
 use crate::keyslots::{PlainSlot, SlotKind};
 use crate::vault::{Keys, check_master_password, new_password_slot};
 use crate::{AutoLock, CreateOptions, KdfChoice, Store, Vault, VaultError};
@@ -173,7 +174,17 @@ impl Vault {
             .collect();
 
         store.write_slots(Some(&password_slot), &plain)?;
-        store.assign_new_device_id()?;
+        // The restored copy is a new device with its own identity.
+        let device_name = options.device_name.unwrap_or_else(default_device_name);
+        let signer = store.become_new_device(&device_name)?;
+        let now_ms = store.now_ms();
+        store.add_device_key_slot(&signer, keys.get::<Password>(now_ms)?)?;
+        if keys.is_unlocked(DomainId::Totp) {
+            store.add_device_key_slot(&signer, keys.get::<Totp>(now_ms)?)?;
+        }
+        if keys.is_unlocked(DomainId::Passkey) {
+            store.add_device_key_slot(&signer, keys.get::<Passkey>(now_ms)?)?;
+        }
         Ok(Self {
             store,
             keys,

@@ -27,6 +27,9 @@ pub enum CryptoError {
     /// Key derivation failed (for example, the memory could not be allocated).
     #[error("key derivation failed")]
     Kdf,
+    /// A signature does not match the message and public key.
+    #[error("signature verification failed")]
+    BadSignature,
     /// The recovery key code is malformed or mistyped.
     #[error("the recovery key is not valid; check it for typing mistakes")]
     InvalidRecoveryKey,

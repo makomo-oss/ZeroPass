@@ -16,11 +16,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use zp_crypto::{
-    CryptoError, DeviceId, Domain, DomainId, HardwareBound, HardwareKeyError, HardwareKeyStore,
-    ItemId, KdfParams, Passkey, Password, Totp, VaultId, VaultKey, derive_password_kek, rng,
+    CryptoError, DeviceId, DeviceSigningKey, Domain, DomainId, HardwareBound, HardwareKeyError,
+    HardwareKeyStore, ItemId, KdfParams, Passkey, Password, Totp, VaultId, VaultKey,
+    derive_password_kek, rng,
 };
 
 use crate::clock::Clock;
+use crate::device::default_device_name;
 use crate::keyslots::{PasswordSlot, PlainSlot, SlotKind};
 use crate::model::{Content, Item, TotpEntry};
 use crate::totp::{self, TotpCode};
@@ -66,6 +68,8 @@ pub struct CreateOptions {
     pub kdf: KdfChoice,
     /// Time source; the system clock if `None`.
     pub clock: Option<Clock>,
+    /// Name of this device in the registry; taken from the environment if `None`.
+    pub device_name: Option<String>,
 }
 
 /// Idle timeouts after which a domain locks itself. `None` disables the timeout.
@@ -131,7 +135,7 @@ impl Keys {
         self.0[Self::index(domain)] = None;
     }
 
-    fn is_unlocked(&self, domain: DomainId) -> bool {
+    pub(crate) fn is_unlocked(&self, domain: DomainId) -> bool {
         self.0[Self::index(domain)].is_some()
     }
 
@@ -219,7 +223,8 @@ impl Vault {
         }
         let clock = options.clock.unwrap_or_else(Clock::system);
         let store = Store::create_with_clock(path, clock)?;
-        let result = Self::initialise(store, master_password, hardware, options.kdf);
+        let device_name = options.device_name.unwrap_or_else(default_device_name);
+        let result = Self::initialise(store, master_password, hardware, options.kdf, &device_name);
         if result.is_err() {
             // A vault without key slots is useless; do not leave it behind.
             let _ = std::fs::remove_file(path);
@@ -232,15 +237,15 @@ impl Vault {
         master_password: &str,
         hardware: Option<&dyn HardwareKeyStore>,
         kdf: KdfChoice,
+        device_name: &str,
     ) -> Result<Self, VaultError> {
         let vault_id = store.vault_id();
         let now_ms = store.now_ms();
-        let mut keys = Keys::default();
 
         let vk_p = VaultKey::<Password>::generate()?;
         let password_slot = new_password_slot(&vk_p, &vault_id, master_password, kdf)?;
-        keys.insert(vk_p, now_ms);
 
+        let mut hardware_keys = None;
         let mut hardware_slots = Vec::new();
         if let Some(hardware) = hardware {
             let vk_t = VaultKey::<Totp>::generate()?;
@@ -253,8 +258,7 @@ impl Vault {
                 DomainId::Passkey,
                 vk_k.wrap_with_hardware(hardware, &vault_id)?,
             ));
-            keys.insert(vk_t, now_ms);
-            keys.insert(vk_k, now_ms);
+            hardware_keys = Some((vk_t, vk_k));
         }
         let plain: Vec<PlainSlot<'_>> = hardware_slots
             .iter()
@@ -265,6 +269,18 @@ impl Vault {
             })
             .collect();
         store.write_slots(Some(&password_slot), &plain)?;
+
+        // This device's identity: every domain can sign what it writes.
+        let signer = store.provision_device(device_name)?;
+        store.add_device_key_slot(&signer, &vk_p)?;
+        let mut keys = Keys::default();
+        keys.insert(vk_p, now_ms);
+        if let Some((vk_t, vk_k)) = hardware_keys {
+            store.add_device_key_slot(&signer, &vk_t)?;
+            store.add_device_key_slot(&signer, &vk_k)?;
+            keys.insert(vk_t, now_ms);
+            keys.insert(vk_k, now_ms);
+        }
 
         Ok(Self {
             store,
@@ -322,11 +338,59 @@ impl Vault {
         })
     }
 
+    /// The device signing key, taken from domain `D` if it is unlocked and has a
+    /// slot for it.
+    fn signer_from<D: Domain>(&mut self) -> Result<Option<DeviceSigningKey>, VaultError> {
+        if !self.keys.is_unlocked(D::ID) || !self.store.has_device_key_slot(D::ID)? {
+            return Ok(None);
+        }
+        let key = self.keys.get::<D>(self.store.now_ms())?;
+        self.store.signer(key).map(Some)
+    }
+
+    /// Gives domain `D` a slot for the device signing key if it is unlocked and
+    /// lacks one.
+    fn give_device_key<D: Domain>(&mut self, signer: &DeviceSigningKey) -> Result<(), VaultError> {
+        if self.keys.is_unlocked(D::ID) && !self.store.has_device_key_slot(D::ID)? {
+            let key = self.keys.get::<D>(self.store.now_ms())?;
+            self.store.add_device_key_slot(signer, key)?;
+        }
+        Ok(())
+    }
+
+    /// Runs after domain `D` has been unlocked. Completes what a vault file
+    /// written by an earlier format lacks: the device identity, the device
+    /// signing key for every unlocked domain, and signatures on this device's
+    /// earlier versions in `D`. A no-op for up-to-date vaults.
+    fn after_unlock<D: Domain>(&mut self) -> Result<(), VaultError> {
+        if !self.store.is_provisioned()? {
+            let signer = self.store.provision_device(&default_device_name())?;
+            self.give_device_key::<D>(&signer)?;
+        }
+        let signer = match self.signer_from::<Password>()? {
+            Some(signer) => Some(signer),
+            None => match self.signer_from::<Totp>()? {
+                Some(signer) => Some(signer),
+                None => self.signer_from::<Passkey>()?,
+            },
+        };
+        if let Some(signer) = signer {
+            self.give_device_key::<Password>(&signer)?;
+            self.give_device_key::<Totp>(&signer)?;
+            self.give_device_key::<Passkey>(&signer)?;
+        }
+        if self.store.has_device_key_slot(D::ID)? {
+            let key = self.keys.get::<D>(self.store.now_ms())?;
+            self.store.sign_unsigned(key)?;
+        }
+        Ok(())
+    }
+
     /// Unlocks the password domain, and only the password domain.
     pub fn unlock_password(&mut self, master_password: &str) -> Result<(), VaultError> {
         let key = self.open_password_slot(master_password)?;
         self.keys.insert(key, self.store.now_ms());
-        Ok(())
+        self.after_unlock::<Password>()
     }
 
     /// Whether this vault has domain `domain` at all. The TOTP and passkey
@@ -352,7 +416,7 @@ impl Vault {
             .ok_or(VaultError::DomainUnavailable(D::ID))?;
         let key = VaultKey::<D>::unwrap_with_hardware(hardware, &self.store.vault_id(), &slot)?;
         self.keys.insert(key, self.store.now_ms());
-        Ok(())
+        self.after_unlock::<D>()
     }
 
     /// Locks one domain, wiping its key from memory.
@@ -476,8 +540,8 @@ impl Vault {
 
     /// Deletes an item of domain `D`. The domain must be unlocked.
     pub fn delete<D: Domain>(&mut self, item_id: ItemId) -> Result<(), VaultError> {
-        Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
-        self.store.delete_item::<D>(item_id)
+        let key = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
+        self.store.delete_item(key, item_id)
     }
 
     /// Generates the current one-time code of a TOTP entry. The TOTP domain must
