@@ -1,4 +1,4 @@
-//! Encrypted item storage (`docs/spec/crypto.md` §9).
+//! Encrypted item storage (`docs/spec/crypto.md` §9, `docs/spec/sync.md` §2).
 //!
 //! Every write creates a new version of an item with a fresh item key:
 //!
@@ -7,12 +7,19 @@
 //! wrapped_dek = seal(VK-D, AAD_dek,  DEK)
 //! ```
 //!
-//! The previous version moves to the history table, and deletion is recorded as a
-//! tombstone version without payload. Callers pass the vault key of the item's
-//! domain for the duration of each call; this module never stores it.
+//! Each version is an *op*: it carries this device's next sequence number and is
+//! signed with the device signing key, so that other devices can verify it
+//! without any vault key. The previous version moves to the history table, and
+//! deletion is recorded as a tombstone version without payload. Callers pass the
+//! vault key of the item's domain for the duration of each call; this module
+//! never stores it.
 
-use rusqlite::{OptionalExtension, Row, params};
-use zp_crypto::{DeviceId, Domain, DomainId, ItemContext, ItemId, ItemKey, VaultKey};
+use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params};
+use zp_crypto::{
+    DeviceId, DeviceSigningKey, Domain, DomainId, ItemContext, ItemId, ItemKey, SignatureBytes,
+    VaultId, VaultKey,
+};
+use zp_sync::{Hlc, Op, OpBody, Payload};
 
 use crate::model::{Content, Item};
 use crate::{Store, VaultError};
@@ -24,15 +31,37 @@ pub(crate) struct ItemRow {
     pub(crate) domain: DomainId,
     pub(crate) hlc: u64,
     pub(crate) device_id: DeviceId,
+    /// The author's sequence number of this version.
+    pub(crate) seq: u64,
+    /// The generation of the vault key wrapping the item key.
+    pub(crate) key_epoch: u32,
     /// `None` for a tombstone.
     pub(crate) payload: Option<Payload>,
+    /// `None` only for versions written before ops were signed, until this
+    /// device signs them at its next unlock.
+    pub(crate) signature: Option<SignatureBytes>,
 }
 
-/// The encrypted part of a live item version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Payload {
-    pub(crate) wrapped_dek: Vec<u8>,
-    pub(crate) ciphertext: Vec<u8>,
+impl ItemRow {
+    pub(crate) fn body(&self) -> OpBody {
+        OpBody {
+            device_id: self.device_id,
+            seq: self.seq,
+            item_id: self.item_id,
+            domain: self.domain,
+            hlc: self.hlc,
+            key_epoch: self.key_epoch,
+            payload: self.payload.clone(),
+        }
+    }
+
+    /// The row as a signed op, if it has been signed.
+    pub(crate) fn to_op(&self) -> Option<Op> {
+        self.signature.map(|signature| Op {
+            body: self.body(),
+            signature,
+        })
+    }
 }
 
 /// A superseded version of an item.
@@ -46,13 +75,14 @@ pub struct HistoryEntry {
     pub content: Option<Content>,
 }
 
-const COLUMNS: &str = "item_id, domain, hlc, device_id, deleted, wrapped_dek, ciphertext";
+pub(crate) const COLUMNS: &str =
+    "item_id, domain, hlc, device_id, deleted, wrapped_dek, ciphertext, seq, key_epoch, signature";
 
 fn corrupt(_: impl Sized) -> VaultError {
     VaultError::Corrupt("malformed item row")
 }
 
-fn read_row(row: &Row<'_>) -> Result<Result<ItemRow, VaultError>, rusqlite::Error> {
+pub(crate) fn read_row(row: &Row<'_>) -> Result<Result<ItemRow, VaultError>, rusqlite::Error> {
     let item_id: Vec<u8> = row.get(0)?;
     let domain: u8 = row.get(1)?;
     let hlc: i64 = row.get(2)?;
@@ -60,6 +90,9 @@ fn read_row(row: &Row<'_>) -> Result<Result<ItemRow, VaultError>, rusqlite::Erro
     let deleted: bool = row.get(4)?;
     let wrapped_dek: Option<Vec<u8>> = row.get(5)?;
     let ciphertext: Option<Vec<u8>> = row.get(6)?;
+    let seq: i64 = row.get(7)?;
+    let key_epoch: u32 = row.get(8)?;
+    let signature: Option<Vec<u8>> = row.get(9)?;
 
     Ok((|| {
         let payload = match (deleted, wrapped_dek, ciphertext) {
@@ -75,102 +108,246 @@ fn read_row(row: &Row<'_>) -> Result<Result<ItemRow, VaultError>, rusqlite::Erro
             domain: DomainId::from_u8(domain).ok_or_else(|| corrupt(()))?,
             hlc: u64::try_from(hlc).map_err(corrupt)?,
             device_id: DeviceId::from_slice(&device_id).ok_or_else(|| corrupt(()))?,
+            seq: u64::try_from(seq).map_err(corrupt)?,
+            key_epoch,
             payload,
+            signature: signature
+                .map(|bytes| bytes.try_into().map_err(corrupt))
+                .transpose()?,
         })
     })())
 }
 
-impl Store {
-    fn context(&self, row: &ItemRow) -> ItemContext {
-        ItemContext {
-            vault_id: self.vault_id(),
-            item_id: row.item_id,
-            hlc: row.hlc,
-            device_id: row.device_id,
-        }
+fn context(vault_id: VaultId, row: &ItemRow) -> ItemContext {
+    ItemContext {
+        vault_id,
+        item_id: row.item_id,
+        hlc: row.hlc,
+        device_id: row.device_id,
     }
+}
 
+/// Reads the current version of an item, tombstones included.
+pub(crate) fn current_row(
+    conn: &rusqlite::Connection,
+    item_id: ItemId,
+) -> Result<Option<ItemRow>, VaultError> {
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM items WHERE item_id = ?1"),
+        params![item_id.as_bytes()],
+        read_row,
+    )
+    .optional()?
+    .transpose()
+}
+
+/// Inserts a version into `table` (`items` or `item_history`).
+pub(crate) fn insert_version(
+    tx: &Transaction<'_>,
+    table: &str,
+    row: &ItemRow,
+) -> Result<(), VaultError> {
+    let hlc = i64::try_from(row.hlc).map_err(|_| VaultError::ClockExhausted)?;
+    let seq = i64::try_from(row.seq).map_err(|_| VaultError::Corrupt("sequence overflow"))?;
+    let (wrapped_dek, ciphertext) = match &row.payload {
+        Some(payload) => (Some(&payload.wrapped_dek), Some(&payload.ciphertext)),
+        None => (None, None),
+    };
+    tx.prepare_cached(&format!(
+        "INSERT INTO {table} ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+    ))?
+    .execute(params![
+        row.item_id.as_bytes(),
+        row.domain.as_u8(),
+        hlc,
+        row.device_id.as_bytes(),
+        row.payload.is_none(),
+        wrapped_dek,
+        ciphertext,
+        seq,
+        row.key_epoch,
+        row.signature.as_ref().map(|signature| signature.as_slice()),
+    ])?;
+    Ok(())
+}
+
+/// Makes `row` the current version of its item, moving the version it replaces
+/// (if any) to the history.
+pub(crate) fn make_current(tx: &Transaction<'_>, row: &ItemRow) -> Result<(), VaultError> {
+    tx.prepare_cached(&format!(
+        "INSERT INTO item_history ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE item_id = ?1"
+    ))?
+    .execute(params![row.item_id.as_bytes()])?;
+    tx.prepare_cached("DELETE FROM items WHERE item_id = ?1")?
+        .execute(params![row.item_id.as_bytes()])?;
+    insert_version(tx, "items", row)
+}
+
+/// The newest clock stamp this vault has issued or received.
+pub(crate) fn hlc_max(conn: &rusqlite::Connection) -> Result<u64, VaultError> {
+    let stamp: i64 = conn.query_row("SELECT hlc_max FROM sync_state WHERE id = 1", [], |row| {
+        row.get(0)
+    })?;
+    u64::try_from(stamp).map_err(|_| VaultError::Corrupt("negative clock stamp"))
+}
+
+pub(crate) fn set_hlc_max(tx: &Transaction<'_>, stamp: u64) -> Result<(), VaultError> {
+    let stamp = i64::try_from(stamp).map_err(|_| VaultError::ClockExhausted)?;
+    tx.execute(
+        "UPDATE sync_state SET hlc_max = max(hlc_max, ?1) WHERE id = 1",
+        params![stamp],
+    )?;
+    Ok(())
+}
+
+/// The highest sequence number held from `device` (0 if none).
+pub(crate) fn held_seq(conn: &rusqlite::Connection, device: DeviceId) -> Result<u64, VaultError> {
+    let seq: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM version_vector WHERE device_id = ?1",
+            params![device.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    u64::try_from(seq.unwrap_or(0)).map_err(|_| VaultError::Corrupt("negative sequence number"))
+}
+
+pub(crate) fn set_held_seq(
+    tx: &Transaction<'_>,
+    device: DeviceId,
+    seq: u64,
+) -> Result<(), VaultError> {
+    let seq = i64::try_from(seq).map_err(|_| VaultError::Corrupt("sequence overflow"))?;
+    tx.execute(
+        "INSERT INTO version_vector (device_id, seq) VALUES (?1, ?2)
+         ON CONFLICT (device_id) DO UPDATE SET seq = excluded.seq",
+        params![device.as_bytes(), seq],
+    )?;
+    Ok(())
+}
+
+/// What a local write does to one item.
+enum Change {
+    /// Create a new item with this content.
+    Create(Content),
+    /// Replace the content of an existing live item.
+    Update(ItemId, Content),
+    /// Delete an existing live item.
+    Delete(ItemId),
+}
+
+impl Store {
     /// Reads the current version of an item, tombstones included.
     pub(crate) fn current_row(&self, item_id: ItemId) -> Result<Option<ItemRow>, VaultError> {
-        self.conn
-            .query_row(
-                &format!("SELECT {COLUMNS} FROM items WHERE item_id = ?1"),
-                params![item_id.as_bytes()],
-                read_row,
-            )
-            .optional()?
-            .transpose()
+        current_row(&self.conn, item_id)
     }
 
-    /// Makes `row` the current version of its item, moving the version it replaces
-    /// (if any) to the history. Both happen in one transaction.
-    pub(crate) fn write_row(&mut self, row: &ItemRow) -> Result<(), VaultError> {
-        self.write_rows(std::slice::from_ref(row))
-    }
-
-    /// Writes several item versions in a single transaction: either all of them
-    /// become current, or none.
-    pub(crate) fn write_rows(&mut self, rows: &[ItemRow]) -> Result<(), VaultError> {
-        let tx = self.conn.transaction()?;
-        {
-            let mut archive = tx.prepare(&format!(
-                "INSERT OR IGNORE INTO item_history ({COLUMNS})
-                 SELECT {COLUMNS} FROM items WHERE item_id = ?1"
-            ))?;
-            let mut upsert = tx.prepare(&format!(
-                "INSERT INTO items ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT (item_id) DO UPDATE SET
-                     domain = excluded.domain,
-                     hlc = excluded.hlc,
-                     device_id = excluded.device_id,
-                     deleted = excluded.deleted,
-                     wrapped_dek = excluded.wrapped_dek,
-                     ciphertext = excluded.ciphertext"
-            ))?;
-            for row in rows {
-                let hlc = i64::try_from(row.hlc).map_err(|_| VaultError::ClockExhausted)?;
-                let (wrapped_dek, ciphertext) = match &row.payload {
-                    Some(payload) => (Some(&payload.wrapped_dek), Some(&payload.ciphertext)),
-                    None => (None, None),
-                };
-                archive.execute(params![row.item_id.as_bytes()])?;
-                upsert.execute(params![
-                    row.item_id.as_bytes(),
-                    row.domain.as_u8(),
-                    hlc,
-                    row.device_id.as_bytes(),
-                    row.payload.is_none(),
-                    wrapped_dek,
-                    ciphertext,
-                ])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Encrypts `content` as a new version of `item_id`.
-    fn seal_version<D: Domain>(
+    /// Applies local changes to items of domain `D` as new signed versions, all in
+    /// one transaction. Returns the item identifiers in order.
+    ///
+    /// The clock stamp and sequence number of each version are taken inside the
+    /// transaction, so concurrent writers (another process on the same file)
+    /// cannot issue duplicates.
+    fn write_local<D: Domain>(
         &mut self,
         key: &VaultKey<D>,
-        item_id: ItemId,
-        content: &Content,
-    ) -> Result<ItemRow, VaultError> {
-        debug_assert_eq!(content.kind().domain(), D::ID);
-        let mut row = ItemRow {
-            item_id,
-            domain: D::ID,
-            hlc: self.next_hlc()?,
-            device_id: self.device_id(),
-            payload: None,
-        };
-        let ctx = self.context(&row);
-        let dek = ItemKey::<D>::generate()?;
-        row.payload = Some(Payload {
-            ciphertext: dek.seal_item(&ctx, &content.to_plaintext())?,
-            wrapped_dek: key.wrap_item_key(&dek, &ctx)?,
-        });
-        Ok(row)
+        changes: Vec<Change>,
+    ) -> Result<Vec<ItemId>, VaultError> {
+        let signer = self.signer(key)?;
+        let (vault_id, device_id, now_ms) = (self.vault_id(), self.device_id(), self.now_ms());
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut clock = Hlc::resume_after(hlc_max(&tx)?);
+        let mut seq = held_seq(&tx, device_id)?;
+        let mut ids = Vec::with_capacity(changes.len());
+
+        for change in changes {
+            let (item_id, content, must_exist) = match change {
+                Change::Create(content) => (ItemId::generate()?, Some(content), false),
+                Change::Update(item_id, content) => (item_id, Some(content), true),
+                Change::Delete(item_id) => (item_id, None, true),
+            };
+            if let Some(content) = &content {
+                debug_assert_eq!(content.kind().domain(), D::ID);
+            }
+            // Updates and deletions need a live item of this domain.
+            if must_exist {
+                let current = current_row(&tx, item_id)?
+                    .filter(|row| row.payload.is_some())
+                    .ok_or(VaultError::ItemNotFound)?;
+                if current.domain != D::ID {
+                    return Err(VaultError::DomainMismatch);
+                }
+            }
+
+            seq += 1;
+            let mut row = ItemRow {
+                item_id,
+                domain: D::ID,
+                hlc: clock.tick(now_ms).ok_or(VaultError::ClockExhausted)?,
+                device_id,
+                seq,
+                key_epoch: 1,
+                payload: None,
+                signature: None,
+            };
+            if let Some(content) = content {
+                let ctx = context(vault_id, &row);
+                let dek = ItemKey::<D>::generate()?;
+                row.payload = Some(Payload {
+                    ciphertext: dek.seal_item(&ctx, &content.to_plaintext())?,
+                    wrapped_dek: key.wrap_item_key(&dek, &ctx)?,
+                });
+            }
+            sign_row(&mut row, &vault_id, &signer);
+            make_current(&tx, &row)?;
+            ids.push(item_id);
+        }
+
+        set_hlc_max(&tx, clock.last())?;
+        set_held_seq(&tx, device_id, seq)?;
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    /// The signed ops authored by `device` with sequence numbers above
+    /// `after_seq`, in order, at most `limit` of them.
+    ///
+    /// The result is always a gap-free run starting at `after_seq + 1`: it ends
+    /// early at a version this device has not signed yet (see
+    /// [`Store::sign_unsigned`]), because later ops cannot be applied without it.
+    pub fn ops_after(
+        &self,
+        device: DeviceId,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<Op>, VaultError> {
+        let after = i64::try_from(after_seq).unwrap_or(i64::MAX);
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT {COLUMNS} FROM (
+                 SELECT {COLUMNS} FROM items WHERE device_id = ?1 AND seq > ?2
+                 UNION ALL
+                 SELECT {COLUMNS} FROM item_history WHERE device_id = ?1 AND seq > ?2)
+             ORDER BY seq LIMIT ?3"
+        ))?;
+        let rows = statement.query_map(params![device.as_bytes(), after, limit], read_row)?;
+
+        let mut ops = Vec::new();
+        // `None` once the sequence numbers are exhausted.
+        let mut next = after_seq.checked_add(1);
+        for row in rows {
+            let row = row??;
+            let Some(expected) = next else { break };
+            let Some(op) = row.to_op().filter(|op| op.body.seq == expected) else {
+                break;
+            };
+            ops.push(op);
+            next = expected.checked_add(1);
+        }
+        Ok(ops)
     }
 
     /// Decrypts a stored version. Returns `None` for a tombstone.
@@ -185,7 +362,7 @@ impl Store {
         let Some(payload) = &row.payload else {
             return Ok(None);
         };
-        let ctx = self.context(row);
+        let ctx = context(self.vault_id(), row);
         let dek = key.unwrap_item_key(&ctx, &payload.wrapped_dek)?;
         let plaintext = dek.open_item(&ctx, &payload.ciphertext)?;
         Content::from_plaintext(&plaintext, row.domain).map(Some)
@@ -197,10 +374,8 @@ impl Store {
         key: &VaultKey<I::Domain>,
         item: I,
     ) -> Result<ItemId, VaultError> {
-        let item_id = ItemId::generate()?;
-        let row = self.seal_version(key, item_id, &item.into_content())?;
-        self.write_row(&row)?;
-        Ok(item_id)
+        let ids = self.write_local(key, vec![Change::Create(item.into_content())])?;
+        Ok(ids[0])
     }
 
     /// Stores several new items of one kind atomically and returns their
@@ -211,13 +386,11 @@ impl Store {
         key: &VaultKey<I::Domain>,
         items: impl IntoIterator<Item = I>,
     ) -> Result<Vec<ItemId>, VaultError> {
-        let mut rows = Vec::new();
-        for item in items {
-            let item_id = ItemId::generate()?;
-            rows.push(self.seal_version(key, item_id, &item.into_content())?);
-        }
-        self.write_rows(&rows)?;
-        Ok(rows.iter().map(|row| row.item_id).collect())
+        let changes = items
+            .into_iter()
+            .map(|item| Change::Create(item.into_content()))
+            .collect();
+        self.write_local(key, changes)
     }
 
     /// Replaces the content of an existing item. The previous version is kept in
@@ -232,18 +405,25 @@ impl Store {
         item_id: ItemId,
         item: I,
     ) -> Result<(), VaultError> {
-        let current = self.live_row(item_id)?;
-        if current.domain != I::Domain::ID {
-            return Err(VaultError::DomainMismatch);
-        }
-        let row = self.seal_version(key, item_id, &item.into_content())?;
-        self.write_row(&row)
+        // Report a missing item or a foreign domain before touching any key.
+        self.live_row_of::<I::Domain>(item_id)?;
+        self.write_local(key, vec![Change::Update(item_id, item.into_content())])?;
+        Ok(())
     }
 
     fn live_row(&self, item_id: ItemId) -> Result<ItemRow, VaultError> {
         self.current_row(item_id)?
             .filter(|row| row.payload.is_some())
             .ok_or(VaultError::ItemNotFound)
+    }
+
+    fn live_row_of<D: Domain>(&self, item_id: ItemId) -> Result<ItemRow, VaultError> {
+        let row = self.live_row(item_id)?;
+        if row.domain == D::ID {
+            Ok(row)
+        } else {
+            Err(VaultError::DomainMismatch)
+        }
     }
 
     /// Reads and decrypts an item of kind `I`.
@@ -299,22 +479,16 @@ impl Store {
         Ok(items)
     }
 
-    /// Deletes an item by recording a tombstone version. The deleted content stays
-    /// in the history. No key is needed, but the caller names the domain so that a
-    /// component holding only one domain cannot delete another domain's items.
-    pub fn delete_item<D: Domain>(&mut self, item_id: ItemId) -> Result<(), VaultError> {
-        let current = self.live_row(item_id)?;
-        if current.domain != D::ID {
-            return Err(VaultError::DomainMismatch);
-        }
-        let tombstone = ItemRow {
-            item_id,
-            domain: D::ID,
-            hlc: self.next_hlc()?,
-            device_id: self.device_id(),
-            payload: None,
-        };
-        self.write_row(&tombstone)
+    /// Deletes an item by recording a signed tombstone version. The deleted
+    /// content stays in the history.
+    pub fn delete_item<D: Domain>(
+        &mut self,
+        key: &VaultKey<D>,
+        item_id: ItemId,
+    ) -> Result<(), VaultError> {
+        self.live_row_of::<D>(item_id)?;
+        self.write_local(key, vec![Change::Delete(item_id)])?;
+        Ok(())
     }
 
     /// The superseded versions of an item, newest first. The current version is
@@ -342,6 +516,11 @@ impl Store {
     }
 }
 
+/// Signs a row as an op of this device.
+pub(crate) fn sign_row(row: &mut ItemRow, vault_id: &VaultId, signer: &DeviceSigningKey) {
+    row.signature = Some(signer.sign(&row.body().signing_message(vault_id)));
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -366,13 +545,23 @@ mod tests {
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.zpvault");
+        let (vk_p, vk_t, vk_k) = (
+            VaultKey::<Password>::generate().unwrap(),
+            VaultKey::<Totp>::generate().unwrap(),
+            VaultKey::<Passkey>::generate().unwrap(),
+        );
+        let mut store = Store::create(&path).unwrap();
+        let signer = store.provision_device("test device").unwrap();
+        store.add_device_key_slot(&signer, &vk_p).unwrap();
+        store.add_device_key_slot(&signer, &vk_t).unwrap();
+        store.add_device_key_slot(&signer, &vk_k).unwrap();
         Fixture {
-            store: Store::create(&path).unwrap(),
+            store,
             path,
             _dir: dir,
-            vk_p: VaultKey::generate().unwrap(),
-            vk_t: VaultKey::generate().unwrap(),
-            vk_k: VaultKey::generate().unwrap(),
+            vk_p,
+            vk_t,
+            vk_k,
         }
     }
 
@@ -480,24 +669,19 @@ mod tests {
     #[test]
     fn a_failed_batch_writes_nothing() {
         let mut f = fixture();
-        let existing = f.store.insert_item(&f.vk_p, login("pw")).unwrap();
-        let mut rows = vec![f.store.current_row(existing).unwrap().unwrap()];
-        rows[0].item_id = ItemId::from_bytes([1; 16]);
-        // A second row that violates the schema (a clock stamp that does not fit).
-        let mut invalid = rows[0].clone();
-        invalid.item_id = ItemId::from_bytes([2; 16]);
-        invalid.hlc = u64::MAX;
-        rows.push(invalid);
+        f.store.insert_item(&f.vk_p, login("pw")).unwrap();
+        let vector_before = f.store.version_vector().unwrap();
+        // The second change refers to an item that does not exist.
+        let changes = vec![
+            Change::Create(login("new").into_content()),
+            Change::Delete(ItemId::from_bytes([9; 16])),
+        ];
         assert!(matches!(
-            f.store.write_rows(&rows),
-            Err(VaultError::ClockExhausted)
+            f.store.write_local(&f.vk_p, changes),
+            Err(VaultError::ItemNotFound)
         ));
-        assert!(
-            f.store
-                .current_row(ItemId::from_bytes([1; 16]))
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(f.store.list_items(&f.vk_p).unwrap().len(), 1);
+        assert_eq!(f.store.version_vector().unwrap(), vector_before);
     }
 
     #[test]
@@ -538,6 +722,173 @@ mod tests {
     }
 
     #[test]
+    fn every_write_is_a_signed_op_with_the_next_sequence_number() {
+        let mut f = fixture();
+        let device = f.store.device_id();
+        let vault_id = f.store.vault_id();
+        let author = *f.store.registry().unwrap().sign_pk(&device).unwrap();
+        assert_eq!(f.store.version_vector().unwrap().get(&device), 0);
+
+        let login_id = f.store.insert_item(&f.vk_p, login("pw-1")).unwrap();
+        f.store
+            .update_item(&f.vk_p, login_id, login("pw-2"))
+            .unwrap();
+        let totp_id = f
+            .store
+            .insert_item(&f.vk_t, TotpEntry::new("Example", "a", vec![1; 20]))
+            .unwrap();
+        f.store.delete_item(&f.vk_p, login_id).unwrap();
+        f.store
+            .insert_items(&f.vk_k, vec![passkey(), passkey()])
+            .unwrap();
+
+        assert_eq!(f.store.version_vector().unwrap().get(&device), 6);
+        let ops = f.store.ops_after(device, 0, 100).unwrap();
+        assert_eq!(
+            ops.iter().map(|op| op.body.seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        // Clock stamps increase along with the sequence numbers.
+        assert!(
+            ops.windows(2)
+                .all(|pair| pair[0].body.hlc < pair[1].body.hlc)
+        );
+        for op in &ops {
+            assert_eq!(op.body.device_id, device);
+            assert_eq!(op.body.key_epoch, 1);
+            op.verify(&vault_id, &author).unwrap();
+        }
+
+        // What each op is: create, update, create (TOTP), tombstone, two passkeys.
+        let shape: Vec<_> = ops
+            .iter()
+            .map(|op| {
+                (
+                    op.body.item_id == login_id,
+                    op.body.domain,
+                    op.body.payload.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (true, DomainId::Password, true),
+                (true, DomainId::Password, true),
+                (false, DomainId::Totp, true),
+                (true, DomainId::Password, false),
+                (false, DomainId::Passkey, true),
+                (false, DomainId::Passkey, true),
+            ]
+        );
+        assert_eq!(ops[2].body.item_id, totp_id);
+    }
+
+    #[test]
+    fn ops_after_returns_the_requested_run() {
+        let mut f = fixture();
+        let device = f.store.device_id();
+        f.store
+            .insert_items(&f.vk_p, (0..10).map(|n| login(&format!("pw-{n}"))))
+            .unwrap();
+
+        let seqs = |after, limit| -> Vec<u64> {
+            f.store
+                .ops_after(device, after, limit)
+                .unwrap()
+                .iter()
+                .map(|op| op.body.seq)
+                .collect()
+        };
+        assert_eq!(seqs(0, 3), [1, 2, 3]);
+        assert_eq!(seqs(7, 100), [8, 9, 10]);
+        assert_eq!(seqs(10, 100), Vec::<u64>::new());
+        assert_eq!(seqs(u64::MAX, 100), Vec::<u64>::new());
+        assert_eq!(seqs(0, 0), Vec::<u64>::new());
+        // Nothing is held from a device that never wrote here.
+        assert!(
+            f.store
+                .ops_after(DeviceId::from_bytes([9; 16]), 0, 100)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unsigned_versions_end_the_run_until_they_are_signed() {
+        let mut f = fixture();
+        let device = f.store.device_id();
+        f.store
+            .insert_items(&f.vk_p, (0..4).map(|n| login(&format!("pw-{n}"))))
+            .unwrap();
+        // As left behind by the previous file format: no signature on op 3.
+        f.store
+            .conn
+            .execute("UPDATE items SET signature = NULL WHERE seq = 3", [])
+            .unwrap();
+
+        assert_eq!(f.store.ops_after(device, 0, 100).unwrap().len(), 2);
+        assert!(f.store.ops_after(device, 2, 100).unwrap().is_empty());
+
+        assert_eq!(f.store.sign_unsigned(&f.vk_p).unwrap(), 1);
+        let ops = f.store.ops_after(device, 0, 100).unwrap();
+        assert_eq!(ops.len(), 4);
+        let author = *f.store.registry().unwrap().sign_pk(&device).unwrap();
+        ops[2].verify(&f.store.vault_id(), &author).unwrap();
+        assert_eq!(f.store.sign_unsigned(&f.vk_p).unwrap(), 0);
+    }
+
+    #[test]
+    fn two_handles_on_one_file_never_issue_the_same_stamp_or_sequence_number() {
+        let mut f = fixture();
+        // A second process (for example the sync daemon next to the CLI).
+        let mut second = Store::open(&f.path).unwrap();
+        let device = f.store.device_id();
+
+        for round in 0..5 {
+            f.store
+                .insert_item(&f.vk_p, login(&format!("first-{round}")))
+                .unwrap();
+            second
+                .insert_item(&f.vk_p, login(&format!("second-{round}")))
+                .unwrap();
+        }
+        let ops = f.store.ops_after(device, 0, 100).unwrap();
+        assert_eq!(
+            ops.iter().map(|op| op.body.seq).collect::<Vec<_>>(),
+            (1..=10).collect::<Vec<_>>()
+        );
+        assert!(
+            ops.windows(2)
+                .all(|pair| pair[0].body.hlc < pair[1].body.hlc)
+        );
+        assert_eq!(second.version_vector().unwrap().get(&device), 10);
+    }
+
+    #[test]
+    fn writing_needs_the_device_key_slot_of_that_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::create(&dir.path().join("vault.zpvault")).unwrap();
+        let (vk_p, vk_t) = (
+            VaultKey::<Password>::generate().unwrap(),
+            VaultKey::<Totp>::generate().unwrap(),
+        );
+        // No identity at all.
+        assert!(matches!(
+            store.insert_item(&vk_p, login("pw")),
+            Err(VaultError::DeviceKeyUnavailable(DomainId::Password))
+        ));
+        let signer = store.provision_device("pc").unwrap();
+        store.add_device_key_slot(&signer, &vk_p).unwrap();
+        store.insert_item(&vk_p, login("pw")).unwrap();
+        // The TOTP domain has no slot yet.
+        assert!(matches!(
+            store.insert_item(&vk_t, TotpEntry::new("Example", "a", vec![1; 20])),
+            Err(VaultError::DeviceKeyUnavailable(DomainId::Totp))
+        ));
+    }
+
+    #[test]
     fn the_wrong_vault_key_cannot_decrypt() {
         let mut f = fixture();
         let id = f.store.insert_item(&f.vk_p, login("pw-1")).unwrap();
@@ -561,7 +912,7 @@ mod tests {
             Err(VaultError::DomainMismatch)
         ));
         assert!(matches!(
-            f.store.delete_item::<Password>(totp_id),
+            f.store.delete_item(&f.vk_p, totp_id),
             Err(VaultError::DomainMismatch)
         ));
         assert!(matches!(
@@ -582,7 +933,7 @@ mod tests {
             .unwrap();
         let c = f.store.insert_item(&f.vk_p, login("pw-c")).unwrap();
         f.store.insert_item(&f.vk_k, passkey()).unwrap();
-        f.store.delete_item::<Password>(c).unwrap();
+        f.store.delete_item(&f.vk_p, c).unwrap();
 
         let mut ids: Vec<ItemId> = f
             .store
@@ -645,7 +996,7 @@ mod tests {
     fn delete_leaves_a_tombstone_and_keeps_history() {
         let mut f = fixture();
         let id = f.store.insert_item(&f.vk_p, login("pw-1")).unwrap();
-        f.store.delete_item::<Password>(id).unwrap();
+        f.store.delete_item(&f.vk_p, id).unwrap();
 
         assert!(matches!(
             f.store.get_item::<Login>(&f.vk_p, id),
@@ -665,7 +1016,7 @@ mod tests {
 
         // Deleted items cannot be deleted or updated again.
         assert!(matches!(
-            f.store.delete_item::<Password>(id),
+            f.store.delete_item(&f.vk_p, id),
             Err(VaultError::ItemNotFound)
         ));
         assert!(matches!(
@@ -684,6 +1035,8 @@ mod tests {
         let vk = VaultKey::<Password>::generate().unwrap();
 
         let mut store = Store::create_with_clock(&path, clock.clone()).unwrap();
+        let signer = store.provision_device("test device").unwrap();
+        store.add_device_key_slot(&signer, &vk).unwrap();
         let id = store.insert_item(&vk, login("pw-1")).unwrap();
         let first = store.current_row(id).unwrap().unwrap().hlc;
         assert_eq!(first, 2_000_000 << 16);
@@ -764,7 +1117,9 @@ mod tests {
         let row = f.store.current_row(id).unwrap().unwrap();
 
         let mut other = fixture();
-        other.store.write_row(&row).unwrap();
+        let tx = other.store.conn.transaction().unwrap();
+        make_current(&tx, &row).unwrap();
+        tx.commit().unwrap();
         assert!(is_decrypt_error(
             &other.store.get_item::<Login>(&f.vk_p, id).unwrap_err()
         ));
@@ -813,7 +1168,7 @@ mod tests {
             "MARKER-NOTE-BODY-the safe combination is 12-34-56",
         );
         let note_id = f.store.insert_item(&f.vk_p, note).unwrap();
-        f.store.delete_item::<Password>(note_id).unwrap();
+        f.store.delete_item(&f.vk_p, note_id).unwrap();
 
         f.store
             .insert_item(

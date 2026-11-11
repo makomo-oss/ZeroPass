@@ -11,8 +11,6 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use zp_crypto::{DeviceId, VaultId};
 
 use crate::VaultError;
-use zp_sync::Hlc;
-
 use crate::clock::Clock;
 use crate::schema::{self, APPLICATION_ID, MIGRATIONS};
 
@@ -27,7 +25,6 @@ pub struct Store {
     vault_id: VaultId,
     device_id: DeviceId,
     clock: Clock,
-    hlc: Hlc,
 }
 
 impl Store {
@@ -72,7 +69,6 @@ impl Store {
             vault_id,
             device_id,
             clock,
-            hlc: Hlc::resume_after(0),
         })
     }
 
@@ -109,21 +105,11 @@ impl Store {
             .and_then(DeviceId::from_slice)
             .ok_or(VaultError::Corrupt("missing or malformed device_id"))?;
 
-        let newest_hlc: i64 = conn.query_row(
-            "SELECT max(coalesce((SELECT max(hlc) FROM items), 0),
-                        coalesce((SELECT max(hlc) FROM item_history), 0))",
-            [],
-            |row| row.get(0),
-        )?;
-        let newest_hlc =
-            u64::try_from(newest_hlc).map_err(|_| VaultError::Corrupt("negative clock stamp"))?;
-
         Ok(Self {
             conn,
             vault_id,
             device_id,
             clock,
-            hlc: Hlc::resume_after(newest_hlc),
         })
     }
 
@@ -135,14 +121,6 @@ impl Store {
     /// The identifier of this device's copy of the vault.
     pub fn device_id(&self) -> DeviceId {
         self.device_id
-    }
-
-    /// Issues the clock stamp for a new item version: greater than every stamp
-    /// already in this vault.
-    pub(crate) fn next_hlc(&mut self) -> Result<u64, VaultError> {
-        self.hlc
-            .tick(self.clock.now_ms())
-            .ok_or(VaultError::ClockExhausted)
     }
 
     /// The current time according to this store's time source.
@@ -197,7 +175,7 @@ fn not_a_database_as_not_a_vault(error: rusqlite::Error) -> VaultError {
     }
 }
 
-fn get_meta(conn: &Connection, key: &str) -> Result<Option<Vec<u8>>, VaultError> {
+pub(crate) fn get_meta(conn: &Connection, key: &str) -> Result<Option<Vec<u8>>, VaultError> {
     Ok(conn
         .query_row(
             "SELECT value FROM meta WHERE key = ?1",
@@ -207,7 +185,7 @@ fn get_meta(conn: &Connection, key: &str) -> Result<Option<Vec<u8>>, VaultError>
         .optional()?)
 }
 
-fn set_meta(conn: &Connection, key: &str, value: &[u8]) -> Result<(), VaultError> {
+pub(crate) fn set_meta(conn: &Connection, key: &str, value: &[u8]) -> Result<(), VaultError> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",

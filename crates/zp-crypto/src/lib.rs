@@ -4,6 +4,7 @@
 //! This crate must never gain a networking dependency (see ADR-0004).
 
 mod context;
+mod device;
 mod domain;
 mod envelope;
 mod error;
@@ -17,6 +18,9 @@ mod secret;
 mod signature_store;
 
 pub use context::{DeviceId, ItemContext, ItemId, VaultId};
+pub use device::{
+    ChannelKey, DeviceSigningKey, PUBLIC_KEY_LEN, SIGNATURE_LEN, SignPublicKey, SignatureBytes,
+};
 pub use domain::{Domain, DomainId, Passkey, Password, Totp};
 pub use envelope::{ENVELOPE_OVERHEAD, ENVELOPE_VERSION, NONCE_LEN, TAG_LEN};
 pub use error::CryptoError;

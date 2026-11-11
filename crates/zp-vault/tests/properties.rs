@@ -171,6 +171,8 @@ proptest! {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::create(&dir.path().join("vault.zpvault")).unwrap();
         let key = VaultKey::<Password>::generate().unwrap();
+        let signer = store.provision_device("test device").unwrap();
+        store.add_device_key_slot(&signer, &key).unwrap();
 
         let mut ids = Vec::new();
         for login in &logins {
@@ -201,6 +203,7 @@ fn a_vault_survives_a_full_cycle_with_arbitrary_unicode() {
     let options = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: None,
+        device_name: None,
     };
     let password = "パスワード🔑 with spaces\tand\u{0301} marks";
 

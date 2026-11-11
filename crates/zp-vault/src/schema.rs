@@ -76,8 +76,85 @@ CREATE TABLE item_history (
 ) STRICT, WITHOUT ROWID;
 ";
 
+/// Migration 2: item versions become signed ops, and the vault learns about
+/// devices (`docs/spec/sync.md`).
+const MIGRATION_0002: &str = "
+-- Every item version is an op: the author's sequence number, the generation of
+-- the vault key that wraps its item key, and the author's signature.
+-- `signature` is NULL only for versions written before this migration, until the
+-- device signs them at its next unlock.
+ALTER TABLE items ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN key_epoch INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE items ADD COLUMN signature BLOB;
+ALTER TABLE item_history ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE item_history ADD COLUMN key_epoch INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE item_history ADD COLUMN signature BLOB;
+
+-- Number the existing versions of each device in clock order.
+CREATE TEMP TABLE numbering AS
+    SELECT item_id, hlc, device_id,
+           row_number() OVER (PARTITION BY device_id ORDER BY hlc, item_id) AS seq
+    FROM (SELECT item_id, hlc, device_id FROM items
+          UNION ALL
+          SELECT item_id, hlc, device_id FROM item_history);
+UPDATE items SET seq = (
+    SELECT n.seq FROM numbering n
+    WHERE n.item_id = items.item_id AND n.hlc = items.hlc AND n.device_id = items.device_id);
+UPDATE item_history SET seq = (
+    SELECT n.seq FROM numbering n
+    WHERE n.item_id = item_history.item_id AND n.hlc = item_history.hlc
+      AND n.device_id = item_history.device_id);
+DROP TABLE numbering;
+
+CREATE UNIQUE INDEX items_by_op ON items (device_id, seq);
+CREATE UNIQUE INDEX item_history_by_op ON item_history (device_id, seq);
+-- Finds the versions still waiting for a signature without scanning everything.
+CREATE INDEX items_unsigned ON items (device_id) WHERE signature IS NULL;
+CREATE INDEX item_history_unsigned ON item_history (device_id) WHERE signature IS NULL;
+
+-- For each device, the highest sequence number up to which all of its ops are
+-- held (the version vector).
+CREATE TABLE version_vector (
+    device_id BLOB PRIMARY KEY NOT NULL CHECK (length(device_id) = 16),
+    seq       INTEGER NOT NULL CHECK (seq >= 0)
+) STRICT, WITHOUT ROWID;
+INSERT INTO version_vector (device_id, seq)
+    SELECT device_id, max(seq)
+    FROM (SELECT device_id, seq FROM items UNION ALL SELECT device_id, seq FROM item_history)
+    GROUP BY device_id;
+
+-- The newest clock stamp issued or received, shared by every process that
+-- writes to this file.
+CREATE TABLE sync_state (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    hlc_max INTEGER NOT NULL CHECK (hlc_max >= 0)
+) STRICT;
+INSERT INTO sync_state (id, hlc_max) VALUES (1, coalesce(
+    (SELECT max(hlc) FROM (SELECT hlc FROM items UNION ALL SELECT hlc FROM item_history)), 0));
+
+-- The device registry: one signed record per device, plus its revocation.
+CREATE TABLE devices (
+    device_id            BLOB PRIMARY KEY NOT NULL CHECK (length(device_id) = 16),
+    sign_pk              BLOB NOT NULL CHECK (length(sign_pk) = 32),
+    noise_pk             BLOB NOT NULL CHECK (length(noise_pk) = 32),
+    name                 TEXT NOT NULL,
+    introduced_by        BLOB NOT NULL CHECK (length(introduced_by) = 16),
+    signature            BLOB NOT NULL CHECK (length(signature) = 64),
+    revoked_by           BLOB CHECK (revoked_by IS NULL OR length(revoked_by) = 16),
+    revocation_signature BLOB CHECK (revocation_signature IS NULL
+                                     OR length(revocation_signature) = 64),
+    CHECK ((revoked_by IS NULL) = (revocation_signature IS NULL))
+) STRICT, WITHOUT ROWID;
+
+-- This device's signing key, wrapped under the vault key of each domain.
+CREATE TABLE device_keys (
+    domain INTEGER PRIMARY KEY NOT NULL CHECK (domain IN (1, 2, 3)),
+    blob   BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+";
+
 /// All migrations, in order. Never edit or remove an entry; append new ones.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_0001];
+pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002];
 
 /// The schema version this build reads and writes.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -109,6 +186,13 @@ mod tests {
 
     use super::*;
 
+    /// A database as the first released schema left it.
+    fn at_version_1() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[MIGRATION_0001]).unwrap();
+        conn
+    }
+
     fn migrated() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn, MIGRATIONS).unwrap();
@@ -126,7 +210,19 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(tables, ["item_history", "items", "key_slots", "meta"]);
+        assert_eq!(
+            tables,
+            [
+                "device_keys",
+                "devices",
+                "item_history",
+                "items",
+                "key_slots",
+                "meta",
+                "sync_state",
+                "version_vector"
+            ]
+        );
     }
 
     #[test]
@@ -138,7 +234,7 @@ mod tests {
 
     #[test]
     fn pending_migrations_are_applied_in_order() {
-        let mut conn = migrated();
+        let mut conn = at_version_1();
         conn.execute("INSERT INTO meta (key, value) VALUES ('k', x'01')", [])
             .unwrap();
 
@@ -155,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_failing_migration_rolls_back_completely() {
-        let mut conn = migrated();
+        let mut conn = at_version_1();
         let broken = "CREATE TABLE extra (x INTEGER) STRICT; INSERT INTO nowhere VALUES (1);";
         assert!(matches!(
             migrate(&mut conn, &[MIGRATION_0001, broken]),
@@ -244,8 +340,9 @@ mod tests {
     fn item_rows_enforce_shape_and_tombstone_consistency() {
         let conn = migrated();
         let sql =
-            "INSERT INTO items (item_id, domain, hlc, device_id, deleted, wrapped_dek, ciphertext)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+            "INSERT INTO items (item_id, domain, hlc, device_id, deleted, wrapped_dek, ciphertext, seq)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                           (SELECT coalesce(max(seq), 0) + 1 FROM items))";
         let id = |b: u8| vec![b; 16];
         let blob = Some(vec![1u8, 2, 3]);
         let none: Option<Vec<u8>> = None;

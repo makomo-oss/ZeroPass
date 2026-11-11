@@ -1,12 +1,18 @@
 //! Transport-agnostic encrypted oplog synchronisation for ZeroPass.
 //!
 //! The protocol is specified in `docs/spec/sync.md`. Everything in this crate is
-//! pure logic without I/O (ADR-0005): clocks, version vectors, the merge rule and
-//! the session state machine. It must never gain a networking dependency, because
-//! the vault crates depend on it (ADR-0004).
+//! pure logic without I/O (ADR-0005): clocks, version vectors, ops, the device
+//! registry, the merge rule and the session state machine. It must never gain a
+//! networking dependency, because the vault crates depend on it (ADR-0004).
 
+mod error;
 pub mod hlc;
+mod op;
+mod registry;
 mod vector;
 
+pub use error::SyncError;
 pub use hlc::Hlc;
+pub use op::{Op, OpBody, Payload, Stamp};
+pub use registry::{ChannelPublicKey, DeviceRecord, MAX_DEVICE_NAME_LEN, Registry, Revocation};
 pub use vector::VersionVector;

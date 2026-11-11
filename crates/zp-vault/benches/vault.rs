@@ -46,6 +46,7 @@ fn populated_vault(path: &Path) -> Vault {
     let options = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: None,
+        device_name: None,
     };
     let mut vault = Vault::create(path, PASSWORD, None, options).unwrap();
     never_lock(&mut vault);
@@ -134,6 +135,7 @@ fn writes(c: &mut Criterion) {
     let options = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: None,
+        device_name: None,
     };
     let hardware = InsecureSoftwareKeyStore::generate().unwrap();
     let mut vault = Vault::create(

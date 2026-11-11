@@ -84,6 +84,19 @@ pub(crate) fn vault_key_aad(label: &str, vault_id: &VaultId, domain: DomainId) -
     aad
 }
 
+/// `label ‖ 0x00 ‖ vault_id ‖ domain ‖ device_id`: the AAD of a secret that
+/// belongs to one device and is wrapped under a vault key.
+pub(crate) fn vault_key_aad_with_device(
+    label: &str,
+    vault_id: &VaultId,
+    domain: DomainId,
+    device_id: &DeviceId,
+) -> Vec<u8> {
+    let mut aad = vault_key_aad(label, vault_id, domain);
+    aad.extend_from_slice(device_id.as_bytes());
+    aad
+}
+
 /// The context one version of one item is bound to.
 ///
 /// A ciphertext sealed under one context cannot be opened under another, so it

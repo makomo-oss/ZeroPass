@@ -18,6 +18,7 @@ fn options() -> CreateOptions {
     CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::MINIMUM),
         clock: None,
+        device_name: None,
     }
 }
 
@@ -227,6 +228,7 @@ fn recovery_needs_a_kit_and_a_strong_new_password() {
     let weak = CreateOptions {
         kdf: KdfChoice::Fixed(KdfParams::new(1024, 1, 1).unwrap()),
         clock: None,
+        device_name: None,
     };
     assert!(matches!(
         Vault::recover(&o.path, &key, NEW_PASSWORD, None, weak),

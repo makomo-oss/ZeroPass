@@ -59,6 +59,7 @@ impl Fixture {
         CreateOptions {
             kdf: KDF,
             clock: Some(self.time.clock()),
+            device_name: None,
         }
     }
 
@@ -442,6 +443,7 @@ fn weak_master_passwords_and_kdf_parameters_are_refused() {
     let options = CreateOptions {
         kdf: weak_kdf,
         clock: None,
+        device_name: None,
     };
     assert!(matches!(
         Vault::create(&f.path, PASSWORD, Some(&f.hardware), options),
@@ -506,6 +508,7 @@ fn calibrated_parameters_meet_the_minimum() {
     let options = CreateOptions {
         kdf: KdfChoice::Calibrate(Duration::from_millis(1)),
         clock: None,
+        device_name: None,
     };
     let vault = Vault::create(&f.path, PASSWORD, None, options).unwrap();
     let params = vault.kdf_params().unwrap();
