@@ -1,0 +1,61 @@
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Weekly, after the Monday CI run.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to fuzz each target"
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [envelope_open, item_decode, otpauth_parse]
+    env:
+      SECONDS_PER_TARGET: ${{ inputs.seconds || '600' }}
+    steps:
+      - uses: actions/checkout@v5
+      # libFuzzer instrumentation needs nightly; the workspace itself stays on stable.
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          key: ${{ matrix.target }}
+      - name: Fuzz ${{ matrix.target }}
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          # The prebuilt cargo-fuzz defaults to the musl target, which cannot run
+          # the address sanitizer, so the gnu target is named explicitly.
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "${{ matrix.target }}" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -max_len=4096 \
+            "$GITHUB_WORKSPACE/fuzz/corpus/${{ matrix.target }}" \
+            "$GITHUB_WORKSPACE/fuzz/seeds/${{ matrix.target }}"
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
