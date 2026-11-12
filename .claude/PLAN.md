@@ -145,8 +145,9 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
 - [x] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
   - 2026-11-13 確認: スマートフォンの BLE スキャナアプリから接続し、Tx の購読でリンクが開き、Rx に書いた 4 バイトが PC 側に届いた（`cargo run -p zp-transport --example ble_echo`）。
-- [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
-  - 実装済み: デスクトップ側（`zp-cli pair` / `sync` と `zp-syncd` が LAN と BLE の両方で待ち受け、`pair` は QR コードを表示）、`crates/zp-ffi`（UniFFI。スマートフォン役を模したテストで参加・書き込み・同期を確認済み）、`apps/android`（Kotlin の BLE セントラル、CameraX + ZXing の QR 読み取り。APK のビルドまで確認済み）。開発機には Android Studio・SDK・NDK を導入済み。**完了条件の「Android ⇔ Windows が BLE だけで同期」の実機確認だけが未了**: 実機が開発機に接続されていない。手順は `apps/android/README.md`。確認できたらこの行を削除して `[x]` にする。
+- [x] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
+  - 2026-11-13 確認（Fire HD 10、Fire OS 7 = Android 9、Wi-Fi オフ）: BLE だけでペアリング（スキャン 4 秒を含め約 8.5 秒、MTU 517）と双方向の同期（1 回約 6.4 秒）が完了した。コードは adb 経由でアプリに渡して確認した。**カメラでの QR 読み取りは実機で未確認**（手順は `apps/android/README.md`）。
+  - 実装: デスクトップ側（`zp-cli pair` / `sync` と `zp-syncd` が LAN と BLE の両方で待ち受け、`pair` は QR コードを表示）、`crates/zp-ffi`（UniFFI）、`apps/android`（Kotlin の BLE セントラル、CameraX + ZXing）。
   - PoC の制限: スマートフォン側はハードウェア鍵ストア未対応（P6-02）のため、開けるのはパスワードのドメインだけ。
 - [ ] **P2-17** トランスポート選択と切替（LAN 優先、BLE フォールバック、同時接続の重複排除） — Wi-Fi の入切で同期が継続（依存: P2-16）
 - [ ] **P2-18** 計測と障害試験: ペアリング所要時間（目標 ~3s）、BLE スループット、切断・電源断・時計ずれ注入 — 結果を `docs/poc-report.md` に記録（依存: P2-17）
