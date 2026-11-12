@@ -142,7 +142,7 @@ docs/    threat-model.md  adr/  spec/
     4. 両方で `zp-syncd --vault <ファイル>` を起動したままにする
     5. PC-A で `zp-cli --vault a.zpvault add login --title test` → 数秒後に PC-B の `zp-cli --vault b.zpvault list` に出ること、逆方向も同様であることを確認する
     6. Windows ファイアウォールの確認が出たら「プライベート ネットワーク」のみ許可する
-- [ ] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
+- [x] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
 - [ ] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
 - [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
 - [ ] **P2-17** トランスポート選択と切替（LAN 優先、BLE フォールバック、同時接続の重複排除） — Wi-Fi の入切で同期が継続（依存: P2-16）
