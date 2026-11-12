@@ -4,6 +4,9 @@
 //! This is the only library crate that performs I/O towards other devices. It
 //! never sends anything beyond the local link: see the individual transports.
 
+pub mod ble;
+#[cfg(windows)]
+pub mod ble_windows;
 pub mod daemon;
 pub mod discovery;
 pub mod driver;
