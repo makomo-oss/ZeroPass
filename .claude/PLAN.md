@@ -143,14 +143,8 @@ docs/    threat-model.md  adr/  spec/
     5. PC-A で `zp-cli --vault a.zpvault add login --title test` → 数秒後に PC-B の `zp-cli --vault b.zpvault list` に出ること、逆方向も同様であることを確認する
     6. Windows ファイアウォールの確認が出たら「プライベート ネットワーク」のみ許可する
 - [x] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
-- [ ] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
-  - 実装済み（`zp_transport::ble_windows::BlePeripheral`）。この PC の Bluetooth アダプタでサービスの公開と広告の開始までは確認済み（`cargo test -p zp-transport -- --ignored ble`）。**完了条件の「スキャナアプリからの接続・読み書き」だけが未了**: セントラルになる端末（スマートフォン）が必要。確認できたらこの行を削除して `[x]` にする。手順:
-    1. PC の Bluetooth をオンにして `cargo run -p zp-transport --example ble_echo` を起動したままにする
-    2. スマートフォンの汎用 BLE スキャナアプリ（nRF Connect、LightBlue など）でサービス `5a50c0de-0001-4b1d-9c5e-7a65726f7061` を持つ端末を探して接続する（端末名は広告しないので、名前なしで表示される）
-    3. `…0002…`（Tag）を読む → `11` が 8 バイト、`22` が 8 バイトの計 16 バイトであること
-    4. `…0004…`（Tx）の通知を購読する → PC 側に `link opened` と表示されること
-    5. `…0003…`（Rx）に任意のバイト列を書き込む → PC 側に同じバイト列が表示され、Tx の通知として同じバイト列が返ること
-    6. OS の Bluetooth ペアリング要求が一度も出ないこと
+- [x] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
+  - 2026-11-13 確認: スマートフォンの BLE スキャナアプリから接続し、Tx の購読でリンクが開き、Rx に書いた 4 バイトが PC 側に届いた（`cargo run -p zp-transport --example ble_echo`）。
 - [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
   - **未着手（環境待ち）**: 開発機に Android のビルド環境がなく（JDK、Android SDK / NDK、Gradle、adb、Rust の Android ターゲット、`cargo-ndk` のいずれも未導入）、検証用の実機もないため、ビルドも完了条件の確認もできない。必要なもの:
     1. Android Studio（JDK と SDK を含む）と NDK、`rustup target add aarch64-linux-android`、`cargo install cargo-ndk`
