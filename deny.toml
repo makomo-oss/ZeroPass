@@ -32,7 +32,8 @@ allow = [
 confidence-threshold = 0.93
 
 [licenses.private]
-# Workspace crates are publish = false.
+# Workspace crates are publish = false. They are GPL-3.0-only (see LICENSE); the
+# list above is about what they may depend on, all of it GPLv3-compatible.
 ignore = true
 
 [bans]

@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+license.workspace = true
 
 # This crate does not inherit the workspace lints: it needs `unsafe_code = "deny"`
 # instead of "forbid" so that the single `mem` module can opt in to the unsafe code
