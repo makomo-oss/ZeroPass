@@ -4,6 +4,7 @@ description = "Fuzz targets for ZeroPass parsers (run with cargo-fuzz on nightly
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "GPL-3.0-only"
 
 [package.metadata]
 cargo-fuzz = true
