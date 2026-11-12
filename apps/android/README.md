@@ -14,6 +14,7 @@
 - `rustup target add aarch64-linux-android` と `cargo install cargo-ndk`
 - 環境変数 `ANDROID_HOME`、`ANDROID_NDK_HOME`、`JAVA_HOME`（Android Studio の `jbr` フォルダ）
 - Android 8.0 以上の arm64 の実機（エミュレータは BLE を使えない）
+- Android 11 以前の実機では、端末の「位置情報」をオンにしておく（オフだと OS が BLE のスキャン結果を返さない。アプリは位置を読まない）
 
 ## ビルド
 
@@ -42,3 +43,17 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 7. PC: `zp-syncd --vault a.zpvault` を起動したままにする
 8. スマートフォン: 「Sync over Bluetooth」→ `synced with "…": sent 1, received 0`
 9. PC: `zp-cli --vault a.zpvault list` にスマートフォンで追加したログインが出ること。逆方向（PC で追加 → スマートフォンで Sync → 一覧）も確認する
+
+## adb からの操作（デバッグビルドのみ）
+
+手を使わずに無線の経路を試すため、デバッグビルドは起動時の引数で操作できる。リリースビルドでは無視される。
+
+```sh
+adb shell am start -n io.github.makomooss.zeropass/.MainActivity \
+    -e do join -e code "ZP1:…" -e password "<この端末のマスターパスワード>" -e name "<端末名>"
+adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do sync
+adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do list -e password "…"
+adb logcat -s ZeroPass:I      # アプリのログ
+```
+
+`do` には `join`、`sync`、`list`、`add`、`delete` を指定できる。

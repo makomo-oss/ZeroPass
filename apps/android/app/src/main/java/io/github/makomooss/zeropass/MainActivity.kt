@@ -2,10 +2,12 @@ package io.github.makomooss.zeropass
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -96,6 +98,39 @@ class MainActivity : ComponentActivity() {
         )
         refreshStatus()
         requestPermissions()
+        runFromIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        runFromIntent(intent)
+    }
+
+    /**
+     * Debug builds can be driven from a computer, so that the radio path can be
+     * tested without hands:
+     * `adb shell am start -n <package>/.MainActivity -e do sync -e password …`.
+     * Release builds ignore all of it.
+     */
+    private fun runFromIntent(intent: Intent?) {
+        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        val action = intent?.getStringExtra("do")
+        if (!debuggable || intent == null || action == null) return
+        intent.getStringExtra("password")?.let(password::setText)
+        intent.getStringExtra("name")?.let(deviceName::setText)
+        when (action) {
+            "join" -> intent.getStringExtra("code")?.let(::join)
+            "sync" -> sync()
+            "list" -> list()
+            "add" -> {
+                title.setText(intent.getStringExtra("title") ?: "From the tablet")
+                username.setText("tablet")
+                secret.setText(intent.getStringExtra("secret") ?: "tablet-secret")
+                addLogin()
+            }
+            "delete" -> deleteVault()
+            else -> log("unknown debug action: $action")
+        }
     }
 
     private fun requestPermissions() {
@@ -120,6 +155,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun log(line: String) {
+        Log.i("ZeroPass", line)
         runOnUiThread { logView.text = "$line\n${logView.text}" }
     }
 

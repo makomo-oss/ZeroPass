@@ -14,6 +14,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.location.LocationManager
 import android.os.Build
 import android.os.ParcelUuid
 import java.util.UUID
@@ -38,6 +39,22 @@ fun scanForDesktops(context: Context, uuids: BleUuids, millis: Long): List<Bluet
     val adapter = manager?.adapter ?: throw BleException("this device has no Bluetooth")
     if (!adapter.isEnabled) throw BleException("Bluetooth is switched off")
     val scanner = adapter.bluetoothLeScanner ?: throw BleException("Bluetooth LE scanning is unavailable")
+    // Up to Android 11 a scan silently finds nothing while Location is off.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        val location = context.getSystemService(LocationManager::class.java)
+        val enabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            location?.isLocationEnabled == true
+        } else {
+            location?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true ||
+                location?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) == true
+        }
+        if (!enabled) {
+            throw BleException(
+                "switch on Location in the system settings: this version of Android only reports " +
+                    "Bluetooth devices while it is on (ZeroPass does not read your location)",
+            )
+        }
+    }
 
     val seen = LinkedHashMap<String, Pair<BluetoothDevice, Int>>()
     var failure: Int? = null
