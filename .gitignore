@@ -75,3 +75,7 @@ desktop.ini
 # --- Logs / temp ---
 *.log
 *.tmp
+
+# Android app: outputs of apps/android/build-core.sh
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/java/uniffi/
