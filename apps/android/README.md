@@ -5,7 +5,8 @@
 - 無線（スキャン、接続、バイト列の受け渡し）は Kotlin が受け持つ: `Ble.kt`（`docs/spec/ble.md` のセントラル側）
 - ペアリング、Noise チャネル、同期、金庫は PC と同じ Rust コアが受け持つ: `crates/zp-ffi`（UniFFI）
 - QR の読み取りは CameraX と ZXing で端末内で行う
-- `INTERNET` 権限を持たないので、このアプリはインターネットに一切出られない
+- 同期は、同じ Wi-Fi に相手がいれば LAN（mDNS + TCP、`docs/spec/lan.md`）で行い、届かなかった相手とだけ BLE で行う。同じ相手と両方で同期することはない
+- LAN での同期のために `INTERNET` 権限を持つ（Android には「ローカルネットワークだけ」の権限がなく、ソケットを開くだけで必要になる）。通信先をプライベート／リンクローカルアドレスに限り、ホップ数を 1 にする制限は Rust コア側で守る
 - PoC の制限: ハードウェア鍵ストアに未対応のため、スマートフォン側で開けるのはパスワードのドメインだけ（TOTP とパスキーは暗号文のまま同期される）
 
 ## 必要なもの
@@ -41,7 +42,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 5. スマートフォン: 「Unlock and list logins」で PC のログインが見えること
 6. スマートフォン: ログインを 1 件追加する
 7. PC: `zp-syncd --vault a.zpvault` を起動したままにする
-8. スマートフォン: 「Sync over Bluetooth」→ `synced with "…": sent 1, received 0`
+8. スマートフォン: 「Sync」→ `Bluetooth: synced with "…": sent 1, received 0`（Wi-Fi をオンにして同じネットワークにいれば `Wi-Fi: synced with …` になる）
 9. PC: `zp-cli --vault a.zpvault list` にスマートフォンで追加したログインが出ること。逆方向（PC で追加 → スマートフォンで Sync → 一覧）も確認する
 
 ## adb からの操作（デバッグビルドのみ）

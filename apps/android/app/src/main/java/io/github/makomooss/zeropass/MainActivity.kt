@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
@@ -24,7 +27,9 @@ import uniffi.zp_ffi.announcesPairing
 import uniffi.zp_ffi.bleUuids
 import uniffi.zp_ffi.joinVault
 import uniffi.zp_ffi.offerInfo
+import uniffi.zp_ffi.otherDevices
 import uniffi.zp_ffi.recognisePeer
+import uniffi.zp_ffi.syncOnLan
 import uniffi.zp_ffi.syncWith
 
 /**
@@ -82,7 +87,7 @@ class MainActivity : ComponentActivity() {
         deviceName = field("Name of this phone").apply { setText(Build.MODEL) }
         password = field("Master password of this phone (12+ characters)", secret = true)
         button("Scan a pairing code and join") { startScan() }
-        button("Sync over Bluetooth") { sync() }
+        button("Sync (Wi-Fi if there is one, else Bluetooth)") { sync() }
         button("Unlock and list logins") { list() }
         title = field("Title of a new login")
         username = field("User name")
@@ -160,7 +165,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Runs [task] on the worker thread with the buttons disabled meanwhile. */
-    private fun work(what: String, task: () -> Unit) {
+    private inline fun work(what: String, crossinline task: () -> Unit) {
         buttons.forEach { it.isEnabled = false }
         log("— $what")
         worker.execute {
@@ -207,17 +212,69 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Whether this device is on a Wi-Fi network (the local network of
+     * docs/spec/lan.md).
+     */
+    private fun onWifi(): Boolean {
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = connectivity.activeNetwork ?: return false
+        return connectivity.getNetworkCapabilities(network)
+            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+    }
+
+    /**
+     * Syncs with the devices found on the local network. Android drops
+     * multicast packets (mDNS) unless an app holds a multicast lock.
+     */
+    private fun syncOnWifi(): Set<String> {
+        val wifi = applicationContext.getSystemService(WifiManager::class.java)
+        val lock = wifi?.createMulticastLock("zeropass-discovery")
+        lock?.acquire()
+        try {
+            val synced = mutableSetOf<String>()
+            for (result in syncOnLan(vaultFile.path, 2_500u)) {
+                val outcome = result.outcome
+                if (outcome != null) {
+                    synced += result.peer.deviceId
+                    log("Wi-Fi: synced with \"${result.peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
+                } else {
+                    log("Wi-Fi: \"${result.peer.name}\" did not answer: ${result.error}")
+                }
+            }
+            return synced
+        } finally {
+            lock?.release()
+        }
+    }
+
+    /**
+     * One round of sync (plan task P2-17): the local network first, Bluetooth
+     * for the devices that were not reached there, and never both for the same
+     * device.
+     */
     private fun sync() {
         if (!vaultFile.exists()) return log("join a vault first")
-        work("syncing over Bluetooth") {
+        work("syncing") {
+            val others = otherDevices(vaultFile.path)
+            if (others.isEmpty()) throw IllegalStateException("this vault has no other device")
+            val synced = if (onWifi()) syncOnWifi() else emptySet<String>().also { log("no Wi-Fi: Bluetooth only") }
+            if (others.all { it.deviceId in synced }) return@work
+
             val desktops = scanForDesktops(this, uuids, 4_000)
-            log("${desktops.size} ZeroPass device(s) nearby")
+            log("Bluetooth: ${desktops.size} ZeroPass device(s) nearby")
             val (session, peer) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
-                recognisePeer(vaultFile.path, tag)
-            } ?: throw BleException("no device of this vault was found nearby (is zp-syncd running on the PC?)")
+                recognisePeer(vaultFile.path, tag)?.takeIf { it.deviceId !in synced }
+            } ?: throw BleException(
+                if (synced.isEmpty()) {
+                    "no device of this vault was found nearby (is zp-syncd running on the PC?)"
+                } else {
+                    "the remaining devices of this vault are not nearby"
+                },
+            )
             try {
                 val outcome = syncWith(vaultFile.path, peer.deviceId, GattLink(session))
-                log("synced with \"${peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
+                log("Bluetooth: synced with \"${peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
             } finally {
                 session.close()
             }

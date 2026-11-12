@@ -11,8 +11,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::discovery::Tag;
-use crate::lan::LanTransport;
 use crate::link::Link;
+use crate::resilient::ResilientLan;
 use crate::transport::{Address, Discovered, Transport};
 
 /// A set of transports behind the [`Transport`] interface.
@@ -110,7 +110,8 @@ impl core::fmt::Debug for MultiTransport {
 pub struct Nearby {
     /// The local network and Bluetooth LE, whichever are available.
     pub transport: MultiTransport,
-    /// Where this device listens on the local network; empty without one.
+    /// Where this device listened on the local network when this was opened;
+    /// empty without one.
     pub lan_endpoints: Vec<SocketAddr>,
     /// Whether Bluetooth LE is in use.
     pub ble: bool,
@@ -120,29 +121,28 @@ pub struct Nearby {
 
 /// Opens the local network transport and, where this machine can act as a
 /// Bluetooth LE peripheral, that too. Either may be missing (no network, no
-/// adapter); it is an error only if both are.
+/// adapter); it is an error only if both are. Links on the local network are
+/// preferred simply by being asked first; when the network goes away the
+/// Bluetooth transport keeps answering, and when it comes back the local
+/// network is used again ([`ResilientLan`]).
 ///
 pub fn open_nearby() -> io::Result<Nearby> {
     let mut transports: Vec<Box<dyn Transport>> = Vec::new();
-    let mut lan_endpoints = Vec::new();
     let mut problems = Vec::new();
 
-    match LanTransport::new() {
-        Ok(lan) => {
-            let port = lan.port();
-            lan_endpoints = lan
-                .addresses()
-                .iter()
-                .map(|address| SocketAddr::new((*address).into(), port))
-                .collect();
-            transports.push(Box::new(lan));
-        }
-        Err(error) => problems.push(format!("local network: {error}")),
+    // The local network may come and go while this runs (Wi-Fi off and on);
+    // the transport for it follows by itself.
+    let lan = ResilientLan::new();
+    let lan_up = lan.is_up();
+    let lan_endpoints = lan.endpoints();
+    if let Some(problem) = lan.problem() {
+        problems.push(format!("local network: {problem}"));
     }
+    transports.push(Box::new(lan));
 
     let ble = open_ble(&mut transports, &mut problems);
 
-    if transports.is_empty() {
+    if !lan_up && !ble {
         return Err(io::Error::new(
             io::ErrorKind::NotConnected,
             format!("no way to reach other devices ({})", problems.join("; ")),
