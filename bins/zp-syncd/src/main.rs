@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
-use zp_transport::{DriveError, LanTransport};
+use zp_transport::{DriveError, open_nearby};
 use zp_vault::Store;
 
 #[derive(Parser)]
@@ -68,13 +68,17 @@ fn run(args: &Args) -> Result<(), DriveError> {
     let store = Store::open(&args.vault).map_err(sync_error)?;
     // Fails early with a clear message if the vault has no device identity yet.
     store.channel_key().map_err(sync_error)?;
-    let transport = LanTransport::new()?;
+    let nearby = open_nearby()?;
     log(&format!(
-        "syncing {} on {:?}, port {}",
+        "syncing {} over {} (local network endpoints: {:?})",
         args.vault.display(),
-        transport.addresses(),
-        transport.port()
+        nearby.transport.names().join(" and "),
+        nearby.lan_endpoints
     ));
+    for problem in &nearby.problems {
+        log(&format!("not available: {problem}"));
+    }
+    let transport = nearby.transport;
     let config = DaemonConfig {
         poll_interval: Duration::from_secs(args.poll_secs.max(1)),
         ..DaemonConfig::default()
@@ -98,7 +102,7 @@ fn main() -> ExitCode {
             // The network went away or changed (Wi-Fi off, new address): start
             // over with a fresh transport once it is back.
             Err(DriveError::Io(error)) => {
-                log(&format!("local network unavailable ({error}); retrying"));
+                log(&format!("no transport available ({error}); retrying"));
                 thread::sleep(RETRY);
             }
             Err(error) => {

@@ -60,6 +60,15 @@ pub trait Transport: Send {
     /// Stops announcing this device.
     fn stop_advertising(&mut self) -> io::Result<()>;
 
+    /// Shows (or, with `None`, withdraws) the tag of an open pairing offer, on
+    /// transports where the joining device has to pick this one out among
+    /// others nearby (Bluetooth LE; see [`crate::ble::pairing_tag`]). On the
+    /// local network the pairing code carries the address, so the default does
+    /// nothing.
+    fn announce_pairing(&mut self, _tag: Option<Tag>) -> io::Result<()> {
+        Ok(())
+    }
+
     /// The devices currently announced nearby, after listening for up to `wait`.
     fn discover(&mut self, wait: Duration) -> io::Result<Vec<Discovered>>;
 
