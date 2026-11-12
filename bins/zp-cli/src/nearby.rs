@@ -1,18 +1,20 @@
 //! Commands that talk to other devices on the local network: pairing and sync.
 
 use std::io::Write;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use qrcode::QrCode;
+use qrcode::render::unicode;
 use zp_crypto::DomainId;
 use zp_pairing::qr::OFFER_LIFETIME_SECS;
 use zp_pairing::{Hint, Joiner, OfferRole, PairingOffer};
 use zp_sync::SessionReport;
+use zp_transport::ble::pairing_tag;
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
 use zp_transport::{
-    Address, DriveConfig, LanTransport, NewVault, PairingLink, Transport, pair_as_existing,
-    pair_as_new,
+    Address, DriveConfig, LanTransport, Nearby, NewVault, PairingLink, Transport, open_nearby,
+    pair_as_existing, pair_as_new,
 };
 use zp_vault::{CreateOptions, Store, VaultError, default_device_name};
 
@@ -24,6 +26,11 @@ fn unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The local network and, where this machine has it, Bluetooth LE.
+fn nearby() -> CliResult<Nearby> {
+    open_nearby().map_err(|error| format!("cannot reach other devices: {error}").into())
 }
 
 fn lan() -> CliResult<LanTransport> {
@@ -41,21 +48,23 @@ impl Session {
     /// `pair`: shows a pairing code and admits the device that enters it.
     pub(super) fn pair(&mut self, out: &mut impl Write) -> CliResult<()> {
         // Admitting a device hands over every vault key, so every domain of the
-        // vault must be unlocked first.
-        for domain in DomainId::ALL {
-            if self.vault.has_domain(domain)? {
-                self.ensure_unlocked(domain)?;
-            }
-        }
-        let mut transport = lan()?;
+        // vault must be unlocked, and still be when the other device has connected
+        // and the user has confirmed it.
+        self.unlock_every_domain()?;
+        let mut nearby = nearby()?;
         let key = self.vault.channel_key()?;
-        let hints = transport
-            .addresses()
+        let hints = nearby
+            .lan_endpoints
             .iter()
-            .map(|address| Hint::Socket(SocketAddr::new((*address).into(), transport.port())))
+            .map(|endpoint| Hint::Socket(*endpoint))
             .collect();
         let offer =
             PairingOffer::new(OfferRole::Existing, *key.public_bytes(), hints, unix_secs())?;
+        // Over Bluetooth the code carries no address: the other device finds this
+        // one by a tag derived from the code's secret.
+        nearby
+            .transport
+            .announce_pairing(Some(pairing_tag(&offer.psk)))?;
 
         writeln!(
             out,
@@ -64,19 +73,38 @@ impl Session {
         writeln!(out)?;
         writeln!(out, "{}", offer.to_text().as_str())?;
         writeln!(out)?;
+        if let Ok(code) = QrCode::new(offer.to_text().as_bytes()) {
+            let picture = code
+                .render::<unicode::Dense1x2>()
+                .dark_color(unicode::Dense1x2::Light)
+                .light_color(unicode::Dense1x2::Dark)
+                .build();
+            writeln!(out, "{picture}")?;
+            writeln!(out)?;
+        }
         writeln!(
             out,
-            "On the new device, run `zp-cli --vault <new file> join` and enter this code."
+            "On a phone, scan the picture. On a computer, run `zp-cli --vault <new file> join` and enter the code."
         )?;
+        writeln!(out, "Waiting on: {}", nearby.transport.names().join(", "))?;
+        for problem in &nearby.problems {
+            writeln!(out, "  not available: {problem}")?;
+        }
         writeln!(
             out,
             "Anyone who sees the code within its lifetime can ask to join; check the name before you confirm."
         )?;
         out.flush()?;
 
-        let link = transport
-            .accept(Duration::from_secs(OFFER_LIFETIME_SECS))?
-            .ok_or("no device connected before the code expired")?;
+        let deadline = Instant::now() + Duration::from_secs(OFFER_LIFETIME_SECS);
+        let link = loop {
+            if let Some(link) = nearby.transport.accept(Duration::from_millis(500))? {
+                break link;
+            }
+            if Instant::now() >= deadline {
+                return Err("no device connected before the code expired".into());
+            }
+        };
         let pairing = PairingLink {
             scanned: false,
             psk: &offer.psk,
@@ -96,6 +124,7 @@ impl Session {
             },
             &DriveConfig::default(),
         )?;
+        nearby.transport.announce_pairing(None)?;
 
         writeln!(
             out,
@@ -128,7 +157,7 @@ impl Session {
             )?;
             return Ok(());
         }
-        let mut daemon = SyncDaemon::new(store, lan()?, DaemonConfig::default());
+        let mut daemon = SyncDaemon::new(store, nearby()?.transport, DaemonConfig::default());
         let deadline = Instant::now() + Duration::from_secs(seconds);
         // Done once a session with every other device has completed.
         let events = daemon.run_until(deadline, |events| {
@@ -156,10 +185,7 @@ impl Session {
             }
         }
         if synced == 0 {
-            writeln!(
-                out,
-                "no other device of this vault was found on the local network"
-            )?;
+            writeln!(out, "no other device of this vault was found nearby")?;
         }
         Ok(())
     }

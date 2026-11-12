@@ -8,7 +8,41 @@ publish.workspace = true
 repository.workspace = true
 license.workspace = true
 
-[lints]
-workspace = true
+[lib]
+# `cdylib` is what the mobile apps load; `lib` is for the tests and the bindings
+# generator.
+crate-type = ["lib", "cdylib"]
+
+# The workspace lints, except that the code UniFFI generates needs `unsafe`
+# (`extern "C"` entry points). Nothing hand-written in this crate uses it.
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+print_stdout = "warn"
 
 [dependencies]
+thiserror = "2.0.21"
+uniffi = "0.32.2"
+zp-crypto = { version = "0.0.0", path = "../zp-crypto" }
+zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
+zp-sync = { version = "0.0.0", path = "../zp-sync" }
+zp-transport = { version = "0.0.0", path = "../zp-transport" }
+zp-vault = { version = "0.0.0", path = "../zp-vault" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[features]
+# Only for the bindings generator; the library itself does not need it.
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+required-features = ["cli"]

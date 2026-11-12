@@ -6,7 +6,12 @@ all-features = true
 [advisories]
 # Fail on any RustSec advisory (vulnerability, unmaintained, unsound) and yanked crates.
 yanked = "deny"
-ignore = []
+ignore = [
+    # `basic-toml` is unmaintained. It is only reached through UniFFI's bindings
+    # generator (uniffi_bindgen -> askama), a build-time tool that reads this
+    # project's own files; it is not part of any binary or library that ships.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only, via the UniFFI bindings generator" },
+]
 
 [licenses]
 # Permissive licenses only. Add new entries deliberately, with a reason in the PR.
@@ -20,6 +25,9 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "CC0-1.0",
+    # UniFFI (the mobile bindings, ADR-0001). File-level copyleft: it applies to
+    # changes to UniFFI itself, which this project does not make.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.93
 
