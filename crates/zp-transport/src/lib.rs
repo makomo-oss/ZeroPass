@@ -7,6 +7,7 @@
 pub mod ble;
 #[cfg(windows)]
 pub mod ble_windows;
+pub mod capture;
 pub mod daemon;
 pub mod discovery;
 pub mod driver;

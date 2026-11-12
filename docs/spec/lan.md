@@ -104,7 +104,16 @@ tag  = SHA-256("zeropass/v1/discovery" ‖ 0x00 ‖ vault_id(16) ‖ noise_pk(32
 - 待ち受け・接続・受け入れのすべてのソケットで TTL が 1 である
 - 実際の mDNS による相互発見と、その結果だけを使った接続（要ローカルネットワーク。`cargo test -p zp-transport -- --ignored`）
 
-手動での確認（パケットキャプチャ）:
+パケットキャプチャによる確認（Windows、管理者権限が必要）:
+
+1. 通常のターミナルでビルドする: `cargo build --release -p zp-syncd` と `cargo build --release -p zp-transport --example capture_check`
+2. 管理者として開いた PowerShell で `.\scripts\check-lan-capture.ps1 -Vault <金庫ファイル>` を実行する。スクリプトは `zp-syncd` を起動し、その TCP ポートと mDNS（UDP 5353）のパケットを OS 標準の Packet Monitor で 45 秒間採取する。
+3. 採取中に、同じネットワーク上の別の端末（もう 1 台の PC やスマートフォン）から同期を実行する。
+4. スクリプトが採取結果を解析し、この PC が送ったパケットの宛先がすべてローカルリンク内であること、TCP パケットの TTL がすべて 1 であることを判定する（`zp_transport::capture`）。違反があれば一覧を表示して終了コード 1 を返す。
+
+同じ PC 上の 2 つの金庫ファイルどうしの通信はネットワークインターフェースを通らないので、この確認には別の端末が必要である。
+
+Wireshark で手動で確認する場合:
 
 1. 2 台の PC を同じ Wi-Fi につなぎ、Wireshark で使用中のインターフェースをキャプチャする。
 2. ペアリングと同期を数回実行する。
