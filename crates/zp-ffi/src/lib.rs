@@ -10,14 +10,17 @@
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zp_crypto::{DeviceId, ItemId, Password};
 use zp_pairing::{Joiner, OfferRole, PairingOffer};
 use zp_sync::SessionReport;
 use zp_transport::ble::{self, parse_tag_value};
 use zp_transport::discovery::identify;
-use zp_transport::{DriveConfig, Link, NewVault, PairingLink, pair_as_new, sync_as_initiator};
+use zp_transport::{
+    DriveConfig, LanTransport, Link, NewVault, PairingLink, Transport, pair_as_new,
+    sync_as_initiator,
+};
 use zp_vault::model::{Content, Login};
 use zp_vault::{CreateOptions, Store, Vault};
 
@@ -501,4 +504,98 @@ impl MobileVault {
 #[uniffi::export]
 pub fn to_hex(bytes: Vec<u8>) -> String {
     hex(&bytes)
+}
+
+/// The other devices of the vault at `path` that have not been revoked. Needs
+/// no password.
+#[uniffi::export]
+pub fn other_devices(path: String) -> Result<Vec<Peer>, FfiError> {
+    let store = Store::open(Path::new(&path))?;
+    let registry = store.registry()?;
+    Ok(registry
+        .active()
+        .filter(|record| record.device_id != store.device_id())
+        .map(|record| Peer {
+            device_id: record.device_id.to_string(),
+            name: record.name.clone(),
+        })
+        .collect())
+}
+
+/// What happened with one device found on the local network.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LanSync {
+    /// The device.
+    pub peer: Peer,
+    /// The session, if it completed.
+    pub outcome: Option<SyncOutcome>,
+    /// Why it did not complete, if it did not.
+    pub error: Option<String>,
+}
+
+/// Looks for the other devices of the vault at `path` on the local network
+/// (mDNS, `docs/spec/lan.md`) for `discover_ms` and syncs with each one found.
+/// Returns an empty list if this device is not on a local network or nobody is
+/// there. Works on the locked file.
+///
+/// The app decides what to do about the devices that are missing from the
+/// result: they may still be in reach of Bluetooth.
+#[uniffi::export]
+pub fn sync_on_lan(path: String, discover_ms: u32) -> Result<Vec<LanSync>, FfiError> {
+    let mut store = Store::open(Path::new(&path))?;
+    let key = store.channel_key()?;
+    let registry = store.registry()?;
+    let own = store.device_id();
+    let Ok(mut transport) = LanTransport::new() else {
+        // Not on a local network.
+        return Ok(Vec::new());
+    };
+
+    // Listen for the whole time: answers trickle in.
+    let deadline = Instant::now() + Duration::from_millis(u64::from(discover_ms));
+    let mut found = Vec::new();
+    loop {
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(250));
+        for discovered in transport.discover(wait).map_err(failed)? {
+            let Some(record) = identify(&registry, &discovered.tag, unix_secs()) else {
+                continue;
+            };
+            let known = found
+                .iter()
+                .any(|(device, _, _, _): &(DeviceId, _, _, _)| *device == record.device_id);
+            if record.device_id != own && !known {
+                found.push((
+                    record.device_id,
+                    record.name.clone(),
+                    record.noise_pk,
+                    discovered.address,
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+
+    let mut results = Vec::new();
+    for (device, name, noise_pk, address) in found {
+        let session = transport
+            .connect(&address)
+            .map_err(|error| error.to_string())
+            .and_then(|link| {
+                sync_as_initiator(link, &mut store, &key, &noise_pk, &DriveConfig::default())
+                    .map_err(|error| error.to_string())
+            });
+        results.push(LanSync {
+            peer: Peer {
+                device_id: device.to_string(),
+                name,
+            },
+            outcome: session.as_ref().ok().map(Into::into),
+            error: session.err(),
+        });
+    }
+    Ok(results)
 }

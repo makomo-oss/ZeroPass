@@ -160,7 +160,7 @@ impl LanTransport {
 
     /// Opens the transport on the given addresses (which must belong to this
     /// machine).
-    fn on_addresses(addresses: Vec<Ipv4Addr>) -> io::Result<Self> {
+    pub(crate) fn on_addresses(addresses: Vec<Ipv4Addr>) -> io::Result<Self> {
         // One port on every address: the first bind picks it.
         let mut listeners: Vec<TcpListener> = Vec::new();
         let mut port = 0;

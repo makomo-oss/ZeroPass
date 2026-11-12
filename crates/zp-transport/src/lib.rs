@@ -15,6 +15,7 @@ pub mod lan;
 mod link;
 pub mod local_net;
 pub mod multi;
+mod resilient;
 mod transport;
 
 pub use driver::{
@@ -25,4 +26,5 @@ pub use error::DriveError;
 pub use lan::LanTransport;
 pub use link::{Connection, Link, MemoryLink};
 pub use multi::{MultiTransport, Nearby, open_nearby};
+pub use resilient::ResilientLan;
 pub use transport::{Address, Discovered, LoopbackNetwork, LoopbackTransport, Transport};
