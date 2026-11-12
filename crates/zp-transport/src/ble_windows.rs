@@ -344,6 +344,10 @@ impl Transport for BlePeripheral {
         self.publish_tags()
     }
 
+    fn announce_pairing(&mut self, tag: Option<Tag>) -> io::Result<()> {
+        self.set_pairing_tag(tag)
+    }
+
     /// A peripheral does not scan: the central finds it.
     fn discover(&mut self, _wait: Duration) -> io::Result<Vec<Discovered>> {
         Ok(Vec::new())
