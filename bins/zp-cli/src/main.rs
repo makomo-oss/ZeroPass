@@ -19,7 +19,7 @@ use zp_crypto::{
     Password, RecoveryKey, Totp,
 };
 use zp_vault::model::{Content, Login, SecureNote};
-use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError, totp};
+use zp_vault::{AutoLock, CreateOptions, KdfChoice, Vault, VaultError, totp};
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
@@ -327,6 +327,23 @@ struct Session {
 
 impl Session {
     /// Makes sure `domain` is unlocked, prompting if necessary.
+    /// Unlocks every domain of the vault and keeps them unlocked until this
+    /// command ends, for commands that need all of them after waiting for
+    /// someone: the idle timeout of the hardware-bound domains (one minute) is
+    /// shorter than a pairing code lives.
+    fn unlock_every_domain(&mut self) -> CliResult<()> {
+        for domain in DomainId::ALL {
+            if self.vault.has_domain(domain)? {
+                self.ensure_unlocked(domain)?;
+            }
+        }
+        self.vault.set_auto_lock(AutoLock {
+            password: None,
+            hardware: None,
+        });
+        Ok(())
+    }
+
     fn ensure_unlocked(&mut self, domain: DomainId) -> CliResult<()> {
         if self.vault.is_unlocked(domain) {
             return Ok(());
@@ -506,13 +523,8 @@ impl Session {
                 if registry.is_revoked(&record.device_id) {
                     return Err("that device has already been revoked".into());
                 }
-                // Replacing the keys of a domain takes that domain, so all of
-                // them are unlocked first.
-                for domain in DomainId::ALL {
-                    if self.vault.has_domain(domain)? {
-                        self.ensure_unlocked(domain)?;
-                    }
-                }
+                // Replacing the keys of a domain takes that domain.
+                self.unlock_every_domain()?;
                 let question = format!(
                     "Revoke the device \"{}\" ({})? This cannot be undone. [y/N] ",
                     record.name, record.device_id

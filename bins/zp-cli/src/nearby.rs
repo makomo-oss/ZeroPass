@@ -41,12 +41,9 @@ impl Session {
     /// `pair`: shows a pairing code and admits the device that enters it.
     pub(super) fn pair(&mut self, out: &mut impl Write) -> CliResult<()> {
         // Admitting a device hands over every vault key, so every domain of the
-        // vault must be unlocked first.
-        for domain in DomainId::ALL {
-            if self.vault.has_domain(domain)? {
-                self.ensure_unlocked(domain)?;
-            }
-        }
+        // vault must be unlocked, and still be when the other device has connected
+        // and the user has confirmed it.
+        self.unlock_every_domain()?;
         let mut transport = lan()?;
         let key = self.vault.channel_key()?;
         let hints = transport
