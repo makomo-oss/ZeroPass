@@ -152,6 +152,11 @@ docs/    threat-model.md  adr/  spec/
     5. `…0003…`（Rx）に任意のバイト列を書き込む → PC 側に同じバイト列が表示され、Tx の通知として同じバイト列が返ること
     6. OS の Bluetooth ペアリング要求が一度も出ないこと
 - [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
+  - **未着手（環境待ち）**: 開発機に Android のビルド環境がなく（JDK、Android SDK / NDK、Gradle、adb、Rust の Android ターゲット、`cargo-ndk` のいずれも未導入）、検証用の実機もないため、ビルドも完了条件の確認もできない。必要なもの:
+    1. Android Studio（JDK と SDK を含む）と NDK、`rustup target add aarch64-linux-android`、`cargo install cargo-ndk`
+    2. BLE セントラルとして動く Android 8.0 以上の実機（エミュレータは BLE を使えない）と USB デバッグ
+    3. 先に P2-15 の確認（スキャナアプリから Windows のペリフェラルに接続できること）を済ませておくと、問題の切り分けが楽になる
+  - P2-17・P2-18 はこのタスクに依存するため、同じ理由で未着手。G-01 も P2-18 を待つ。
 - [ ] **P2-17** トランスポート選択と切替（LAN 優先、BLE フォールバック、同時接続の重複排除） — Wi-Fi の入切で同期が継続（依存: P2-16）
 - [ ] **P2-18** 計測と障害試験: ペアリング所要時間（目標 ~3s）、BLE スループット、切断・電源断・時計ずれ注入 — 結果を `docs/poc-report.md` に記録（依存: P2-17）
 - [x] **P2-19** 端末失効: レジストリから削除 → VK-* ローテーション → 残存端末へ再配布 — 失効端末が以後の op を復号できないテスト（依存: P2-13）
