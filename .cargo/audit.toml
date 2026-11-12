@@ -1,0 +1,8 @@
+# cargo-audit configuration. Keep in step with [advisories] in deny.toml.
+
+[advisories]
+ignore = [
+    # `basic-toml` is unmaintained. Build-time only, via the UniFFI bindings
+    # generator (uniffi_bindgen -> askama); not part of anything that ships.
+    "RUSTSEC-2026-0374",
+]
