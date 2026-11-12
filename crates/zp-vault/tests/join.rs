@@ -336,7 +336,7 @@ fn unusable_grants_and_weak_passwords_leave_no_file_behind() {
     assert!(!path_b.exists());
     let identity = JoinIdentity::generate().unwrap();
     let mut grant = grant_for(&mut a, &identity, "b2");
-    grant.keys[0].epoch = 2;
+    grant.keys[0].epoch = 0;
     assert!(matches!(
         join(identity, grant, PASSWORD_B),
         Err(VaultError::InvalidGrant(_))

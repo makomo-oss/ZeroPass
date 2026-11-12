@@ -129,6 +129,12 @@ fn init_add_get_list_totp_and_lock() {
     assert!(out.contains("this device"), "{out}");
     assert!(out.contains("0 change(s) held"), "{out}");
     assert!(out.contains("1 device(s)"), "{out}");
+    // revoke: only other devices, named by (the start of) their identifier
+    let own_id = out.split_whitespace().next().unwrap().to_owned();
+    let stderr = cli.fails(&["revoke", &own_id], &[]);
+    assert!(stderr.contains("cannot revoke itself"), "{stderr}");
+    let stderr = cli.fails(&["revoke", "not-an-identifier"], &[]);
+    assert!(stderr.contains("no device has that identifier"), "{stderr}");
 
     // add: the master password is prompted first, then the item's secret
     let login_id = added_id(&cli.ok(
@@ -483,6 +489,38 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
             "{out}"
         );
     }
+
+    // The PC revokes the phone: its keys are replaced, and the phone, although it
+    // still has its vault file and password, is refused and cannot follow.
+    let phone_id = pc
+        .ok(&["devices"], &[])
+        .lines()
+        .find(|line| line.contains("Test phone"))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let stderr = pc.fails(&["revoke", &phone_id[..8]], &[PASSWORD, "n"]);
+    assert!(stderr.contains("nothing was changed"), "{stderr}");
+    let out = pc.ok(&["revoke", &phone_id[..8]], &[PASSWORD, "y"]);
+    assert!(out.contains("revoked device \"Test phone\""), "{out}");
+    let out = pc.ok(&["devices"], &[]);
+    assert!(
+        out.contains("revoked") && out.contains("2 device(s)"),
+        "{out}"
+    );
+    let stderr = pc.fails(&["revoke", &phone_id], &[PASSWORD, "y"]);
+    assert!(stderr.contains("already been revoked"), "{stderr}");
+
+    let secret = added_id(&pc.ok(
+        &["add", "login", "--title", "after-revocation"],
+        &[PASSWORD, "post-revocation-password"],
+    ));
+    let out = pc.ok(&["get", &secret, "--reveal"], &[PASSWORD]);
+    assert!(out.contains("password: post-revocation-password"), "{out}");
+    // The phone finds nobody to sync with any more.
+    let phone_out = phone.ok(&["sync", "--seconds", "3"], &[]);
+    assert!(!phone_out.contains("synced with \""), "{phone_out}");
+    phone.fails(&["get", &secret], &[NEW_PASSWORD]);
 }
 
 #[test]

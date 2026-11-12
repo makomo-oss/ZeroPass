@@ -17,10 +17,11 @@
 use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use zp_crypto::{
     DeviceId, DeviceSigningKey, Domain, DomainId, ItemContext, ItemId, ItemKey, SignatureBytes,
-    VaultId, VaultKey,
+    VaultId,
 };
 use zp_sync::{Hlc, Op, OpBody, Payload};
 
+use crate::keys::KeySource;
 use crate::model::{Content, Item};
 use crate::{Store, VaultError};
 
@@ -264,10 +265,11 @@ impl Store {
     /// cannot issue duplicates.
     fn write_local<D: Domain>(
         &mut self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         changes: Vec<Change>,
     ) -> Result<Vec<ItemId>, VaultError> {
         let signer = self.signer(key)?;
+        let (key_epoch, write_key) = key.write_key();
         let (vault_id, device_id, now_ms) = (self.vault_id(), self.device_id(), self.now_ms());
 
         let tx = self
@@ -303,7 +305,7 @@ impl Store {
                 hlc: clock.tick(now_ms).ok_or(VaultError::ClockExhausted)?,
                 device_id,
                 seq,
-                key_epoch: 1,
+                key_epoch,
                 payload: None,
                 signature: None,
             };
@@ -312,7 +314,7 @@ impl Store {
                 let dek = ItemKey::<D>::generate()?;
                 row.payload = Some(Payload {
                     ciphertext: dek.seal_item(&ctx, &content.to_plaintext())?,
-                    wrapped_dek: key.wrap_item_key(&dek, &ctx)?,
+                    wrapped_dek: write_key.wrap_item_key(&dek, &ctx)?,
                 });
             }
             sign_row(&mut row, &vault_id, &signer);
@@ -367,7 +369,7 @@ impl Store {
     /// Decrypts a stored version. Returns `None` for a tombstone.
     fn open_version<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         row: &ItemRow,
     ) -> Result<Option<Content>, VaultError> {
         if row.domain != D::ID {
@@ -377,7 +379,21 @@ impl Store {
             return Ok(None);
         };
         let ctx = context(self.vault_id(), row);
-        let dek = key.unwrap_item_key(&ctx, &payload.wrapped_dek)?;
+        // Usually one key per generation; after concurrent rotations, the one
+        // that opens this version.
+        let mut dek = Err(VaultError::KeyGenerationUnavailable {
+            domain: D::ID,
+            epoch: row.key_epoch,
+        });
+        for candidate in key.keys_of(row.key_epoch) {
+            dek = candidate
+                .unwrap_item_key(&ctx, &payload.wrapped_dek)
+                .map_err(VaultError::from);
+            if dek.is_ok() {
+                break;
+            }
+        }
+        let dek = dek?;
         let plaintext = dek.open_item(&ctx, &payload.ciphertext)?;
         Content::from_plaintext(&plaintext, row.domain).map(Some)
     }
@@ -385,7 +401,7 @@ impl Store {
     /// Stores a new item and returns its identifier.
     pub fn insert_item<I: Item>(
         &mut self,
-        key: &VaultKey<I::Domain>,
+        key: &impl KeySource<I::Domain>,
         item: I,
     ) -> Result<ItemId, VaultError> {
         let ids = self.write_local(key, vec![Change::Create(item.into_content())])?;
@@ -397,7 +413,7 @@ impl Store {
     /// which each wait for the disk.
     pub fn insert_items<I: Item>(
         &mut self,
-        key: &VaultKey<I::Domain>,
+        key: &impl KeySource<I::Domain>,
         items: impl IntoIterator<Item = I>,
     ) -> Result<Vec<ItemId>, VaultError> {
         let changes = items
@@ -415,7 +431,7 @@ impl Store {
     /// domain: an item never changes domain.
     pub fn update_item<I: Item>(
         &mut self,
-        key: &VaultKey<I::Domain>,
+        key: &impl KeySource<I::Domain>,
         item_id: ItemId,
         item: I,
     ) -> Result<(), VaultError> {
@@ -443,7 +459,7 @@ impl Store {
     /// Reads and decrypts an item of kind `I`.
     pub fn get_item<I: Item>(
         &self,
-        key: &VaultKey<I::Domain>,
+        key: &impl KeySource<I::Domain>,
         item_id: ItemId,
     ) -> Result<I, VaultError> {
         let content = self.get_content(key, item_id)?;
@@ -453,7 +469,7 @@ impl Store {
     /// Reads and decrypts an item of any kind stored in domain `D`.
     pub fn get_content<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         item_id: ItemId,
     ) -> Result<Content, VaultError> {
         let row = self.live_row(item_id)?;
@@ -464,7 +480,7 @@ impl Store {
     /// Decrypts every live item of domain `D`.
     pub fn list_items<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
     ) -> Result<Vec<(ItemId, Content)>, VaultError> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {COLUMNS} FROM items WHERE domain = ?1 AND deleted = 0 ORDER BY item_id"
@@ -485,7 +501,7 @@ impl Store {
     /// nothing searchable is stored in the clear.
     pub fn search_items<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         query: &str,
     ) -> Result<Vec<(ItemId, Content)>, VaultError> {
         let mut items = self.list_items(key)?;
@@ -497,7 +513,7 @@ impl Store {
     /// content stays in the history.
     pub fn delete_item<D: Domain>(
         &mut self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         item_id: ItemId,
     ) -> Result<(), VaultError> {
         self.live_row_of::<D>(item_id)?;
@@ -509,7 +525,7 @@ impl Store {
     /// not included.
     pub fn item_history<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         item_id: ItemId,
     ) -> Result<Vec<HistoryEntry>, VaultError> {
         let mut statement = self.conn.prepare(&format!(
@@ -541,7 +557,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use zp_crypto::{CryptoError, Passkey, Password, Totp};
+    use zp_crypto::{CryptoError, Passkey, Password, Totp, VaultKey};
 
     use super::*;
     use crate::clock::Clock;

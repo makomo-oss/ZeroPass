@@ -57,6 +57,8 @@ use crate::{CryptoError, Domain, VaultId, rng};
 pub const WRAPPED_KEY_LEN: usize = KEY_LEN + ENVELOPE_OVERHEAD;
 
 const INFO_KEK_RECOVERY: &[u8] = b"zeropass/v1/kek/recovery";
+const LABEL_VK_ROTATE: &str = "zeropass/v1/vk-rotate";
+const LABEL_VK_CHAIN: &str = "zeropass/v1/vk-chain";
 
 /// Opens an envelope that must contain exactly one key.
 fn open_key<D: Domain, R: Role>(
@@ -127,6 +129,81 @@ impl<D: Domain> VaultKey<D> {
     ) -> Result<ItemKey<D>, CryptoError> {
         open_key(self.expose(), &ctx.aad(LABEL_DEK_WRAP, D::ID), wrapped)
     }
+
+    /// Wraps the vault key that replaces this one (`docs/spec/sync.md` §8).
+    ///
+    /// `self` is a key of generation `epoch - 1` and `successor` the new key of
+    /// generation `epoch`. Whoever holds this key can follow the rotation; a
+    /// device that only holds the successor cannot go back.
+    pub fn wrap_successor(
+        &self,
+        successor: &VaultKey<D>,
+        vault_id: &VaultId,
+        epoch: u32,
+    ) -> Result<Vec<u8>, CryptoError> {
+        seal(
+            self.expose(),
+            &epoch_aad(LABEL_VK_ROTATE, vault_id, D::ID, &[epoch]),
+            successor.expose(),
+        )
+    }
+
+    /// Recovers the vault key of generation `epoch` from what
+    /// [`Self::wrap_successor`] produced with this key.
+    pub fn unwrap_successor(
+        &self,
+        vault_id: &VaultId,
+        epoch: u32,
+        wrapped: &[u8],
+    ) -> Result<Self, CryptoError> {
+        open_key(
+            self.expose(),
+            &epoch_aad(LABEL_VK_ROTATE, vault_id, D::ID, &[epoch]),
+            wrapped,
+        )
+    }
+
+    /// Wraps another vault key of the same domain for this device's own use, so
+    /// that a device whose key slot holds this key can still read what was
+    /// written under `other`. `own_epoch` and `other_epoch` are the generations of
+    /// this key and of `other`. Never leaves the vault file.
+    pub fn wrap_linked(
+        &self,
+        own_epoch: u32,
+        other: &VaultKey<D>,
+        other_epoch: u32,
+        vault_id: &VaultId,
+    ) -> Result<Vec<u8>, CryptoError> {
+        seal(
+            self.expose(),
+            &epoch_aad(LABEL_VK_CHAIN, vault_id, D::ID, &[other_epoch, own_epoch]),
+            other.expose(),
+        )
+    }
+
+    /// Recovers the vault key that [`Self::wrap_linked`] wrapped under this key.
+    pub fn unwrap_linked(
+        &self,
+        own_epoch: u32,
+        other_epoch: u32,
+        vault_id: &VaultId,
+        wrapped: &[u8],
+    ) -> Result<Self, CryptoError> {
+        open_key(
+            self.expose(),
+            &epoch_aad(LABEL_VK_CHAIN, vault_id, D::ID, &[other_epoch, own_epoch]),
+            wrapped,
+        )
+    }
+}
+
+/// `label ‖ 0x00 ‖ vault_id ‖ domain ‖ epoch(4) …`
+fn epoch_aad(label: &str, vault_id: &VaultId, domain: crate::DomainId, epochs: &[u32]) -> Vec<u8> {
+    let mut aad = vault_key_aad(label, vault_id, domain);
+    for epoch in epochs {
+        aad.extend_from_slice(&epoch.to_be_bytes());
+    }
+    aad
 }
 
 /// The recovery key `RK`: 32 random bytes the user keeps on paper.
@@ -335,6 +412,59 @@ mod tests {
             as_item_key.open_item(&ctx(), &wrapped).unwrap_err(),
             CryptoError::Decrypt
         );
+    }
+
+    #[test]
+    fn a_successor_is_reached_only_from_the_previous_key_and_generation() {
+        let old = VaultKey::<Password>::generate().unwrap();
+        let new = VaultKey::<Password>::generate().unwrap();
+        let update = old.wrap_successor(&new, &VAULT, 2).unwrap();
+        assert_eq!(update.len(), WRAPPED_KEY_LEN);
+        assert!(same(
+            &new,
+            &old.unwrap_successor(&VAULT, 2, &update).unwrap()
+        ));
+
+        // Another generation, another vault, the new key itself, a stranger's key.
+        let stranger = VaultKey::<Password>::generate().unwrap();
+        for result in [
+            old.unwrap_successor(&VAULT, 3, &update),
+            old.unwrap_successor(&OTHER_VAULT, 2, &update),
+            new.unwrap_successor(&VAULT, 2, &update),
+            stranger.unwrap_successor(&VAULT, 2, &update),
+        ] {
+            assert_eq!(result.unwrap_err(), CryptoError::Decrypt);
+        }
+        // The same bytes used as a key of another domain open nothing.
+        let old_as_totp: VaultKey<Totp> = VaultKey::from_transfer_bytes(&old.to_transfer_bytes());
+        assert_eq!(
+            old_as_totp
+                .unwrap_successor(&VAULT, 2, &update)
+                .unwrap_err(),
+            CryptoError::Decrypt
+        );
+    }
+
+    #[test]
+    fn linked_keys_are_bound_to_both_generations_and_differ_from_updates() {
+        let slot_key = VaultKey::<Totp>::generate().unwrap();
+        let older = VaultKey::<Totp>::generate().unwrap();
+        let link = slot_key.wrap_linked(3, &older, 1, &VAULT).unwrap();
+        assert!(same(
+            &older,
+            &slot_key.unwrap_linked(3, 1, &VAULT, &link).unwrap()
+        ));
+        for result in [
+            slot_key.unwrap_linked(3, 2, &VAULT, &link),
+            slot_key.unwrap_linked(2, 1, &VAULT, &link),
+            slot_key.unwrap_linked(3, 1, &OTHER_VAULT, &link),
+            older.unwrap_linked(3, 1, &VAULT, &link),
+            // A link is not a rotation update, whatever the generation.
+            slot_key.unwrap_successor(&VAULT, 1, &link),
+            slot_key.unwrap_successor(&VAULT, 3, &link),
+        ] {
+            assert_eq!(result.unwrap_err(), CryptoError::Decrypt);
+        }
     }
 
     #[test]

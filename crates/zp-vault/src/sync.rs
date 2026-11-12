@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use zp_crypto::{DeviceId, VaultId};
 use zp_sync::{
-    ApplyReport, DeviceRecord, Incoming, Op, OpLog, Placement, Registry, Revocation, Stamp,
-    SyncError, VersionVector, check_incoming, place,
+    ApplyReport, DeviceRecord, Incoming, KeyUpdate, Op, OpLog, Placement, Registry, Revocation,
+    Stamp, SyncError, VersionVector, check_incoming, place,
 };
 
 use crate::items::{
@@ -149,6 +149,14 @@ impl OpLog for Store {
         tx.commit()?;
         Ok(report)
     }
+
+    fn key_updates(&self) -> Result<Vec<KeyUpdate>, VaultError> {
+        Store::key_updates(self)
+    }
+
+    fn merge_key_updates(&mut self, updates: Vec<KeyUpdate>) -> Result<usize, VaultError> {
+        Store::merge_key_updates(self, updates)
+    }
 }
 
 /// A vault syncs through its file, whether or not any domain is unlocked.
@@ -190,5 +198,13 @@ impl OpLog for crate::Vault {
 
     fn apply(&mut self, ops: Vec<Op>) -> Result<ApplyReport, VaultError> {
         self.store.apply(ops)
+    }
+
+    fn key_updates(&self) -> Result<Vec<KeyUpdate>, VaultError> {
+        Store::key_updates(&self.store)
+    }
+
+    fn merge_key_updates(&mut self, updates: Vec<KeyUpdate>) -> Result<usize, VaultError> {
+        Store::merge_key_updates(&mut self.store, updates)
     }
 }

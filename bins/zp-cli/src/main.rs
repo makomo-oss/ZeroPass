@@ -151,6 +151,11 @@ enum Command {
     },
     /// List the devices of this vault.
     Devices,
+    /// Revoke a lost or retired device and replace the vault keys.
+    Revoke {
+        /// The device identifier as shown by `devices`, or the start of it.
+        device: String,
+    },
     /// Change the master password.
     Passwd,
 }
@@ -476,6 +481,63 @@ impl Session {
                     )?;
                 }
                 writeln!(out, "{} device(s)", registry.records().count())?;
+            }
+            Command::Revoke { device } => {
+                let registry = self.vault.registry()?;
+                let own = self.vault.device_id();
+                let prefix = device.trim().to_ascii_lowercase();
+                let mut matches = registry.records().filter(|record| {
+                    !prefix.is_empty() && record.device_id.to_string().starts_with(&prefix)
+                });
+                let record = match (matches.next(), matches.next()) {
+                    (Some(record), None) => record.clone(),
+                    (None, _) => return Err("no device has that identifier; see `devices`".into()),
+                    _ => {
+                        return Err(
+                            "more than one device matches; give more of the identifier".into()
+                        );
+                    }
+                };
+                if record.device_id == own {
+                    return Err(
+                        "this device cannot revoke itself; do it from another device".into(),
+                    );
+                }
+                if registry.is_revoked(&record.device_id) {
+                    return Err("that device has already been revoked".into());
+                }
+                // Replacing the keys of a domain takes that domain, so all of
+                // them are unlocked first.
+                for domain in DomainId::ALL {
+                    if self.vault.has_domain(domain)? {
+                        self.ensure_unlocked(domain)?;
+                    }
+                }
+                let question = format!(
+                    "Revoke the device \"{}\" ({})? This cannot be undone. [y/N] ",
+                    record.name, record.device_id
+                );
+                let confirmed = matches!(
+                    self.input.line(&question)?,
+                    Some(answer) if answer.trim().eq_ignore_ascii_case("y")
+                );
+                if !confirmed {
+                    return Err("nothing was changed".into());
+                }
+                self.vault.revoke_device(record.device_id)?;
+                writeln!(
+                    out,
+                    "revoked device \"{}\" ({})",
+                    record.name, record.device_id
+                )?;
+                writeln!(
+                    out,
+                    "The vault keys were replaced. The other devices receive the new keys with their next sync."
+                )?;
+                writeln!(
+                    out,
+                    "What the revoked device already holds stays readable to it: change those passwords if it was stolen."
+                )?;
             }
             Command::Passwd => {
                 let current = self.input.secret("Current master password: ")?;

@@ -14,8 +14,8 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 use zp_crypto::{
-    ChannelKey, DeviceId, DeviceSigningKey, DomainId, HardwareBound, HardwareKeyStore, KEY_LEN,
-    Passkey, Password, SignPublicKey, Totp, VaultId, VaultKey,
+    ChannelKey, DeviceId, DeviceSigningKey, Domain, DomainId, HardwareBound, HardwareKeyStore,
+    KEY_LEN, Passkey, Password, SignPublicKey, Totp, VaultId, VaultKey,
 };
 use zp_sync::{ChannelPublicKey, DeviceRecord, Revocation};
 
@@ -23,9 +23,6 @@ use crate::clock::Clock;
 use crate::keyslots::{PlainSlot, SlotKind};
 use crate::vault::{Keys, check_master_password, new_password_slot};
 use crate::{AutoLock, CreateOptions, KdfChoice, Store, Vault, VaultError};
-
-/// The key generation every grant currently carries.
-const FIRST_EPOCH: u32 = 1;
 
 /// The keys a device generates for itself before it joins a vault.
 pub struct JoinIdentity {
@@ -96,7 +93,9 @@ pub struct VaultGrant {
     pub records: Vec<DeviceRecord>,
     /// The revocations known to the introducing device.
     pub revocations: Vec<Revocation>,
-    /// The vault keys of every domain of the vault.
+    /// The vault keys of every domain of the vault, of every generation the
+    /// introducing device holds. Within a domain, the key to write with (and to
+    /// keep in the key slot) comes last.
     pub keys: Vec<GrantedKey>,
 }
 
@@ -124,24 +123,12 @@ impl Vault {
         let now_ms = self.store.now_ms();
 
         // Collect the keys first: nothing is written unless all are available.
-        let mut keys = vec![GrantedKey {
-            domain: DomainId::Password,
-            epoch: FIRST_EPOCH,
-            key: self.keys.get::<Password>(now_ms)?.to_transfer_bytes(),
-        }];
+        let mut keys = self.granted_keys::<Password>()?;
         if self.has_domain(DomainId::Totp)? {
-            keys.push(GrantedKey {
-                domain: DomainId::Totp,
-                epoch: FIRST_EPOCH,
-                key: self.keys.get::<Totp>(now_ms)?.to_transfer_bytes(),
-            });
+            keys.extend(self.granted_keys::<Totp>()?);
         }
         if self.has_domain(DomainId::Passkey)? {
-            keys.push(GrantedKey {
-                domain: DomainId::Passkey,
-                epoch: FIRST_EPOCH,
-                key: self.keys.get::<Passkey>(now_ms)?.to_transfer_bytes(),
-            });
+            keys.extend(self.granted_keys::<Passkey>()?);
         }
 
         let key = self.keys.get::<Password>(now_ms)?;
@@ -154,6 +141,20 @@ impl Vault {
             revocations: registry.revocations().cloned().collect(),
             keys,
         })
+    }
+
+    /// The keys of domain `D` as a joining device needs them.
+    fn granted_keys<D: Domain>(&mut self) -> Result<Vec<GrantedKey>, VaultError> {
+        let ring = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
+        Ok(ring
+            .export()
+            .into_iter()
+            .map(|(epoch, key)| GrantedKey {
+                domain: D::ID,
+                epoch,
+                key,
+            })
+            .collect())
     }
 
     /// Creates this device's vault file from a grant.
@@ -179,8 +180,8 @@ impl Vault {
         {
             return Err(VaultError::WeakKdf);
         }
-        if grant.keys.iter().any(|key| key.epoch != FIRST_EPOCH) {
-            return Err(VaultError::InvalidGrant("unsupported key generation"));
+        if grant.keys.iter().any(|key| key.epoch == 0) {
+            return Err(VaultError::InvalidGrant("key generations start at 1"));
         }
         let clock = options.clock.unwrap_or_else(Clock::system);
         let store = Store::create_for_vault(path, grant.vault_id, identity.device_id, clock)?;
@@ -208,7 +209,6 @@ impl Vault {
     ) -> Result<Self, VaultError> {
         let vault_id = store.vault_id();
         let now_ms = store.now_ms();
-        let granted = |domain: DomainId| grant.keys.iter().find(|key| key.domain == domain);
 
         store.adopt_channel_key(&identity.channel_key)?;
         // Fails unless the registry contains this device with exactly its keys.
@@ -218,55 +218,101 @@ impl Vault {
             grant.revocations.clone(),
         )?;
 
-        let vk_p = granted(DomainId::Password)
-            .map(|key| VaultKey::<Password>::from_transfer_bytes(&key.key))
-            .ok_or(VaultError::InvalidGrant(
-                "the password domain key is missing",
-            ))?;
-        let password_slot = new_password_slot(&vk_p, &vault_id, master_password, kdf)?;
+        let vk_p = Granted::<Password>::from(&grant).ok_or(VaultError::InvalidGrant(
+            "the password domain key is missing",
+        ))?;
+        let password_slot =
+            new_password_slot(&vk_p.slot_key, &vault_id, master_password, kdf, vk_p.epoch)?;
 
         // The hardware-bound domains need a key store on this device.
-        let vk_t = hardware
-            .and_then(|_| granted(DomainId::Totp))
-            .map(|key| VaultKey::<Totp>::from_transfer_bytes(&key.key));
-        let vk_k = hardware
-            .and_then(|_| granted(DomainId::Passkey))
-            .map(|key| VaultKey::<Passkey>::from_transfer_bytes(&key.key));
+        let vk_t = hardware.and_then(|_| Granted::<Totp>::from(&grant));
+        let vk_k = hardware.and_then(|_| Granted::<Passkey>::from(&grant));
         let mut hardware_slots = Vec::new();
         if let Some(hardware) = hardware {
             if let Some(vk) = &vk_t {
-                hardware_slots.push((DomainId::Totp, hardware_slot(vk, hardware, &vault_id)?));
+                hardware_slots.push((
+                    DomainId::Totp,
+                    vk.epoch,
+                    hardware_slot(&vk.slot_key, hardware, &vault_id)?,
+                ));
             }
             if let Some(vk) = &vk_k {
-                hardware_slots.push((DomainId::Passkey, hardware_slot(vk, hardware, &vault_id)?));
+                hardware_slots.push((
+                    DomainId::Passkey,
+                    vk.epoch,
+                    hardware_slot(&vk.slot_key, hardware, &vault_id)?,
+                ));
             }
         }
         let plain: Vec<PlainSlot<'_>> = hardware_slots
             .iter()
-            .map(|(domain, blob)| PlainSlot {
+            .map(|(domain, epoch, blob)| PlainSlot {
                 domain: *domain,
                 kind: SlotKind::Hardware,
+                epoch: *epoch,
                 blob,
             })
             .collect();
         store.write_slots(Some(&password_slot), &plain)?;
 
         let mut keys = Keys::default();
-        store.add_device_key_slot(&identity.signing_key, &vk_p)?;
-        keys.insert(vk_p, now_ms);
+        vk_p.install(&mut store, &identity.signing_key, &mut keys, now_ms)?;
         if let Some(vk) = vk_t {
-            store.add_device_key_slot(&identity.signing_key, &vk)?;
-            keys.insert(vk, now_ms);
+            vk.install(&mut store, &identity.signing_key, &mut keys, now_ms)?;
         }
         if let Some(vk) = vk_k {
-            store.add_device_key_slot(&identity.signing_key, &vk)?;
-            keys.insert(vk, now_ms);
+            vk.install(&mut store, &identity.signing_key, &mut keys, now_ms)?;
         }
         Ok(Self {
             store,
             keys,
             auto_lock: AutoLock::default(),
         })
+    }
+}
+
+/// The keys of one domain as they came in a grant.
+struct Granted<D: Domain> {
+    /// The key to write with: it goes into the key slot.
+    slot_key: VaultKey<D>,
+    epoch: u32,
+    /// The keys of the other generations, needed to read older versions.
+    others: Vec<(u32, VaultKey<D>)>,
+}
+
+impl<D: Domain> Granted<D> {
+    fn from(grant: &VaultGrant) -> Option<Self> {
+        let mut keys: Vec<(u32, VaultKey<D>)> = grant
+            .keys
+            .iter()
+            .filter(|key| key.domain == D::ID)
+            .map(|key| (key.epoch, VaultKey::from_transfer_bytes(&key.key)))
+            .collect();
+        let (epoch, slot_key) = keys.pop()?;
+        Some(Self {
+            slot_key,
+            epoch,
+            others: keys,
+        })
+    }
+
+    /// After the key slot has been written: stores the other keys wrapped
+    /// under the slot key, gives the domain the device signing key and unlocks
+    /// it.
+    fn install(
+        self,
+        store: &mut Store,
+        signing_key: &DeviceSigningKey,
+        keys: &mut Keys,
+        now_ms: u64,
+    ) -> Result<(), VaultError> {
+        for (epoch, key) in &self.others {
+            store.add_key_link(&self.slot_key, self.epoch, key, *epoch)?;
+        }
+        let ring = store.key_ring(self.slot_key, self.epoch)?;
+        store.add_device_key_slot(signing_key, &ring)?;
+        keys.insert(ring, now_ms);
+        Ok(())
     }
 }
 

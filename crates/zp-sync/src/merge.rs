@@ -9,7 +9,7 @@
 use zp_crypto::{DeviceId, VaultId};
 
 use crate::hlc::is_acceptable;
-use crate::{DeviceRecord, Op, Registry, Revocation, Stamp, SyncError, VersionVector};
+use crate::{DeviceRecord, KeyUpdate, Op, Registry, Revocation, Stamp, SyncError, VersionVector};
 
 /// What to do with an op that passed [`check_incoming`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +132,14 @@ pub trait OpLog {
     /// Validates and stores a batch of received ops. Either the whole batch is
     /// taken in, or (on any error) none of it.
     fn apply(&mut self, ops: Vec<Op>) -> Result<ApplyReport, Self::Error>;
+
+    /// Every key update held (`sync.md` §8). They are only handed to a peer
+    /// that has been checked against the registry.
+    fn key_updates(&self) -> Result<Vec<KeyUpdate>, Self::Error>;
+
+    /// Verifies and stores key updates received from a sync partner. Returns how
+    /// many were new. Either all of them are taken in, or (on any error) none.
+    fn merge_key_updates(&mut self, updates: Vec<KeyUpdate>) -> Result<usize, Self::Error>;
 }
 
 #[cfg(test)]

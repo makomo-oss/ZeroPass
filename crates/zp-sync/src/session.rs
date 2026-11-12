@@ -5,20 +5,25 @@
 //! [`Session::poll_send`] hands out, until [`Session::is_complete`].
 //!
 //! ```text
-//! Hello → Devices → Vector → Ops … Ops(last) → Done
+//! Hello → Devices → Vector → KeyUpdates → Ops … Ops(last) → Done
 //! ```
 //!
 //! Each side sends this sequence and expects the same sequence from its peer.
 //! The two directions are independent, except that a side can only choose which
 //! ops to send after it has seen the peer's `Vector`, and only sends `Done` after
 //! it has taken in all of the peer's ops.
+//! `KeyUpdates` is the one message that is not prepared up front: a side sends it
+//! only after the peer's `Devices` showed that the peer is a member in good
+//! standing, because a key update is exactly what a revoked device must not get.
 
 use std::collections::VecDeque;
 
 use zp_crypto::DeviceId;
 
 use crate::wire::{self, Body, Envelope, Hello, Ops};
-use crate::{ApplyReport, ChannelPublicKey, Op, OpLog, SyncError, VersionVector};
+use crate::{
+    ApplyReport, ChannelPublicKey, KeyUpdate, MAX_KEY_UPDATES, Op, OpLog, SyncError, VersionVector,
+};
 
 /// The version of the session protocol implemented here.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -34,6 +39,7 @@ enum Expect {
     Hello,
     Devices,
     Vector,
+    KeyUpdates,
     Ops,
     Done,
     Nothing,
@@ -50,6 +56,8 @@ pub struct SessionReport {
     pub sent: usize,
     /// Whether the registry changed because of what the peer sent.
     pub registry_changed: bool,
+    /// How many key updates the peer sent that were new here.
+    pub key_updates_received: usize,
     /// The peer's version vector at the end of the session, once received.
     pub peer_vector: Option<VersionVector>,
 }
@@ -183,6 +191,17 @@ impl Session {
                 if registry.is_revoked(&log.device_id()) {
                     return Err(SyncError::RevokedDevice(log.device_id()).into());
                 }
+                // The peer is who it claims to be and has not been revoked: only
+                // now may it learn the current vault keys.
+                let updates = log.key_updates()?;
+                self.outbox
+                    .push_back(Envelope::encode_body(Body::KeyUpdates(wire::KeyUpdates {
+                        updates: updates
+                            .iter()
+                            .take(MAX_KEY_UPDATES)
+                            .map(Into::into)
+                            .collect(),
+                    }))?);
                 self.expect = Expect::Vector;
             }
             (Expect::Vector, Body::Vector(vector)) => {
@@ -198,6 +217,18 @@ impl Session {
                         })
                         .collect(),
                 );
+                self.expect = Expect::KeyUpdates;
+            }
+            (Expect::KeyUpdates, Body::KeyUpdates(message)) => {
+                if message.updates.len() > MAX_KEY_UPDATES {
+                    return Err(SyncError::MessageTooLarge.into());
+                }
+                let updates = message
+                    .updates
+                    .into_iter()
+                    .map(KeyUpdate::try_from)
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.report.key_updates_received += log.merge_key_updates(updates)?;
                 self.expect = Expect::Ops;
             }
             (Expect::Ops, Body::Ops(ops)) => {
@@ -486,7 +517,7 @@ mod tests {
             let message = session_b.poll_send(b).unwrap().unwrap();
             session_a.receive(a, &message).unwrap();
         }
-        for _ in 0..4 {
+        for _ in 0..5 {
             let message = session_a.poll_send(a).unwrap().unwrap();
             session_b.receive(b, &message).unwrap();
         }
@@ -608,6 +639,86 @@ mod tests {
     }
 
     #[test]
+    fn key_updates_reach_every_remaining_device() {
+        let mut logs = devices(3);
+        let by_0 = logs[0].rotate_key(DomainId::Password, 2, vec![1; 73]);
+        let by_1 = logs[1].rotate_key(DomainId::Totp, 2, vec![2; 73]);
+
+        let (report_0, report_1) = sync(&mut logs, 0, 1);
+        assert_eq!(report_0.key_updates_received, 1);
+        assert_eq!(report_1.key_updates_received, 1);
+        // Device 2 never meets device 1, and still gets its update.
+        let (_, report_2) = sync(&mut logs, 0, 2);
+        assert_eq!(report_2.key_updates_received, 2);
+        for log in &logs {
+            let mut expected = vec![by_0.clone(), by_1.clone()];
+            expected.sort();
+            assert_eq!(log.key_updates().unwrap(), expected);
+        }
+        // Nothing is new the second time.
+        let (report_0, report_2) = sync(&mut logs, 0, 2);
+        assert_eq!(report_0.key_updates_received, 0);
+        assert_eq!(report_2.key_updates_received, 0);
+    }
+
+    #[test]
+    fn a_revoked_device_is_never_sent_a_key_update() {
+        let mut logs = devices(2);
+        sync(&mut logs, 0, 1);
+        let revoked = logs[1].device_id();
+        logs[0].revoke(revoked).unwrap();
+        logs[0].rotate_key(DomainId::Password, 2, vec![1; 73]);
+
+        let (a, b) = two(&mut logs, 0, 1);
+        let mut session = Session::start(a, None).unwrap();
+        let mut peer = Session::start(b, None).unwrap();
+        let mut sent = Vec::new();
+        // The revoked device plays along as long as it can.
+        loop {
+            while let Some(message) = session.poll_send(a).unwrap() {
+                sent.push(message);
+            }
+            let Some(message) = peer.poll_send(b).unwrap() else {
+                break;
+            };
+            if session.receive(a, &message).is_err() {
+                break;
+            }
+        }
+        while let Some(message) = session.poll_send(a).unwrap() {
+            sent.push(message);
+        }
+        assert!(sent.len() >= 3);
+        for message in sent {
+            assert!(!matches!(
+                Envelope::decode_body(&message).unwrap(),
+                Body::KeyUpdates(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_forged_key_update_ends_the_session() {
+        let mut logs = devices(2);
+        let mut update = logs[1].rotate_key(DomainId::Password, 2, vec![1; 73]);
+        update.epoch = 3;
+
+        let (a, b) = two(&mut logs, 0, 1);
+        let mut session = Session::start(a, None).unwrap();
+        let mut peer = Session::start(b, None).unwrap();
+        for _ in 0..3 {
+            let message = peer.poll_send(b).unwrap().unwrap();
+            session.receive(a, &message).unwrap();
+        }
+        let forged = Envelope::encode_body(Body::KeyUpdates(wire::KeyUpdates {
+            updates: vec![(&update).into()],
+        }))
+        .unwrap();
+        assert_eq!(session.receive(a, &forged), Err(SyncError::BadSignature));
+        assert!(a.key_updates().unwrap().is_empty());
+    }
+
+    #[test]
     fn messages_out_of_sequence_end_the_session() {
         let mut logs = devices(2);
         let (a, b) = two(&mut logs, 0, 1);
@@ -664,7 +775,7 @@ mod tests {
             let message = session_b.poll_send(b).unwrap().unwrap();
             session_a.receive(a, &message).unwrap();
         }
-        for _ in 0..3 {
+        for _ in 0..4 {
             let message = session_a.poll_send(a).unwrap().unwrap();
             session_b.receive(b, &message).unwrap();
         }

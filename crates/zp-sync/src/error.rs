@@ -66,6 +66,9 @@ pub enum SyncError {
     /// A cryptographic primitive failed (for example the random number generator).
     #[error(transparent)]
     Crypto(#[from] zp_crypto::CryptoError),
+    /// A key update violates the format rules.
+    #[error("malformed key update: {0}")]
+    MalformedKeyUpdate(&'static str),
     /// An op tries to move an item to another key domain.
     #[error("an op changes the key domain of an existing item")]
     DomainChanged,

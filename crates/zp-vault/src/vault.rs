@@ -25,6 +25,7 @@ use zp_sync::{Registry, VersionVector};
 
 use crate::clock::Clock;
 use crate::device::default_device_name;
+use crate::keys::KeyRing;
 use crate::keyslots::{PasswordSlot, PlainSlot, SlotKind};
 use crate::model::{Content, Item, TotpEntry};
 use crate::totp::{self, TotpCode};
@@ -101,8 +102,8 @@ impl AutoLock {
     }
 }
 
-/// An unlocked vault key, type-erased so the three domains can share one table.
-/// Dropping it wipes the key.
+/// The key ring of an unlocked domain, type-erased so the three domains can share
+/// one table. Dropping it wipes the keys.
 struct Unlocked {
     key: Box<dyn Any + Send + Sync>,
     last_used_ms: u64,
@@ -117,15 +118,22 @@ impl Keys {
         domain.as_u8() as usize - 1
     }
 
-    pub(crate) fn insert<D: Domain>(&mut self, key: VaultKey<D>, now_ms: u64) {
+    pub(crate) fn insert<D: Domain>(&mut self, ring: KeyRing<D>, now_ms: u64) {
         self.0[Self::index(D::ID)] = Some(Unlocked {
-            key: Box::new(key),
+            key: Box::new(ring),
             last_used_ms: now_ms,
         });
     }
 
-    /// Borrows the key of domain `D` and records the use.
-    pub(crate) fn get<D: Domain>(&mut self, now_ms: u64) -> Result<&VaultKey<D>, VaultError> {
+    /// Swaps in a rebuilt ring without counting it as a use.
+    fn replace<D: Domain>(&mut self, ring: KeyRing<D>) {
+        if let Some(unlocked) = self.0[Self::index(D::ID)].as_mut() {
+            unlocked.key = Box::new(ring);
+        }
+    }
+
+    /// Borrows the keys of domain `D` and records the use.
+    pub(crate) fn get<D: Domain>(&mut self, now_ms: u64) -> Result<&KeyRing<D>, VaultError> {
         let unlocked = self.0[Self::index(D::ID)]
             .as_mut()
             .ok_or(VaultError::Locked(D::ID))?;
@@ -190,6 +198,7 @@ pub(crate) fn new_password_slot(
     vault_id: &VaultId,
     master_password: &str,
     kdf: KdfChoice,
+    epoch: u32,
 ) -> Result<PasswordSlot, VaultError> {
     check_master_password(master_password)?;
     let params = kdf.resolve()?;
@@ -197,6 +206,7 @@ pub(crate) fn new_password_slot(
     let kek = derive_password_kek(master_password, &salt, &params)?;
     Ok(PasswordSlot {
         blob: vault_key.wrap(&kek, vault_id)?,
+        epoch,
         salt,
         params,
     })
@@ -245,7 +255,7 @@ impl Vault {
         let now_ms = store.now_ms();
 
         let vk_p = VaultKey::<Password>::generate()?;
-        let password_slot = new_password_slot(&vk_p, &vault_id, master_password, kdf)?;
+        let password_slot = new_password_slot(&vk_p, &vault_id, master_password, kdf, 1)?;
 
         let mut hardware_keys = None;
         let mut hardware_slots = Vec::new();
@@ -267,6 +277,7 @@ impl Vault {
             .map(|(domain, blob)| PlainSlot {
                 domain: *domain,
                 kind: SlotKind::Hardware,
+                epoch: 1,
                 blob,
             })
             .collect();
@@ -276,12 +287,12 @@ impl Vault {
         let signer = store.provision_device(device_name)?;
         store.add_device_key_slot(&signer, &vk_p)?;
         let mut keys = Keys::default();
-        keys.insert(vk_p, now_ms);
+        keys.insert(store.key_ring(vk_p, 1)?, now_ms);
         if let Some((vk_t, vk_k)) = hardware_keys {
             store.add_device_key_slot(&signer, &vk_t)?;
             store.add_device_key_slot(&signer, &vk_k)?;
-            keys.insert(vk_t, now_ms);
-            keys.insert(vk_k, now_ms);
+            keys.insert(store.key_ring(vk_t, 1)?, now_ms);
+            keys.insert(store.key_ring(vk_k, 1)?, now_ms);
         }
 
         Ok(Self {
@@ -341,14 +352,22 @@ impl Vault {
             .ok_or(VaultError::Corrupt("the vault has no password slot"))
     }
 
-    /// Derives `KEK-P` from `master_password` and opens the password slot with it.
-    fn open_password_slot(&self, master_password: &str) -> Result<VaultKey<Password>, VaultError> {
+    /// Derives `KEK-P` from `master_password` and opens the password slot with
+    /// it. Returns the key in the slot and its generation.
+    fn open_password_slot(
+        &self,
+        master_password: &str,
+    ) -> Result<(VaultKey<Password>, u32), VaultError> {
         let slot = self.password_slot()?;
         let kek = derive_password_kek(master_password, &slot.salt, &slot.params)?;
-        VaultKey::unwrap(&kek, &self.store.vault_id(), &slot.blob).map_err(|error| match error {
-            CryptoError::Decrypt => VaultError::WrongPassword,
-            other => VaultError::Crypto(other),
-        })
+        let key =
+            VaultKey::unwrap(&kek, &self.store.vault_id(), &slot.blob).map_err(
+                |error| match error {
+                    CryptoError::Decrypt => VaultError::WrongPassword,
+                    other => VaultError::Crypto(other),
+                },
+            )?;
+        Ok((key, slot.epoch))
     }
 
     /// The device signing key, taken from domain `D` if it is unlocked and has a
@@ -401,8 +420,9 @@ impl Vault {
 
     /// Unlocks the password domain, and only the password domain.
     pub fn unlock_password(&mut self, master_password: &str) -> Result<(), VaultError> {
-        let key = self.open_password_slot(master_password)?;
-        self.keys.insert(key, self.store.now_ms());
+        let (key, epoch) = self.open_password_slot(master_password)?;
+        let ring = self.store.key_ring(key, epoch)?;
+        self.keys.insert(ring, self.store.now_ms());
         self.after_unlock::<Password>()
     }
 
@@ -428,7 +448,9 @@ impl Vault {
             .slot(D::ID, SlotKind::Hardware)?
             .ok_or(VaultError::DomainUnavailable(D::ID))?;
         let key = VaultKey::<D>::unwrap_with_hardware(hardware, &self.store.vault_id(), &slot)?;
-        self.keys.insert(key, self.store.now_ms());
+        let epoch = self.store.slot_epoch(D::ID, SlotKind::Hardware)?;
+        let ring = self.store.key_ring(key, epoch)?;
+        self.keys.insert(ring, self.store.now_ms());
         self.after_unlock::<D>()
     }
 
@@ -479,19 +501,25 @@ impl Vault {
         new: &str,
         kdf: KdfChoice,
     ) -> Result<(), VaultError> {
-        let vault_key = self.open_password_slot(current)?;
-        let slot = new_password_slot(&vault_key, &self.store.vault_id(), new, kdf)?;
+        let (vault_key, epoch) = self.open_password_slot(current)?;
+        let slot = new_password_slot(&vault_key, &self.store.vault_id(), new, kdf, epoch)?;
         self.store.write_slots(Some(&slot), &[])
     }
 
-    /// The key of domain `D`, if it is unlocked and not idle for too long.
-    fn key<'k, D: Domain>(
+    /// The keys of domain `D`, if it is unlocked and not idle for too long.
+    ///
+    /// Key updates that arrived by sync since the domain was unlocked, and
+    /// revocations, take effect here.
+    pub(crate) fn key<'k, D: Domain>(
         keys: &'k mut Keys,
         store: &Store,
         auto_lock: &AutoLock,
-    ) -> Result<&'k VaultKey<D>, VaultError> {
+    ) -> Result<&'k KeyRing<D>, VaultError> {
         let now_ms = store.now_ms();
         keys.expire(now_ms, auto_lock);
+        if let Some(ring) = store.refreshed(keys.get::<D>(now_ms)?)? {
+            keys.replace(ring);
+        }
         keys.get(now_ms)
     }
 
