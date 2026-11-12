@@ -10,12 +10,11 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 use zeroize::Zeroizing;
-use zp_crypto::{
-    ChannelKey, DeviceId, DeviceSigningKey, Domain, DomainId, SignPublicKey, VaultKey,
-};
+use zp_crypto::{ChannelKey, DeviceId, DeviceSigningKey, Domain, DomainId, SignPublicKey};
 use zp_sync::{DeviceRecord, MAX_DEVICE_NAME_LEN, Registry, Revocation, VersionVector};
 
 use crate::items::{COLUMNS, read_row, sign_row};
+use crate::keys::KeySource;
 use crate::store::{get_meta, set_meta};
 use crate::{Store, VaultError};
 
@@ -146,7 +145,7 @@ impl Store {
     /// record to hand to the new device.
     pub fn introduce_device<D: Domain>(
         &mut self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         device_id: DeviceId,
         sign_pk: SignPublicKey,
         noise_pk: zp_sync::ChannelPublicKey,
@@ -173,7 +172,7 @@ impl Store {
     /// this device's signing key.
     pub fn revoke_device<D: Domain>(
         &mut self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
         device_id: DeviceId,
     ) -> Result<Revocation, VaultError> {
         let signer = self.signer(key)?;
@@ -223,9 +222,9 @@ impl Store {
     pub fn add_device_key_slot<D: Domain>(
         &mut self,
         signing_key: &DeviceSigningKey,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
     ) -> Result<(), VaultError> {
-        let blob = signing_key.wrap(key, &self.vault_id(), &self.device_id())?;
+        let blob = signing_key.wrap(key.write_key().1, &self.vault_id(), &self.device_id())?;
         self.conn.execute(
             "INSERT INTO device_keys (domain, blob) VALUES (?1, ?2)
              ON CONFLICT (domain) DO UPDATE SET blob = excluded.blob",
@@ -250,7 +249,7 @@ impl Store {
     /// Unwraps the device signing key with the vault key of domain `D`.
     pub(crate) fn signer<D: Domain>(
         &self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
     ) -> Result<DeviceSigningKey, VaultError> {
         let blob: Option<Vec<u8>> = self
             .conn
@@ -261,12 +260,17 @@ impl Store {
             )
             .optional()?;
         let blob = blob.ok_or(VaultError::DeviceKeyUnavailable(D::ID))?;
-        Ok(DeviceSigningKey::unwrap(
-            key,
-            &self.vault_id(),
-            &self.device_id(),
-            &blob,
-        )?)
+        // The slot was written with whichever key was current then.
+        let mut signer = Err(VaultError::DeviceKeyUnavailable(D::ID));
+        for candidate in key.all_keys() {
+            signer =
+                DeviceSigningKey::unwrap(candidate, &self.vault_id(), &self.device_id(), &blob)
+                    .map_err(VaultError::from);
+            if signer.is_ok() {
+                break;
+            }
+        }
+        signer
     }
 
     /// This device's key pair for the Noise channel.
@@ -362,7 +366,7 @@ impl Store {
     /// (vault files created by an earlier format). Returns how many were signed.
     pub(crate) fn sign_unsigned<D: Domain>(
         &mut self,
-        key: &VaultKey<D>,
+        key: &impl KeySource<D>,
     ) -> Result<usize, VaultError> {
         let signer = self.signer(key)?;
         let (vault_id, device_id) = (self.vault_id(), self.device_id());
@@ -424,7 +428,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use zp_crypto::{CryptoError, Password, Totp};
+    use zp_crypto::{CryptoError, Password, Totp, VaultKey};
 
     use super::*;
 

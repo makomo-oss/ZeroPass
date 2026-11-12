@@ -26,35 +26,36 @@ fn wrong_key(error: CryptoError) -> VaultError {
     }
 }
 
-/// Opens the recovery slot of domain `D`, if the kit covers that domain.
+/// Opens the recovery slot of domain `D`, if the kit covers that domain. Returns
+/// the key in the slot and its generation.
 fn open_recovery_slot<D: Domain>(
     store: &Store,
     recovery_key: &RecoveryKey,
-) -> Result<Option<VaultKey<D>>, VaultError> {
+) -> Result<Option<(VaultKey<D>, u32)>, VaultError> {
     let Some(slot) = store.slot(D::ID, SlotKind::Recovery)? else {
         return Ok(None);
     };
     let vault_id = store.vault_id();
     let kek = recovery_key.kek::<D>(&vault_id)?;
-    VaultKey::unwrap(&kek, &vault_id, &slot)
-        .map(Some)
-        .map_err(wrong_key)
+    let key = VaultKey::unwrap(&kek, &vault_id, &slot).map_err(wrong_key)?;
+    Ok(Some((key, store.slot_epoch(D::ID, SlotKind::Recovery)?)))
 }
 
 /// Restores a hardware-bound domain onto this device's key store. Returns the new
-/// hardware slot, or `None` if the kit does not cover the domain.
+/// hardware slot and the generation of its key, or `None` if the kit does not
+/// cover the domain.
 fn restore_hardware_domain<D: HardwareBound>(
     store: &Store,
     recovery_key: &RecoveryKey,
     hardware: &dyn HardwareKeyStore,
     keys: &mut Keys,
-) -> Result<Option<Vec<u8>>, VaultError> {
-    let Some(vault_key) = open_recovery_slot::<D>(store, recovery_key)? else {
+) -> Result<Option<(u32, Vec<u8>)>, VaultError> {
+    let Some((vault_key, epoch)) = open_recovery_slot::<D>(store, recovery_key)? else {
         return Ok(None);
     };
     let slot = vault_key.wrap_with_hardware(hardware, &store.vault_id())?;
-    keys.insert(vault_key, store.now_ms());
-    Ok(Some(slot))
+    keys.insert(store.key_ring(vault_key, epoch)?, store.now_ms());
+    Ok(Some((epoch, slot)))
 }
 
 impl Vault {
@@ -70,9 +71,14 @@ impl Vault {
         &mut self,
         recovery_key: &RecoveryKey,
         vault_id: &VaultId,
-    ) -> Result<Vec<u8>, VaultError> {
-        let key = self.keys.get::<D>(self.store.now_ms())?;
-        Ok(key.wrap(&recovery_key.kek::<D>(vault_id)?, vault_id)?)
+    ) -> Result<(u32, Vec<u8>), VaultError> {
+        // The kit holds the same key as this device's own slot, so that it
+        // reaches exactly the generations this device reaches.
+        let (epoch, key) = self.keys.get::<D>(self.store.now_ms())?.base();
+        Ok((
+            epoch,
+            key.wrap(&recovery_key.kek::<D>(vault_id)?, vault_id)?,
+        ))
     }
 
     /// Creates a recovery kit and returns the recovery key for the user to write
@@ -105,9 +111,10 @@ impl Vault {
 
         let plain: Vec<PlainSlot<'_>> = slots
             .iter()
-            .map(|(domain, blob)| PlainSlot {
+            .map(|(domain, (epoch, blob))| PlainSlot {
                 domain: *domain,
                 kind: SlotKind::Recovery,
+                epoch: *epoch,
                 blob,
             })
             .collect();
@@ -145,11 +152,16 @@ impl Vault {
         let mut keys = Keys::default();
 
         // Everything is unwrapped and re-wrapped before the first write.
-        let vault_key = open_recovery_slot::<Password>(&store, recovery_key)?
+        let (vault_key, epoch) = open_recovery_slot::<Password>(&store, recovery_key)?
             .ok_or(VaultError::NoRecoveryKit)?;
-        let password_slot =
-            new_password_slot(&vault_key, &vault_id, new_master_password, options.kdf)?;
-        keys.insert(vault_key, store.now_ms());
+        let password_slot = new_password_slot(
+            &vault_key,
+            &vault_id,
+            new_master_password,
+            options.kdf,
+            epoch,
+        )?;
+        keys.insert(store.key_ring(vault_key, epoch)?, store.now_ms());
 
         let mut hardware_slots = Vec::new();
         if let Some(hardware) = hardware {
@@ -166,9 +178,10 @@ impl Vault {
         }
         let plain: Vec<PlainSlot<'_>> = hardware_slots
             .iter()
-            .map(|(domain, blob)| PlainSlot {
+            .map(|(domain, (epoch, blob))| PlainSlot {
                 domain: *domain,
                 kind: SlotKind::Hardware,
+                epoch: *epoch,
                 blob,
             })
             .collect();
@@ -185,10 +198,20 @@ impl Vault {
         if keys.is_unlocked(DomainId::Passkey) {
             store.add_device_key_slot(&signer, keys.get::<Passkey>(now_ms)?)?;
         }
-        Ok(Self {
+        let mut vault = Self {
             store,
             keys,
             auto_lock: AutoLock::default(),
-        })
+        };
+        // Every earlier device has just been revoked, so the keys they hold are
+        // replaced like after any other revocation (`sync.md` §8).
+        vault.rotate_key::<Password>()?;
+        if vault.keys.is_unlocked(DomainId::Totp) {
+            vault.rotate_key::<Totp>()?;
+        }
+        if vault.keys.is_unlocked(DomainId::Passkey) {
+            vault.rotate_key::<Passkey>()?;
+        }
+        Ok(vault)
     }
 }

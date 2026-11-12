@@ -153,8 +153,37 @@ CREATE TABLE device_keys (
 ) STRICT, WITHOUT ROWID;
 ";
 
+/// Migration 3: generations of vault keys (`docs/spec/sync.md` §8).
+const MIGRATION_0003: &str = "
+-- The generation of the vault key each slot holds.
+ALTER TABLE key_slots ADD COLUMN epoch INTEGER NOT NULL DEFAULT 1 CHECK (epoch >= 1);
+
+-- Rotations: the vault key of generation `epoch`, wrapped under a key of the
+-- generation before it and signed by the device that rotated. Exchanged during
+-- sync, but only with devices that have not been revoked.
+CREATE TABLE key_updates (
+    domain      INTEGER NOT NULL CHECK (domain IN (1, 2, 3)),
+    epoch       INTEGER NOT NULL CHECK (epoch >= 2),
+    device_id   BLOB NOT NULL CHECK (length(device_id) = 16),
+    wrapped_key BLOB NOT NULL,
+    signature   BLOB NOT NULL CHECK (length(signature) = 64),
+    PRIMARY KEY (domain, epoch, device_id, wrapped_key)
+) STRICT, WITHOUT ROWID;
+
+-- Vault keys of generation `epoch` wrapped under the key this device holds in
+-- its slots (generation `under_epoch`), for a device that joined after a
+-- rotation and still has to read what was written before. Never leaves the file.
+CREATE TABLE key_links (
+    domain      INTEGER NOT NULL CHECK (domain IN (1, 2, 3)),
+    epoch       INTEGER NOT NULL CHECK (epoch >= 1),
+    under_epoch INTEGER NOT NULL CHECK (under_epoch >= 1),
+    wrapped_key BLOB NOT NULL,
+    PRIMARY KEY (domain, epoch, under_epoch, wrapped_key)
+) STRICT, WITHOUT ROWID;
+";
+
 /// All migrations, in order. Never edit or remove an entry; append new ones.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002];
+pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_0001, MIGRATION_0002, MIGRATION_0003];
 
 /// The schema version this build reads and writes.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -217,7 +246,9 @@ mod tests {
                 "devices",
                 "item_history",
                 "items",
+                "key_links",
                 "key_slots",
+                "key_updates",
                 "meta",
                 "sync_state",
                 "version_vector"

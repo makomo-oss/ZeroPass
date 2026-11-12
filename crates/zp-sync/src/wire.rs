@@ -7,14 +7,14 @@
 use prost::Message;
 use zp_crypto::{DeviceId, DomainId, ItemId, SignPublicKey, VaultId};
 
-use crate::{DeviceRecord, Op, OpBody, Payload, Revocation, SyncError, VersionVector};
+use crate::{DeviceRecord, KeyUpdate, Op, OpBody, Payload, Revocation, SyncError, VersionVector};
 
 /// Largest encoded message accepted or produced: 1 MiB.
 pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Envelope {
-    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6")]
     pub(crate) body: Option<Body>,
 }
 
@@ -30,6 +30,8 @@ pub(crate) enum Body {
     Ops(Ops),
     #[prost(message, tag = "5")]
     Done(Vector),
+    #[prost(message, tag = "6")]
+    KeyUpdates(KeyUpdates),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -120,6 +122,26 @@ pub(crate) struct OpMsg {
     #[prost(bytes = "vec", tag = "9")]
     pub(crate) ciphertext: Vec<u8>,
     #[prost(bytes = "vec", tag = "10")]
+    pub(crate) signature: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct KeyUpdates {
+    #[prost(message, repeated, tag = "1")]
+    pub(crate) updates: Vec<KeyUpdateMsg>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct KeyUpdateMsg {
+    #[prost(uint32, tag = "1")]
+    pub(crate) domain: u32,
+    #[prost(uint32, tag = "2")]
+    pub(crate) epoch: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub(crate) device_id: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub(crate) wrapped_key: Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
     pub(crate) signature: Vec<u8>,
 }
 
@@ -281,6 +303,35 @@ impl TryFrom<OpMsg> for Op {
                 key_epoch: message.key_epoch,
                 payload,
             },
+            signature: array(message.signature)?,
+        })
+    }
+}
+
+impl From<&KeyUpdate> for KeyUpdateMsg {
+    fn from(update: &KeyUpdate) -> Self {
+        Self {
+            domain: u32::from(update.domain.as_u8()),
+            epoch: update.epoch,
+            device_id: update.device_id.as_bytes().to_vec(),
+            wrapped_key: update.wrapped_key.clone(),
+            signature: update.signature.to_vec(),
+        }
+    }
+}
+
+impl TryFrom<KeyUpdateMsg> for KeyUpdate {
+    type Error = SyncError;
+
+    fn try_from(message: KeyUpdateMsg) -> Result<Self, SyncError> {
+        Ok(Self {
+            domain: u8::try_from(message.domain)
+                .ok()
+                .and_then(DomainId::from_u8)
+                .ok_or(MALFORMED)?,
+            epoch: message.epoch,
+            device_id: device_id(&message.device_id)?,
+            wrapped_key: message.wrapped_key,
             signature: array(message.signature)?,
         })
     }

@@ -68,6 +68,20 @@ pub enum VaultError {
         "the device signing key is not available to the {0:?} domain; unlock the password domain together with it once"
     )]
     DeviceKeyUnavailable(zp_crypto::DomainId),
+    /// A version was written with a vault key generation this device does not
+    /// hold (yet): the key update travels with sync.
+    #[error(
+        "generation {epoch} of the {domain:?} vault key has not reached this device; sync with another device"
+    )]
+    KeyGenerationUnavailable {
+        /// The domain of the key.
+        domain: zp_crypto::DomainId,
+        /// The missing generation.
+        epoch: u32,
+    },
+    /// A device cannot revoke itself.
+    #[error("a device cannot revoke itself; revoke it from another device")]
+    CannotRevokeSelf,
     /// A sync rule was violated.
     #[error(transparent)]
     Sync(#[from] zp_sync::SyncError),

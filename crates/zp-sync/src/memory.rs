@@ -5,14 +5,14 @@
 //! testing the protocol itself, here and in the crates built on top, and it
 //! documents what a real store must do.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use zp_crypto::{DeviceId, DeviceSigningKey, DomainId, ItemId, VaultId};
 
 use crate::merge::{ApplyReport, Incoming, OpLog, Placement, check_incoming, place};
 use crate::{
-    ChannelPublicKey, DeviceRecord, Hlc, Op, OpBody, Payload, Registry, Revocation, SyncError,
-    VersionVector,
+    ChannelPublicKey, DeviceRecord, Hlc, KeyUpdate, Op, OpBody, Payload, Registry, Revocation,
+    SyncError, VersionVector,
 };
 
 type OpId = (DeviceId, u64);
@@ -25,6 +25,7 @@ pub struct MemoryLog {
     signing_key: DeviceSigningKey,
     registry: Registry,
     ops: BTreeMap<OpId, Op>,
+    key_updates: BTreeSet<KeyUpdate>,
     vector: VersionVector,
     /// The current version of each item.
     current: BTreeMap<ItemId, OpId>,
@@ -94,11 +95,28 @@ impl MemoryLog {
             signing_key,
             registry,
             ops: BTreeMap::new(),
+            key_updates: BTreeSet::new(),
             vector: VersionVector::new(),
             current: BTreeMap::new(),
             clock: Hlc::resume_after(0),
             now_ms: 1_800_000_000_000,
         }
+    }
+
+    /// Records that this device replaced the key of `domain` by one of generation
+    /// `epoch`. `wrapped_key` stands in for the new key wrapped under the old one;
+    /// like every payload here it is not real ciphertext.
+    pub fn rotate_key(&mut self, domain: DomainId, epoch: u32, wrapped_key: Vec<u8>) -> KeyUpdate {
+        let update = KeyUpdate::sign(
+            &self.vault_id,
+            domain,
+            epoch,
+            self.device_id,
+            &self.signing_key,
+            wrapped_key,
+        );
+        self.key_updates.insert(update.clone());
+        update
     }
 
     /// Sets this device's wall clock.
@@ -266,6 +284,19 @@ impl OpLog for MemoryLog {
             .take(limit)
             .map(|(_, op)| op.clone())
             .collect())
+    }
+
+    fn key_updates(&self) -> Result<Vec<KeyUpdate>, SyncError> {
+        Ok(self.key_updates.iter().cloned().collect())
+    }
+
+    fn merge_key_updates(&mut self, updates: Vec<KeyUpdate>) -> Result<usize, SyncError> {
+        for update in &updates {
+            update.verify(&self.vault_id, &self.registry)?;
+        }
+        let before = self.key_updates.len();
+        self.key_updates.extend(updates);
+        Ok(self.key_updates.len() - before)
     }
 
     fn apply(&mut self, ops: Vec<Op>) -> Result<ApplyReport, SyncError> {

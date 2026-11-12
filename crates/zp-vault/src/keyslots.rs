@@ -23,6 +23,8 @@ pub(crate) enum SlotKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PasswordSlot {
     pub(crate) blob: Vec<u8>,
+    /// The generation of the vault key in the slot.
+    pub(crate) epoch: u32,
     pub(crate) salt: [u8; KDF_SALT_LEN],
     pub(crate) params: KdfParams,
 }
@@ -32,18 +34,21 @@ pub(crate) struct PasswordSlot {
 pub(crate) struct PlainSlot<'a> {
     pub(crate) domain: DomainId,
     pub(crate) kind: SlotKind,
+    /// The generation of the vault key in the slot.
+    pub(crate) epoch: u32,
     pub(crate) blob: &'a [u8],
 }
 
 const UPSERT: &str = "
-    INSERT INTO key_slots (domain, kind, blob, kdf_salt, kdf_m_kib, kdf_t, kdf_p)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    INSERT INTO key_slots (domain, kind, blob, kdf_salt, kdf_m_kib, kdf_t, kdf_p, epoch)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     ON CONFLICT (domain, kind) DO UPDATE SET
         blob = excluded.blob,
         kdf_salt = excluded.kdf_salt,
         kdf_m_kib = excluded.kdf_m_kib,
         kdf_t = excluded.kdf_t,
-        kdf_p = excluded.kdf_p";
+        kdf_p = excluded.kdf_p,
+        epoch = excluded.epoch";
 
 impl Store {
     /// Reads the password slot, if the vault has one.
@@ -51,7 +56,7 @@ impl Store {
         let row = self
             .conn
             .query_row(
-                "SELECT blob, kdf_salt, kdf_m_kib, kdf_t, kdf_p FROM key_slots
+                "SELECT blob, kdf_salt, kdf_m_kib, kdf_t, kdf_p, epoch FROM key_slots
                  WHERE domain = ?1 AND kind = ?2",
                 params![DomainId::Password.as_u8(), SlotKind::Password as u8],
                 |row| {
@@ -61,15 +66,17 @@ impl Store {
                         row.get::<_, u32>(2)?,
                         row.get::<_, u32>(3)?,
                         row.get::<_, u32>(4)?,
+                        row.get::<_, u32>(5)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((blob, salt, m_kib, t, p)) = row else {
+        let Some((blob, salt, m_kib, t, p, epoch)) = row else {
             return Ok(None);
         };
         Ok(Some(PasswordSlot {
             blob,
+            epoch,
             salt: salt
                 .try_into()
                 .map_err(|_| VaultError::Corrupt("malformed KDF salt"))?,
@@ -94,6 +101,19 @@ impl Store {
             .optional()?)
     }
 
+    /// The generation of the vault key in a slot (1 if there is no such slot).
+    pub(crate) fn slot_epoch(&self, domain: DomainId, kind: SlotKind) -> Result<u32, VaultError> {
+        let epoch: Option<u32> = self
+            .conn
+            .query_row(
+                "SELECT epoch FROM key_slots WHERE domain = ?1 AND kind = ?2",
+                params![domain.as_u8(), kind as u8],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(epoch.unwrap_or(1))
+    }
+
     /// Writes (or replaces) several slots atomically.
     pub(crate) fn write_slots(
         &mut self,
@@ -112,6 +132,7 @@ impl Store {
                     slot.params.m_kib(),
                     slot.params.t(),
                     slot.params.p(),
+                    slot.epoch,
                 ],
             )?;
         }
@@ -127,7 +148,8 @@ impl Store {
                     Option::<&[u8]>::None,
                     none,
                     none,
-                    none
+                    none,
+                    slot.epoch
                 ],
             )?;
         }
@@ -149,6 +171,7 @@ mod tests {
     fn password_slot(byte: u8) -> PasswordSlot {
         PasswordSlot {
             blob: vec![byte; 73],
+            epoch: 1,
             salt: [byte; 16],
             params: KdfParams::MINIMUM,
         }
@@ -166,11 +189,13 @@ mod tests {
         let hardware = PlainSlot {
             domain: DomainId::Totp,
             kind: SlotKind::Hardware,
+            epoch: 1,
             blob: &[2; 9],
         };
         let recovery = PlainSlot {
             domain: DomainId::Password,
             kind: SlotKind::Recovery,
+            epoch: 2,
             blob: &[3; 9],
         };
         store
@@ -190,6 +215,25 @@ mod tests {
             store.slot(DomainId::Passkey, SlotKind::Hardware).unwrap(),
             None
         );
+        // Each slot remembers the generation of the key it holds.
+        assert_eq!(
+            store
+                .slot_epoch(DomainId::Password, SlotKind::Recovery)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .slot_epoch(DomainId::Totp, SlotKind::Hardware)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .slot_epoch(DomainId::Passkey, SlotKind::Hardware)
+                .unwrap(),
+            1
+        );
 
         store.write_slots(Some(&password_slot(4)), &[]).unwrap();
         assert_eq!(store.password_slot().unwrap(), Some(password_slot(4)));
@@ -202,6 +246,7 @@ mod tests {
         let invalid = PlainSlot {
             domain: DomainId::Password,
             kind: SlotKind::Hardware,
+            epoch: 1,
             blob: &[2; 9],
         };
         assert!(
