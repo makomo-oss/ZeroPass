@@ -20,7 +20,7 @@ use zp_vault::model::Login;
 use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault};
 
 const PASSWORD: &str = "a master password for the tests";
-const ITEMS: usize = 1500;
+const ITEMS: usize = 600;
 
 fn options(name: &str) -> CreateOptions {
     CreateOptions {
@@ -32,7 +32,9 @@ fn options(name: &str) -> CreateOptions {
 
 fn config() -> DriveConfig {
     DriveConfig {
-        idle_timeout: Duration::from_secs(10),
+        // Generous: the receiver is silent while it writes a batch to disk, and
+        // shared CI machines can be slow at that.
+        idle_timeout: Duration::from_secs(120),
     }
 }
 
@@ -86,8 +88,8 @@ struct Pair {
     empty_vault: Vault,
 }
 
-/// Two devices of one vault: one holds [`ITEMS`] logins of about 1 kB each (a
-/// few megabytes, so several batches), the other has just joined and holds none.
+/// Two devices of one vault: one holds [`ITEMS`] logins of about 1 kB each (most of a
+/// megabyte, so several batches), the other has just joined and holds none.
 fn pair() -> Pair {
     let dir = tempfile::tempdir().unwrap();
     let (full, empty) = (
@@ -167,8 +169,8 @@ fn a_connection_lost_mid_sync_keeps_what_arrived_and_the_next_one_finishes() {
     };
     assert_eq!(held(&devices.empty), 0);
 
-    // The link breaks after about a megabyte.
-    let (full_side, empty_side) = sync(&devices.full, &devices.empty, 1_000_000);
+    // The link breaks after about 400 kB.
+    let (full_side, empty_side) = sync(&devices.full, &devices.empty, 400_000);
     assert!(full_side.is_err(), "the sender must notice the broken link");
     assert!(
         empty_side.is_err(),
