@@ -33,13 +33,13 @@ pub trait Link: Send {
 /// An in-memory link, for tests and the loopback transport.
 #[derive(Debug)]
 pub struct MemoryLink {
-    reader: MemoryReader,
+    reader: ChannelReader,
     writer: MemoryWriter,
     peer: String,
 }
 
 #[derive(Debug)]
-struct MemoryReader {
+pub(crate) struct ChannelReader {
     incoming: Receiver<Vec<u8>>,
     pending: Vec<u8>,
 }
@@ -55,10 +55,7 @@ impl MemoryLink {
         let (to_b, from_a) = mpsc::channel();
         let (to_a, from_b) = mpsc::channel();
         let link = |incoming, outgoing, peer: &str| Self {
-            reader: MemoryReader {
-                incoming,
-                pending: Vec::new(),
-            },
+            reader: ChannelReader::new(incoming),
             writer: MemoryWriter { outgoing },
             peer: peer.to_owned(),
         };
@@ -69,7 +66,18 @@ impl MemoryLink {
     }
 }
 
-impl Read for MemoryReader {
+impl ChannelReader {
+    /// A reader over byte chunks delivered through a channel; the stream ends when
+    /// the sending side is dropped.
+    pub(crate) fn new(incoming: Receiver<Vec<u8>>) -> Self {
+        Self {
+            incoming,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl Read for ChannelReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.pending.is_empty() {
             match self.incoming.recv_timeout(READ_POLL) {

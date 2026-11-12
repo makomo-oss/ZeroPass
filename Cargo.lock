@@ -1890,6 +1890,7 @@ dependencies = [
  "socket2",
  "tempfile",
  "thiserror",
+ "windows",
  "zeroize",
  "zp-crypto",
  "zp-pairing",

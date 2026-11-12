@@ -144,6 +144,13 @@ docs/    threat-model.md  adr/  spec/
     6. Windows ファイアウォールの確認が出たら「プライベート ネットワーク」のみ許可する
 - [x] **P2-14** BLE 仕様: GATT サービス／キャラクタリスティック、MTU 交渉、分割・再構成、フロー制御、回転式広告 ID — `docs/spec/ble.md`（依存: P2-10）
 - [ ] **P2-15** BLE ペリフェラル（Windows, WinRT `GattServiceProvider`）を `Transport` 実装 — 汎用 BLE スキャナアプリから接続・読み書きできる（依存: P2-14）
+  - 実装済み（`zp_transport::ble_windows::BlePeripheral`）。この PC の Bluetooth アダプタでサービスの公開と広告の開始までは確認済み（`cargo test -p zp-transport -- --ignored ble`）。**完了条件の「スキャナアプリからの接続・読み書き」だけが未了**: セントラルになる端末（スマートフォン）が必要。確認できたらこの行を削除して `[x]` にする。手順:
+    1. PC の Bluetooth をオンにして `cargo run -p zp-transport --example ble_echo` を起動したままにする
+    2. スマートフォンの汎用 BLE スキャナアプリ（nRF Connect、LightBlue など）でサービス `5a50c0de-0001-4b1d-9c5e-7a65726f7061` を持つ端末を探して接続する（端末名は広告しないので、名前なしで表示される）
+    3. `…0002…`（Tag）を読む → `11` が 8 バイト、`22` が 8 バイトの計 16 バイトであること
+    4. `…0004…`（Tx）の通知を購読する → PC 側に `link opened` と表示されること
+    5. `…0003…`（Rx）に任意のバイト列を書き込む → PC 側に同じバイト列が表示され、Tx の通知として同じバイト列が返ること
+    6. OS の Bluetooth ペアリング要求が一度も出ないこと
 - [ ] **P2-16** Android 検証アプリ（最小 Kotlin + UniFFI で `zp-sync`/`zp-pairing` を呼ぶ、BLE セントラル、CameraX で QR 読取） — Android ⇔ Windows が BLE だけで同期（Wi-Fi オフ）（依存: P2-13, P2-15）
 - [ ] **P2-17** トランスポート選択と切替（LAN 優先、BLE フォールバック、同時接続の重複排除） — Wi-Fi の入切で同期が継続（依存: P2-16）
 - [ ] **P2-18** 計測と障害試験: ペアリング所要時間（目標 ~3s）、BLE スループット、切断・電源断・時計ずれ注入 — 結果を `docs/poc-report.md` に記録（依存: P2-17）
