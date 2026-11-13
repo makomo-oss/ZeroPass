@@ -10,13 +10,16 @@ use std::io;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LocalFree,
+    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetHandleInformation, HANDLE,
+    HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HLOCAL, LocalFree, SetHandleInformation,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -34,8 +37,8 @@ use windows::Win32::System::Pipes::{
     PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess, OpenProcess, OpenProcessToken,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -333,4 +336,61 @@ pub(crate) fn connect(endpoint: &Endpoint) -> Result<(Stream, PeerProcess), IpcE
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// A standard handle of this process whose "inheritable" flag is cleared for as
+/// long as this value lives.
+struct NotInherited(HANDLE);
+
+impl NotInherited {
+    /// Clears the flag; `None` if the handle is absent or was not inheritable.
+    fn new(handle: HANDLE) -> Option<Self> {
+        if handle.0.is_null() || handle.is_invalid() {
+            return None;
+        }
+        let mut flags = 0u32;
+        // SAFETY: `handle` is a standard handle of this process, which stays
+        // open for the life of the process; `flags` is a valid place for the result.
+        unsafe { GetHandleInformation(handle, &mut flags) }.ok()?;
+        if flags & HANDLE_FLAG_INHERIT.0 == 0 {
+            return None;
+        }
+        // SAFETY: as above.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }.ok()?;
+        Some(Self(handle))
+    }
+}
+
+impl Drop for NotInherited {
+    fn drop(&mut self) {
+        // SAFETY: the handle was valid in `new` and standard handles are not
+        // closed while the process runs.
+        let _ = unsafe { SetHandleInformation(self.0, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT) };
+    }
+}
+
+/// Starts `command` as a process that outlives this one and shares nothing
+/// with its console.
+pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<()> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
+    // A child inherits every inheritable handle of its parent, not only the
+    // three it is given. If this process's own output is a pipe, the daemon
+    // would keep that pipe open, and whoever reads it would wait for the daemon
+    // to exit. So the standard handles are not inheritable while spawning.
+    let standard = [
+        io::stdin().as_raw_handle(),
+        io::stdout().as_raw_handle(),
+        io::stderr().as_raw_handle(),
+    ];
+    let guards: Vec<NotInherited> = standard
+        .into_iter()
+        .filter_map(|handle| NotInherited::new(HANDLE(handle)))
+        .collect();
+    let spawned = command.spawn();
+    drop(guards);
+    spawned.map(drop)
 }
