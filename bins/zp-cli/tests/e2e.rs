@@ -1,11 +1,15 @@
 //! End-to-end test of the command-line client: runs the real binary against a
 //! vault file in a temporary directory, feeding prompts through standard input.
+//! The client starts the real vault daemon, one per vault file; what a command
+//! unlocks stays unlocked there until `lock`.
 
 #![allow(clippy::unwrap_used, reason = "test helpers may panic")]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+mod common;
 
 const PASSWORD: &str = "correct horse battery staple";
 const NEW_PASSWORD: &str = "an entirely different passphrase";
@@ -26,6 +30,7 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
+        common::daemon_is_built();
         let dir = tempfile::tempdir().unwrap();
         Self {
             vault: dir.path().join("test.zpvault"),
@@ -82,6 +87,12 @@ impl Cli {
             output.stdout
         );
         output.stderr
+    }
+}
+
+impl Drop for Cli {
+    fn drop(&mut self) {
+        common::stop_daemon(&self.vault);
     }
 }
 
@@ -150,9 +161,10 @@ fn init_add_get_list_totp_and_lock() {
         ],
         &[PASSWORD, "s3cret-login-password"],
     ));
+    // The password domain is still unlocked: only the note text is asked for.
     let note_id = added_id(&cli.ok(
         &["add", "note", "--title", "Wi-Fi"],
-        &[PASSWORD, "the wifi passphrase"],
+        &["the wifi passphrase"],
     ));
     let totp_id = added_id(&cli.ok(&["add", "totp", "--login", &login_id], &[TOTP_URI]));
 
@@ -169,6 +181,16 @@ fn init_add_get_list_totp_and_lock() {
             "{secret:?} is readable in the vault file"
         );
     }
+
+    // The daemon keeps a domain unlocked between commands, until it is locked.
+    assert!(cli.ok(&["list"], &[]).contains("2 item(s)"));
+    let out = cli.ok(&["daemon", "status"], &[]);
+    assert!(out.contains("password: unlocked"), "{out}");
+    assert!(out.contains("totp:    unlocked"), "{out}");
+    assert!(out.contains("passkey: locked"), "{out}");
+    assert!(cli.ok(&["lock"], &[]).contains("locked: all domains"));
+    let stderr = cli.fails(&["list"], &[]);
+    assert!(stderr.contains("unexpected end of input"), "{stderr}");
 
     // list
     let out = cli.ok(&["list"], &[PASSWORD]);
@@ -216,12 +238,14 @@ fn init_add_get_list_totp_and_lock() {
     assert!(out.contains("(valid for "), "{out}");
 
     // wrong master password and unknown items
+    cli.ok(&["lock"], &[]);
     let stderr = cli.fails(&["list"], &["not the master password"]);
     assert!(stderr.contains("wrong master password"), "{stderr}");
     let stderr = cli.fails(&["get", &"0".repeat(32)], &[PASSWORD]);
     assert!(stderr.contains("does not exist"), "{stderr}");
 
     // unlock / lock inside one shell session
+    cli.ok(&["lock"], &[]);
     let script = [
         "list", // locked: prompts for the master password
         PASSWORD,
@@ -248,6 +272,9 @@ fn init_add_get_list_totp_and_lock() {
     assert!(out.contains("unlocked: totp"), "{out}");
     assert!(out.contains("locked: totp"), "{out}");
     assert!(out.contains("added "), "{out}");
+    // Leaving the shell locks everything.
+    let out = cli.ok(&["daemon", "status"], &[]);
+    assert!(out.contains("password: locked"), "{out}");
 
     // delete
     let out = cli.ok(&["delete", &note_id], &[PASSWORD]);
@@ -261,8 +288,19 @@ fn init_add_get_list_totp_and_lock() {
     );
     assert!(stderr.contains("do not match"), "{stderr}");
     cli.ok(&["passwd"], &[PASSWORD, NEW_PASSWORD, NEW_PASSWORD]);
+    // Changing the password locks what the old one had unlocked.
     cli.fails(&["list"], &[PASSWORD]);
     assert!(cli.ok(&["list"], &[NEW_PASSWORD]).contains("2 item(s)"));
+
+    // Stopping the daemon locks everything; the next command starts it again.
+    let out = cli.ok(&["daemon", "stop"], &[]);
+    assert!(out.contains("was stopped"), "{out}");
+    let out = cli.ok(&["daemon", "status"], &[]);
+    assert!(out.contains("not running"), "{out}");
+    cli.fails(&["list"], &[]);
+    assert!(cli.ok(&["list"], &[NEW_PASSWORD]).contains("2 item(s)"));
+    let out = cli.ok(&["daemon", "status"], &[]);
+    assert!(out.contains("is running"), "{out}");
 }
 
 #[test]
@@ -450,6 +488,7 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
     let out = phone.ok(&["get", &from_pc, "--reveal"], &[NEW_PASSWORD]);
     assert!(out.contains("password: pc-password"), "{out}");
     assert!(phone.ok(&["totp", &totp_id], &[]).contains("(valid for "));
+    phone.ok(&["lock"], &[]);
     phone.fails(&["list"], &[PASSWORD]);
     // The code cannot be used a second time.
     let other = Cli::new();
@@ -499,8 +538,10 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
         .and_then(|line| line.split_whitespace().next())
         .unwrap()
         .to_owned();
+    pc.ok(&["lock"], &[]);
     let stderr = pc.fails(&["revoke", &phone_id[..8]], &[PASSWORD, "n"]);
     assert!(stderr.contains("nothing was changed"), "{stderr}");
+    pc.ok(&["lock"], &[]);
     let out = pc.ok(&["revoke", &phone_id[..8]], &[PASSWORD, "y"]);
     assert!(out.contains("revoked device \"Test phone\""), "{out}");
     let out = pc.ok(&["devices"], &[]);
@@ -511,6 +552,7 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
     let stderr = pc.fails(&["revoke", &phone_id], &[PASSWORD, "y"]);
     assert!(stderr.contains("already been revoked"), "{stderr}");
 
+    pc.ok(&["lock"], &[]);
     let secret = added_id(&pc.ok(
         &["add", "login", "--title", "after-revocation"],
         &[PASSWORD, "post-revocation-password"],

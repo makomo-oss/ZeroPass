@@ -125,3 +125,17 @@ pub(crate) fn connect(endpoint: &Endpoint) -> Result<(Stream, PeerProcess), IpcE
     let process = identify(&stream)?;
     Ok((stream, process))
 }
+
+/// Starts `command` as a process that outlives this one and is not reached by
+/// the signals of this one's terminal.
+pub(crate) fn spawn_detached(command: &mut std::process::Command) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(drop)
+}

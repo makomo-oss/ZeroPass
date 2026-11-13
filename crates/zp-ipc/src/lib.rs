@@ -30,3 +30,11 @@ pub use endpoint::Endpoint;
 pub use error::IpcError;
 pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess};
 pub use server::{Handler, Server, ShutdownHandle};
+
+/// Starts `command` as a background process that outlives this one: no console,
+/// no standard streams, and none of this process's open handles.
+///
+/// This is how a client starts the daemon when it is not running.
+pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
+    sys::spawn_detached(command)
+}

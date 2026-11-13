@@ -11,4 +11,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+# This binary must stay offline: scripts/check-offline-deps.sh fails the build
+# if a networking crate appears in its dependency tree (ADR-0004).
 [dependencies]
+clap = { version = "4.6.7", features = ["derive", "env"] }
+zeroize = "1.9.1"
+zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
+zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
+zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
+zp-vault = { version = "0.0.0", path = "../../crates/zp-vault" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

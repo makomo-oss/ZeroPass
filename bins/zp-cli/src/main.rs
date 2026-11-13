@@ -1,11 +1,15 @@
 //! ZeroPass command-line client.
 //!
-//! Until the vault daemon exists (Phase 3) this binary opens the vault file
-//! directly. Nothing stays unlocked between invocations: each command prompts for
-//! what it needs. `zp-cli shell` keeps one session open so that `unlock`, `lock`
-//! and the idle auto-lock can be exercised.
+//! The vault is held by the vault daemon (`zp-vaultd`): this program asks it
+//! over the local IPC and starts it when it is not running. What a command
+//! unlocks stays unlocked in the daemon until it is locked or times out, so the
+//! next command does not ask again.
+//!
+//! Pairing and sync (`pair`, `join`, `sync`) still open the vault file
+//! themselves; they move behind the daemon together with `zp-syncd` (P3-05).
 
 mod nearby;
+mod remote;
 
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -15,11 +19,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
 use zp_crypto::{
-    DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey,
-    Password, RecoveryKey, Totp,
+    DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey, Totp,
 };
-use zp_vault::model::{Content, Login, SecureNote};
-use zp_vault::{AutoLock, CreateOptions, KdfChoice, Vault, VaultError, totp};
+use zp_vault::{AutoLock, Vault, VaultError};
+
+use remote::{Remote, Start};
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
@@ -81,10 +85,25 @@ enum TopCommand {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Open an interactive session in which domains stay unlocked until locked.
+    /// Open an interactive session; everything is locked when it ends.
     Shell,
+    /// Inspect or stop the vault daemon.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
     #[command(flatten)]
     Session(Command),
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Show whether the daemon is running and which domains are unlocked.
+    Status,
+    /// Start the daemon if it is not running.
+    Start,
+    /// Lock everything and stop the daemon.
+    Stop,
 }
 
 /// One line typed in the shell.
@@ -326,7 +345,6 @@ struct Session {
 }
 
 impl Session {
-    /// Makes sure `domain` is unlocked, prompting if necessary.
     /// Unlocks every domain of the vault and keeps them unlocked until this
     /// command ends, for commands that need all of them after waiting for
     /// someone: the idle timeout of the hardware-bound domains (one minute) is
@@ -344,6 +362,7 @@ impl Session {
         Ok(())
     }
 
+    /// Makes sure `domain` is unlocked, prompting if necessary.
     fn ensure_unlocked(&mut self, domain: DomainId) -> CliResult<()> {
         if self.vault.is_unlocked(domain) {
             return Ok(());
@@ -371,226 +390,36 @@ impl Session {
         Ok(())
     }
 
-    fn content(&mut self, id: ItemId) -> CliResult<Content> {
-        let domain = self
-            .vault
-            .item_domain(id)?
-            .ok_or(VaultError::ItemNotFound)?;
-        self.ensure_unlocked(domain)?;
-        Ok(match domain {
-            DomainId::Password => self.vault.get_content::<Password>(id)?,
-            DomainId::Totp => self.vault.get_content::<Totp>(id)?,
-            DomainId::Passkey => self.vault.get_content::<Passkey>(id)?,
+    /// Opens the vault file directly, for the commands that do not go through
+    /// the daemon yet.
+    fn open(choice: KeyStoreChoice, path: &Path) -> CliResult<Self> {
+        Ok(Self {
+            vault: Vault::open(path)?,
+            path: path.to_path_buf(),
+            hardware: hardware_key_store(choice, path, false)?,
+            input: Input::new(),
         })
     }
+}
 
-    fn run(&mut self, command: Command, out: &mut impl Write) -> CliResult<()> {
-        match command {
-            Command::Unlock { domain } => {
-                let domain = DomainId::from(domain);
-                self.ensure_unlocked(domain)?;
-                writeln!(out, "unlocked: {}", domain_name(domain))?;
-            }
-            Command::Lock {
-                domain: Some(domain),
-            } => {
-                self.vault.lock(domain.into());
-                writeln!(out, "locked: {}", domain_name(domain.into()))?;
-            }
-            Command::Lock { domain: None } => {
-                self.vault.lock_all();
-                writeln!(out, "locked: all domains")?;
-            }
-            Command::Add { kind } => {
-                let id = self.add(kind)?;
-                writeln!(out, "added {id}")?;
-            }
-            Command::Get { id, reveal } => {
-                let content = self.content(parse_id(&id)?)?;
-                print_content(out, &content, reveal)?;
-            }
-            Command::List { domain } => {
-                let domain = DomainId::from(domain);
-                self.ensure_unlocked(domain)?;
-                let mut items = match domain {
-                    DomainId::Password => self.vault.list::<Password>()?,
-                    DomainId::Totp => self.vault.list::<Totp>()?,
-                    DomainId::Passkey => self.vault.list::<Passkey>()?,
-                };
-                items.sort_by(|a, b| a.1.title().cmp(b.1.title()).then(a.0.cmp(&b.0)));
-                for (id, content) in &items {
-                    writeln!(
-                        out,
-                        "{id}  {:<10}  {}",
-                        format!("{:?}", content.kind()),
-                        content.title()
-                    )?;
-                }
-                writeln!(out, "{} item(s)", items.len())?;
-            }
-            Command::Totp { id } => {
-                self.ensure_unlocked(DomainId::Totp)?;
-                let code = self.vault.totp_code(parse_id(&id)?)?;
-                writeln!(
-                    out,
-                    "{} (valid for {}s)",
-                    code.as_str(),
-                    code.seconds_remaining()
-                )?;
-            }
-            Command::Delete { id } => {
-                let id = parse_id(&id)?;
-                let domain = self
-                    .vault
-                    .item_domain(id)?
-                    .ok_or(VaultError::ItemNotFound)?;
-                self.ensure_unlocked(domain)?;
-                match domain {
-                    DomainId::Password => self.vault.delete::<Password>(id)?,
-                    DomainId::Totp => self.vault.delete::<Totp>(id)?,
-                    DomainId::Passkey => self.vault.delete::<Passkey>(id)?,
-                }
-                writeln!(out, "deleted {id}")?;
-            }
-            Command::RecoveryKit { replace } => {
-                if self.vault.has_recovery_kit()? && !replace {
-                    return Err("a recovery kit already exists; pass --replace to create a new one and invalidate the old recovery key".into());
-                }
-                for domain in DomainId::ALL {
-                    if self.vault.has_domain(domain)? {
-                        self.ensure_unlocked(domain)?;
-                    }
-                }
-                let recovery_key = self.vault.create_recovery_kit()?;
-                writeln!(
-                    out,
-                    "Recovery key (write it down and keep it offline; it is shown only once):"
-                )?;
-                writeln!(out)?;
-                writeln!(out, "    {}", recovery_key.to_code().as_str())?;
-                writeln!(out)?;
-                writeln!(
-                    out,
-                    "To recover you need this key AND a backup copy of the vault file."
-                )?;
-            }
-            Command::Pair => self.pair(out)?,
-            Command::Sync { seconds } => self.sync(seconds, out)?,
-            Command::Devices => {
-                let registry = self.vault.registry()?;
-                let vector = self.vault.version_vector()?;
-                let own = self.vault.device_id();
-                for record in registry.records() {
-                    let state = if registry.is_revoked(&record.device_id) {
-                        "revoked"
-                    } else if record.device_id == own {
-                        "this device"
-                    } else {
-                        "active"
-                    };
-                    writeln!(
-                        out,
-                        "{}  {:<11}  {} change(s) held  {}",
-                        record.device_id,
-                        state,
-                        vector.get(&record.device_id),
-                        record.name
-                    )?;
-                }
-                writeln!(out, "{} device(s)", registry.records().count())?;
-            }
-            Command::Revoke { device } => {
-                let registry = self.vault.registry()?;
-                let own = self.vault.device_id();
-                let prefix = device.trim().to_ascii_lowercase();
-                let mut matches = registry.records().filter(|record| {
-                    !prefix.is_empty() && record.device_id.to_string().starts_with(&prefix)
-                });
-                let record = match (matches.next(), matches.next()) {
-                    (Some(record), None) => record.clone(),
-                    (None, _) => return Err("no device has that identifier; see `devices`".into()),
-                    _ => {
-                        return Err(
-                            "more than one device matches; give more of the identifier".into()
-                        );
-                    }
-                };
-                if record.device_id == own {
-                    return Err(
-                        "this device cannot revoke itself; do it from another device".into(),
-                    );
-                }
-                if registry.is_revoked(&record.device_id) {
-                    return Err("that device has already been revoked".into());
-                }
-                // Replacing the keys of a domain takes that domain.
-                self.unlock_every_domain()?;
-                let question = format!(
-                    "Revoke the device \"{}\" ({})? This cannot be undone. [y/N] ",
-                    record.name, record.device_id
-                );
-                let confirmed = matches!(
-                    self.input.line(&question)?,
-                    Some(answer) if answer.trim().eq_ignore_ascii_case("y")
-                );
-                if !confirmed {
-                    return Err("nothing was changed".into());
-                }
-                self.vault.revoke_device(record.device_id)?;
-                writeln!(
-                    out,
-                    "revoked device \"{}\" ({})",
-                    record.name, record.device_id
-                )?;
-                writeln!(
-                    out,
-                    "The vault keys were replaced. The other devices receive the new keys with their next sync."
-                )?;
-                writeln!(
-                    out,
-                    "What the revoked device already holds stays readable to it: change those passwords if it was stolen."
-                )?;
-            }
-            Command::Passwd => {
-                let current = self.input.secret("Current master password: ")?;
-                let new = self.input.new_master_password()?;
-                self.vault
-                    .change_master_password(&current, &new, KdfChoice::default())?;
-                writeln!(out, "master password changed")?;
-            }
-        }
-        Ok(())
-    }
+/// Whether a command is carried out by this process on the vault file, rather
+/// than by the daemon.
+fn is_direct(command: &Command) -> bool {
+    matches!(command, Command::Pair | Command::Sync { .. })
+}
 
-    fn add(&mut self, kind: AddKind) -> CliResult<ItemId> {
-        match kind {
-            AddKind::Login {
-                title,
-                username,
-                url,
-            } => {
-                self.ensure_unlocked(DomainId::Password)?;
-                let password = self.input.secret("Password of the new login: ")?;
-                let mut login = Login::new(title, username, password.as_str());
-                login.urls = url;
-                Ok(self.vault.insert(login)?)
-            }
-            AddKind::Note { title } => {
-                self.ensure_unlocked(DomainId::Password)?;
-                let body = self.input.secret("Note text: ")?;
-                Ok(self.vault.insert(SecureNote::new(title, body.as_str()))?)
-            }
-            AddKind::Totp { login } => {
-                let login = login.as_deref().map(parse_id).transpose()?;
-                self.ensure_unlocked(DomainId::Totp)?;
-                let uri = self.input.secret("otpauth:// URI: ")?;
-                let mut entry = totp::parse_otpauth_uri(&uri)?;
-                if let Some(login) = login {
-                    entry = entry.for_login(login);
-                }
-                Ok(self.vault.insert(entry)?)
-            }
-        }
+/// Runs a command that works on the vault file itself.
+fn run_direct(
+    choice: KeyStoreChoice,
+    vault_path: &Path,
+    command: Command,
+    out: &mut impl Write,
+) -> CliResult<()> {
+    let mut session = Session::open(choice, vault_path)?;
+    match command {
+        Command::Pair => session.pair(out),
+        Command::Sync { seconds } => session.sync(seconds, out),
+        _ => unreachable!("not a direct command"),
     }
 }
 
@@ -600,44 +429,6 @@ fn mask(secret: &str, reveal: bool) -> &str {
     } else {
         "********  (use --reveal to show)"
     }
-}
-
-fn print_content(out: &mut impl Write, content: &Content, reveal: bool) -> io::Result<()> {
-    match content {
-        Content::Login(login) => {
-            writeln!(out, "kind:     login")?;
-            writeln!(out, "title:    {}", login.title)?;
-            writeln!(out, "username: {}", login.username)?;
-            writeln!(out, "password: {}", mask(&login.password, reveal))?;
-            for url in &login.urls {
-                writeln!(out, "url:      {url}")?;
-            }
-            if !login.notes.is_empty() {
-                writeln!(out, "notes:    {}", mask(&login.notes, reveal))?;
-            }
-        }
-        Content::SecureNote(note) => {
-            writeln!(out, "kind:  note")?;
-            writeln!(out, "title: {}", note.title)?;
-            writeln!(out, "text:  {}", mask(&note.body, reveal))?;
-        }
-        Content::Totp(entry) => {
-            writeln!(out, "kind:    totp")?;
-            writeln!(out, "issuer:  {}", entry.issuer)?;
-            writeln!(out, "account: {}", entry.account)?;
-            writeln!(out, "digits:  {}", entry.digits)?;
-            writeln!(out, "period:  {}s", entry.period)?;
-            if let Some(login) = entry.login() {
-                writeln!(out, "login:   {login}")?;
-            }
-        }
-        Content::Passkey(passkey) => {
-            writeln!(out, "kind:  passkey")?;
-            writeln!(out, "rp_id: {}", passkey.rp_id)?;
-            writeln!(out, "user:  {}", passkey.user_name)?;
-        }
-    }
-    Ok(())
 }
 
 /// Splits a shell line into words; double quotes group words containing spaces.
@@ -670,12 +461,13 @@ fn split_words(line: &str) -> Vec<String> {
     words
 }
 
-fn shell(session: &mut Session, out: &mut impl Write) -> CliResult<()> {
+fn shell(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {
+    let mut remote = Remote::open(vault_path, choice)?;
     writeln!(
         out,
         "ZeroPass shell. Type `help` for commands, `exit` to leave."
     )?;
-    while let Some(line) = session.input.line("zp> ")? {
+    while let Some(line) = remote.input.line("zp> ")? {
         let words = split_words(&line);
         match words.first().map(String::as_str) {
             None => continue,
@@ -684,7 +476,12 @@ fn shell(session: &mut Session, out: &mut impl Write) -> CliResult<()> {
         }
         match ShellLine::try_parse_from(&words) {
             Ok(parsed) => {
-                if let Err(error) = session.run(parsed.command, out) {
+                let result = if is_direct(&parsed.command) {
+                    run_direct(choice, vault_path, parsed.command, out)
+                } else {
+                    remote.run(parsed.command, out)
+                };
+                if let Err(error) = result {
                     writeln!(out, "error: {error}")?;
                 }
             }
@@ -692,7 +489,17 @@ fn shell(session: &mut Session, out: &mut impl Write) -> CliResult<()> {
             Err(error) => writeln!(out, "{}", error.render())?,
         }
     }
-    session.vault.lock_all();
+    remote.run(Command::Lock { domain: None }, &mut io::sink())
+}
+
+fn warn_about_software_key_store(choice: KeyStoreChoice, vault_path: &Path) -> io::Result<()> {
+    if choice == KeyStoreChoice::InsecureSoftware {
+        writeln!(
+            io::stderr(),
+            "warning: using the INSECURE software key store ({}); TOTP and passkey data are NOT protected by biometrics",
+            dev_key_path(vault_path).display()
+        )?;
+    }
     Ok(())
 }
 
@@ -700,43 +507,9 @@ fn init(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliR
     if vault_path.exists() {
         return Err(VaultError::AlreadyExists.into());
     }
-    let input = Input::new();
-    let password = input.new_master_password()?;
-    let hardware = hardware_key_store(choice, vault_path, true)?;
-    let created = Vault::create(
-        vault_path,
-        &password,
-        hardware.as_deref(),
-        CreateOptions::default(),
-    );
-    let vault = match created {
-        Ok(vault) => vault,
-        Err(error) => {
-            if choice == KeyStoreChoice::InsecureSoftware {
-                let _ = std::fs::remove_file(dev_key_path(vault_path));
-            }
-            return Err(error.into());
-        }
-    };
-    let params = vault.kdf_params()?;
-    writeln!(out, "created vault {}", vault.vault_id())?;
-    writeln!(out, "  file:    {}", vault_path.display())?;
-    writeln!(
-        out,
-        "  argon2id: m={} KiB, t={}, p={}",
-        params.m_kib(),
-        params.t(),
-        params.p()
-    )?;
-    for domain in DomainId::ALL {
-        let state = if vault.has_domain(domain)? {
-            "available"
-        } else {
-            "not available (no hardware key store)"
-        };
-        writeln!(out, "  {:<8} {state}", format!("{}:", domain_name(domain)))?;
-    }
-    Ok(())
+    let password = Input::new().new_master_password()?;
+    warn_about_software_key_store(choice, vault_path)?;
+    Remote::open_with(vault_path, choice, Start::Always)?.init(vault_path, &password, out)
 }
 
 fn recover(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {
@@ -745,28 +518,34 @@ fn recover(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> C
     }
     let input = Input::new();
     let code = input.secret("Recovery key: ")?;
-    let recovery_key = RecoveryKey::from_code(&code)?;
     let password = input.new_master_password()?;
-    let hardware = hardware_key_store(choice, vault_path, true)?;
-    let mut vault = Vault::recover(
-        vault_path,
-        &recovery_key,
-        &password,
-        hardware.as_deref(),
-        CreateOptions::default(),
-    )?;
-    writeln!(out, "recovered vault {}", vault.vault_id())?;
-    for domain in DomainId::ALL {
-        let state = if vault.is_unlocked(domain) {
-            "restored"
-        } else if vault.has_domain(domain)? {
-            "NOT restored (no hardware key store on this device)"
-        } else {
-            "not part of this vault"
-        };
-        writeln!(out, "  {:<8} {state}", format!("{}:", domain_name(domain)))?;
+    warn_about_software_key_store(choice, vault_path)?;
+    Remote::open(vault_path, choice)?.recover(&code, &password, out)
+}
+
+fn daemon(
+    choice: KeyStoreChoice,
+    vault_path: &Path,
+    action: &DaemonAction,
+    out: &mut impl Write,
+) -> CliResult<()> {
+    let start = match action {
+        DaemonAction::Start => Start::Always,
+        DaemonAction::Status | DaemonAction::Stop => Start::Never,
+    };
+    let Some(client) = remote::connect(vault_path, choice, start)? else {
+        writeln!(out, "the vault daemon is not running")?;
+        return Ok(());
+    };
+    let mut remote = Remote::with(client);
+    match action {
+        DaemonAction::Status | DaemonAction::Start => remote.describe(out),
+        DaemonAction::Stop => {
+            remote.stop()?;
+            writeln!(out, "the vault daemon was stopped")?;
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 fn run(cli: Cli) -> CliResult<()> {
@@ -776,27 +555,16 @@ fn run(cli: Cli) -> CliResult<()> {
         .ok_or("no vault file given: pass --vault <PATH> or set ZEROPASS_VAULT")?;
     let mut out = io::stdout().lock();
     let choice = KeyStoreChoice::from_flags(&cli);
-    if matches!(cli.command, TopCommand::Recover) {
-        return recover(choice, &vault_path, &mut out);
-    }
-    if let TopCommand::Join { name } = &cli.command {
-        return nearby::join(choice, &vault_path, name.clone(), &mut out);
-    }
-    if matches!(cli.command, TopCommand::Init) {
-        return init(choice, &vault_path, &mut out);
-    }
-    let mut session = Session {
-        vault: Vault::open(&vault_path)?,
-        path: vault_path.clone(),
-        hardware: hardware_key_store(choice, &vault_path, false)?,
-        input: Input::new(),
-    };
     match cli.command {
-        TopCommand::Init | TopCommand::Recover | TopCommand::Join { .. } => {
-            unreachable!("handled above")
+        TopCommand::Init => init(choice, &vault_path, &mut out),
+        TopCommand::Recover => recover(choice, &vault_path, &mut out),
+        TopCommand::Join { name } => nearby::join(choice, &vault_path, name, &mut out),
+        TopCommand::Shell => shell(choice, &vault_path, &mut out),
+        TopCommand::Daemon { action } => daemon(choice, &vault_path, &action, &mut out),
+        TopCommand::Session(command) if is_direct(&command) => {
+            run_direct(choice, &vault_path, command, &mut out)
         }
-        TopCommand::Shell => shell(&mut session, &mut out),
-        TopCommand::Session(command) => session.run(command, &mut out),
+        TopCommand::Session(command) => Remote::open(&vault_path, choice)?.run(command, &mut out),
     }
 }
 

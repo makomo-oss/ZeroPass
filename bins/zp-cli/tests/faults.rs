@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod common;
+
 use zp_vault::model::Login;
 use zp_vault::{Store, Vault};
 
@@ -36,6 +38,17 @@ fn command(vault: &Path, args: &[&str]) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command
+}
+
+/// Stops the daemons that the commands started, also when the test fails.
+struct Daemons<'a>(&'a [&'a Path]);
+
+impl Drop for Daemons<'_> {
+    fn drop(&mut self) {
+        for vault in self.0 {
+            common::stop_daemon(vault);
+        }
+    }
 }
 
 /// Runs a command to its end, answering its prompts with `input`.
@@ -110,6 +123,9 @@ fn a_sync_killed_while_writing_leaves_a_usable_vault_that_catches_up() {
     let dir = tempfile::tempdir().unwrap();
     let pc: PathBuf = dir.path().join("pc.zpvault");
     let phone: PathBuf = dir.path().join("phone.zpvault");
+    common::daemon_is_built();
+    // Dropped before `dir`, so the vault files are closed when it is removed.
+    let _daemons = Daemons(&[&pc, &phone]);
 
     run(&pc, &["init"], &[PC_PASSWORD, PC_PASSWORD]);
     pair(&pc, &phone);
