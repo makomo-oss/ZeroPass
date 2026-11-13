@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
@@ -17,9 +18,11 @@ import android.content.Context
 import android.location.LocationManager
 import android.os.Build
 import android.os.ParcelUuid
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import uniffi.zp_ffi.BleUuids
 import uniffi.zp_ffi.ByteLink
 import uniffi.zp_ffi.LinkException
@@ -29,9 +32,13 @@ class BleException(message: String) : Exception(message)
 
 private val CLIENT_CONFIG: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+/** How long a scan goes on after the first desktop was seen, for others to show up. */
+private const val SETTLE_MS = 300L
+
 /**
  * Scans for desktops that offer the ZeroPass service (docs/spec/ble.md §3.1).
- * Blocks for [millis] and returns the devices seen, strongest signal first.
+ * Blocks for at most [millis], or until shortly after the first one was seen,
+ * and returns the devices seen, strongest signal first.
  */
 @SuppressLint("MissingPermission")
 fun scanForDesktops(context: Context, uuids: BleUuids, millis: Long): List<BluetoothDevice> {
@@ -57,7 +64,7 @@ fun scanForDesktops(context: Context, uuids: BleUuids, millis: Long): List<Bluet
     }
 
     val seen = LinkedHashMap<String, Pair<BluetoothDevice, Int>>()
-    var failure: Int? = null
+    val failure = AtomicReference<Int?>(null)
     val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             synchronized(seen) {
@@ -69,7 +76,7 @@ fun scanForDesktops(context: Context, uuids: BleUuids, millis: Long): List<Bluet
         }
 
         override fun onScanFailed(errorCode: Int) {
-            failure = errorCode
+            failure.set(errorCode)
         }
     }
     val filter = ScanFilter.Builder()
@@ -80,11 +87,20 @@ fun scanForDesktops(context: Context, uuids: BleUuids, millis: Long): List<Bluet
         .build()
     scanner.startScan(listOf(filter), settings, callback)
     try {
-        Thread.sleep(millis)
+        // Usually there is one desktop nearby: once something has been seen,
+        // wait only a little longer for others instead of the whole time.
+        val deadline = System.currentTimeMillis() + millis
+        var firstSeen = 0L
+        while (System.currentTimeMillis() < deadline && failure.get() == null) {
+            Thread.sleep(50)
+            val any = synchronized(seen) { seen.isNotEmpty() }
+            if (any && firstSeen == 0L) firstSeen = System.currentTimeMillis()
+            if (firstSeen != 0L && System.currentTimeMillis() - firstSeen >= SETTLE_MS) break
+        }
     } finally {
         scanner.stopScan(callback)
     }
-    failure?.let { throw BleException("the scan failed (code $it)") }
+    failure.get()?.let { throw BleException("the scan failed (code $it)") }
     return synchronized(seen) { seen.values.sortedByDescending { it.second }.map { it.first } }
 }
 
@@ -151,27 +167,62 @@ class GattSession(
             val mtu = await<Mtu>(5_000, "the MTU")
             if (mtu.status == BluetoothGatt.GATT_SUCCESS) packetSize = mtu.mtu - 3
         }
+        // The default interval is made to save power; a short one carries many
+        // more packets a second (ble.md §5.2).
+        gatt().requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         if (!gatt().discoverServices()) throw BleException("service discovery could not be started")
         val services = await<Services>(15_000, "service discovery")
         if (services.status != BluetoothGatt.GATT_SUCCESS) {
             throw BleException("service discovery failed (status ${services.status})")
         }
-        val service = gatt().getService(UUID.fromString(uuids.service))
-            ?: throw BleException("the device does not offer the ZeroPass service")
-        tag = service.getCharacteristic(UUID.fromString(uuids.tag))
-        rx = service.getCharacteristic(UUID.fromString(uuids.rx))
-        tx = service.getCharacteristic(UUID.fromString(uuids.tx))
-        if (tag == null || rx == null || tx == null) {
-            throw BleException("the ZeroPass service is incomplete")
-        }
+        // Windows keeps the service of a sync process that was killed
+        // registered beside the one of the process now running, and answers
+        // reads of the old one with an error (ble.md §3.2). Every copy is a
+        // candidate, the most recently added (highest handle) first.
+        val serviceUuid = UUID.fromString(uuids.service)
+        candidates = gatt().services
+            .filter { it.uuid == serviceUuid }
+            .sortedByDescending { it.instanceId }
+        if (candidates.isEmpty()) throw BleException("the device does not offer the ZeroPass service")
     }
 
-    /** Reads the `Tag` characteristic: which device this is (ble.md §4). */
+    /** The copies of the ZeroPass service the device offers (normally one). */
+    var candidates: List<BluetoothGattService> = emptyList()
+        private set
+
+    /**
+     * Reads the `Tag` characteristic: which device this is (ble.md §4). Uses
+     * the first copy of the service that answers, and the link then runs on
+     * that copy's `Rx` and `Tx`.
+     */
     fun readTag(): ByteArray {
-        if (!gatt().readCharacteristic(tag)) throw BleException("the tag could not be read")
-        val read = await<Read>(5_000, "the tag")
-        if (read.status != BluetoothGatt.GATT_SUCCESS) throw BleException("reading the tag failed (status ${read.status})")
-        return read.value
+        var failure = "the ZeroPass service is incomplete"
+        for (service in candidates) {
+            val tag = service.getCharacteristic(UUID.fromString(uuids.tag))
+            val rx = service.getCharacteristic(UUID.fromString(uuids.rx))
+            val tx = service.getCharacteristic(UUID.fromString(uuids.tx))
+            if (tag == null || rx == null || tx == null) continue
+            if (!gatt().readCharacteristic(tag)) {
+                failure = "the tag could not be read"
+                continue
+            }
+            val read = try {
+                await<Read>(5_000, "the tag")
+            } catch (error: BleException) {
+                if (isClosed) throw error
+                failure = error.message ?: failure
+                continue
+            }
+            if (read.status != BluetoothGatt.GATT_SUCCESS) {
+                failure = "reading the tag failed (status ${read.status})"
+                continue
+            }
+            this.tag = tag
+            this.rx = rx
+            this.tx = tx
+            return read.value
+        }
+        throw BleException(failure)
     }
 
     /** Subscribes to `Tx`, which opens the link on the desktop's side. */
@@ -240,6 +291,11 @@ class GattSession(
     /** The next packet from the desktop, or `null` if none arrived in time. */
     fun read(timeoutMs: Long): ByteArray? = incoming.poll(timeoutMs, TimeUnit.MILLISECONDS)
 
+    /** When the latest packet arrived from the desktop (`System.currentTimeMillis`). */
+    @Volatile
+    var lastArrival = 0L
+        private set
+
     /** Unsubscribes and disconnects (ble.md §5.3). */
     fun close() {
         if (isClosed) return
@@ -305,7 +361,7 @@ class GattSession(
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray,
     ) {
-        if (value.isNotEmpty()) incoming.add(value)
+        if (value.isNotEmpty()) arrived(value)
     }
 
     // Android 12 and earlier.
@@ -313,25 +369,57 @@ class GattSession(
     override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         @Suppress("DEPRECATION")
         val value = characteristic.value
-        if (value != null && value.isNotEmpty()) incoming.add(value.copyOf())
+        if (value != null && value.isNotEmpty()) arrived(value.copyOf())
+    }
+
+    private fun arrived(packet: ByteArray) {
+        lastArrival = System.currentTimeMillis()
+        incoming.add(packet)
     }
 }
 
 /** The byte stream the Rust core runs pairing and sync on. */
 class GattLink(private val session: GattSession) : ByteLink {
+    private val created = System.currentTimeMillis()
+
+    /** Bytes received from and sent to the desktop over this link. */
+    @Volatile
+    var received = 0L
+        private set
+
+    @Volatile
+    var sent = 0L
+        private set
+
     override fun read(timeoutMs: UInt): ByteArray {
         val packet = session.read(timeoutMs.toLong())
-        if (packet != null) return packet
-        if (session.isClosed) throw LinkException.Closed("the Bluetooth link is closed")
+        if (packet != null) {
+            received += packet.size
+            return packet
+        }
+        if (session.isClosed) throw LinkException.Closed()
         return ByteArray(0)
     }
 
     override fun write(bytes: ByteArray) {
         try {
             session.write(bytes)
+            sent += bytes.size
         } catch (error: BleException) {
-            throw LinkException.Closed(error.message ?: "the Bluetooth link is closed")
+            throw LinkException.Closed()
         }
+    }
+
+    /**
+     * How much went over the link since it was made, and when the last packet
+     * from the desktop arrived, for the log.
+     */
+    fun traffic(): String {
+        val millis = maxOf(1L, System.currentTimeMillis() - created)
+        val kib = (received + sent) / 1024.0
+        val lastPacket = if (session.lastArrival >= created) session.lastArrival - created else 0
+        return "%.1f KiB in, %.1f KiB out in %d ms (%.1f KiB/s); the last packet arrived after %d ms"
+            .format(Locale.ROOT, received / 1024.0, sent / 1024.0, millis, kib * 1000.0 / millis, lastPacket)
     }
 }
 
@@ -352,6 +440,9 @@ fun <T> connectToDesktop(
         val session = GattSession(context, device, uuids)
         try {
             session.connect()
+            if (session.candidates.size > 1) {
+                log("the device offers ${session.candidates.size} copies of the ZeroPass service")
+            }
             val match = wanted(session.readTag())
             if (match != null) {
                 session.subscribe()

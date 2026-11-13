@@ -66,20 +66,27 @@ fn failed(error: impl core::fmt::Display) -> FfiError {
 }
 
 /// Why a [`ByteLink`] call failed.
+///
+/// The app raises it and Rust receives it, so it must not be a flat error:
+/// UniFFI cannot bring a flat error back into Rust and aborts the process.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-#[uniffi(flat_error)]
 pub enum LinkError {
     /// The connection is gone.
     #[error("the link is closed")]
     Closed,
     /// The app's implementation threw something unexpected.
-    #[error("the link failed: {0}")]
-    Unexpected(String),
+    #[error("the link failed: {reason}")]
+    Unexpected {
+        /// What the app reported.
+        reason: String,
+    },
 }
 
 impl From<uniffi::UnexpectedUniFFICallbackError> for LinkError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        Self::Unexpected(error.reason)
+        Self::Unexpected {
+            reason: error.reason,
+        }
     }
 }
 
@@ -598,4 +605,32 @@ pub fn sync_on_lan(path: String, discover_ms: u32) -> Result<Vec<LanSync>, FfiEr
         });
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use uniffi::{Lift, Lower, RustBuffer};
+
+    use super::LinkError;
+
+    /// What happens when the app's `ByteLink` throws: the error comes back
+    /// through a buffer and has to be lifted (this aborted with a flat error).
+    fn through_the_boundary(error: LinkError) -> LinkError {
+        let buffer: RustBuffer =
+            <LinkError as Lower<crate::UniFfiTag>>::lower_into_rust_buffer(error);
+        <LinkError as Lift<crate::UniFfiTag>>::try_lift_from_rust_buffer(buffer)
+            .expect("the error lifts")
+    }
+
+    #[test]
+    fn errors_raised_by_the_app_can_be_lifted() {
+        assert!(matches!(
+            through_the_boundary(LinkError::Closed),
+            LinkError::Closed
+        ));
+        assert!(matches!(
+            through_the_boundary(LinkError::Unexpected { reason: "boom".into() }),
+            LinkError::Unexpected { reason } if reason == "boom"
+        ));
+    }
 }
