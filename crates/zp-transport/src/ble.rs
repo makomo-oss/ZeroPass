@@ -23,8 +23,6 @@ pub const TX_UUID: u128 = 0x5a50c0de_0004_4b1d_9c5e_7a65726f7061;
 pub const TAG_VALUE_LEN: usize = 2 * TAG_LEN;
 /// The payload of a packet when the central did not negotiate a larger MTU.
 pub const DEFAULT_PACKET_LEN: usize = 20;
-/// A link without traffic is dropped after this long.
-pub const IDLE_SECS: u64 = 10;
 
 const LABEL_PAIRING: &[u8] = b"zeropass/v1/ble-pairing\0";
 

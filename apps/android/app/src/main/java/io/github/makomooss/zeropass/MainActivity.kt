@@ -195,17 +195,20 @@ class MainActivity : ComponentActivity() {
         val name = deviceName.text.toString().trim()
         work("joining over Bluetooth") {
             val offer = offerInfo(code)
+            val scanStarted = System.currentTimeMillis()
             val desktops = scanForDesktops(this, uuids, 4_000)
-            log("${desktops.size} ZeroPass device(s) nearby")
+            log("${desktops.size} ZeroPass device(s) nearby (scan ${System.currentTimeMillis() - scanStarted} ms)")
             val (session, _) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
                 if (announcesPairing(tag, offer.pairingTag)) Unit else null
             } ?: throw BleException("the device showing the code was not found nearby")
             try {
                 log("confirm \"$name\" on the PC")
-                val outcome = joinVault(vaultFile.path, masterPassword, name, code, GattLink(session))
+                val link = GattLink(session)
+                val outcome = joinVault(vaultFile.path, masterPassword, name, code, link)
                 log("joined vault ${outcome.vaultId.take(8)}… as device ${outcome.deviceId.take(8)}…")
                 outcome.firstSync?.let { log("first sync: sent ${it.sent}, received ${it.received}") }
                 outcome.firstSyncError?.let { log("first sync did not complete: $it") }
+                log("Bluetooth: ${link.traffic()}")
             } finally {
                 session.close()
             }
@@ -261,8 +264,9 @@ class MainActivity : ComponentActivity() {
             val synced = if (onWifi()) syncOnWifi() else emptySet<String>().also { log("no Wi-Fi: Bluetooth only") }
             if (others.all { it.deviceId in synced }) return@work
 
+            val scanStarted = System.currentTimeMillis()
             val desktops = scanForDesktops(this, uuids, 4_000)
-            log("Bluetooth: ${desktops.size} ZeroPass device(s) nearby")
+            log("Bluetooth: ${desktops.size} ZeroPass device(s) nearby (scan ${System.currentTimeMillis() - scanStarted} ms)")
             val (session, peer) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
                 recognisePeer(vaultFile.path, tag)?.takeIf { it.deviceId !in synced }
             } ?: throw BleException(
@@ -273,8 +277,10 @@ class MainActivity : ComponentActivity() {
                 },
             )
             try {
-                val outcome = syncWith(vaultFile.path, peer.deviceId, GattLink(session))
+                val link = GattLink(session)
+                val outcome = syncWith(vaultFile.path, peer.deviceId, link)
                 log("Bluetooth: synced with \"${peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
+                log("Bluetooth: ${link.traffic()}")
             } finally {
                 session.close()
             }
