@@ -193,6 +193,10 @@ fn init_add_get_list_totp_and_lock() {
     assert!(out.contains("password: unlocked"), "{out}");
     assert!(out.contains("totp:    unlocked"), "{out}");
     assert!(out.contains("passkey: locked"), "{out}");
+    // Where the platform has a sandbox, the daemon was started inside it.
+    if cfg!(windows) {
+        assert!(out.contains("sandbox: yes"), "{out}");
+    }
     assert!(cli.ok(&["lock"], &[]).contains("locked: all domains"));
     let stderr = cli.fails(&["list"], &[]);
     assert!(stderr.contains("unexpected end of input"), "{stderr}");
@@ -306,6 +310,12 @@ fn init_add_get_list_totp_and_lock() {
     assert!(cli.ok(&["list"], &[NEW_PASSWORD]).contains("2 item(s)"));
     let out = cli.ok(&["daemon", "status"], &[]);
     assert!(out.contains("is running"), "{out}");
+
+    // For development, the daemon can be started outside the sandbox.
+    cli.ok(&["daemon", "stop"], &[]);
+    let out = cli.ok(&["--no-sandbox", "daemon", "start"], &[]);
+    assert!(out.contains("sandbox: NO"), "{out}");
+    assert!(cli.ok(&["list"], &[NEW_PASSWORD]).contains("2 item(s)"));
 }
 
 #[test]

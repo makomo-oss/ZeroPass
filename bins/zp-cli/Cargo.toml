@@ -19,6 +19,7 @@ zeroize = "1.9.1"
 zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
 zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
+zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }
 zp-pairing = { version = "0.0.0", path = "../../crates/zp-pairing" }
 zp-sync = { version = "0.0.0", path = "../../crates/zp-sync" }
 zp-transport = { version = "0.0.0", path = "../../crates/zp-transport" }

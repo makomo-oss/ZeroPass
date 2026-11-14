@@ -1,18 +1,23 @@
 //! Commands that are carried out by the vault daemon: this process asks over
 //! the local IPC and never sees a vault key.
 
+use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as Process;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use zp_crypto::DomainId;
 use zp_ipc::proto::{self, ErrorCode, item, new_item, request, response};
-use zp_ipc::{Client, DAEMON_NAME, DaemonPolicy, Endpoint, IpcError};
+use zp_ipc::{Client, DAEMON_NAME, DAEMON_SANDBOX, DaemonPolicy, Endpoint, IpcError};
+use zp_sandbox::Access;
 use zp_vault::VaultError;
 
-use super::{AddKind, CliResult, Command, Input, KeyStoreChoice, domain_name, mask, parse_id};
+use super::{
+    AddKind, CliResult, Command, Input, KeyStoreChoice, dev_key_path, domain_name, mask, parse_id,
+};
 
 /// How long a daemon that was just started may take to listen.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,22 +58,58 @@ fn unexpected() -> Box<dyn std::error::Error> {
     "the vault daemon gave an unexpected answer".into()
 }
 
-/// Starts the daemon for `vault` as a background process.
+/// Set by `--no-sandbox`: start the daemon as an ordinary process.
+static NO_SANDBOX: AtomicBool = AtomicBool::new(false);
+
+/// Makes this process start the daemon without the sandbox from now on.
+pub(crate) fn disable_sandbox() {
+    NO_SANDBOX.store(true, Ordering::Relaxed);
+}
+
+/// Gives the daemon's sandbox access to what the daemon works with, and to
+/// nothing else: its executable, the vault file, and the files it creates
+/// beside the vault (the database's journal).
+fn grant_to_sandbox(executable: &Path, vault: &Path) -> io::Result<()> {
+    zp_sandbox::allow(DAEMON_SANDBOX, executable, Access::ReadExecute)?;
+    if let Some(directory) = vault.parent() {
+        zp_sandbox::allow(DAEMON_SANDBOX, directory, Access::CreateFiles)?;
+    }
+    // Files that are already there are not covered by the grant on the
+    // directory.
+    let mut journal = vault.as_os_str().to_owned();
+    journal.push("-journal");
+    for existing in [
+        vault.to_path_buf(),
+        PathBuf::from(journal),
+        dev_key_path(vault),
+    ] {
+        if existing.exists() {
+            zp_sandbox::allow(DAEMON_SANDBOX, &existing, Access::Modify)?;
+        }
+    }
+    Ok(())
+}
+
+/// Starts the daemon for `vault` as a background process: in a sandbox without
+/// network access where the platform has one.
 fn start_daemon(vault: &Path, choice: KeyStoreChoice) -> CliResult<()> {
     let name = format!("{DAEMON_NAME}{}", std::env::consts::EXE_SUFFIX);
     let executable = std::env::current_exe()?.with_file_name(name);
-    let mut daemon = Process::new(&executable);
-    daemon.arg("--vault").arg(std::path::absolute(vault)?);
+    let vault = std::path::absolute(vault)?;
+    let mut args: Vec<OsString> = vec!["--vault".into(), vault.clone().into()];
     match choice {
         KeyStoreChoice::Platform => {}
-        KeyStoreChoice::None => {
-            daemon.arg("--no-hardware-keystore");
-        }
-        KeyStoreChoice::InsecureSoftware => {
-            daemon.arg("--insecure-software-keystore");
-        }
+        KeyStoreChoice::None => args.push("--no-hardware-keystore".into()),
+        KeyStoreChoice::InsecureSoftware => args.push("--insecure-software-keystore".into()),
     }
-    zp_ipc::spawn_detached(&mut daemon).map_err(|error| {
+    let started = if zp_sandbox::SUPPORTED && !NO_SANDBOX.load(Ordering::Relaxed) {
+        grant_to_sandbox(&executable, &vault)
+            .and_then(|()| zp_sandbox::spawn(DAEMON_SANDBOX, &executable, &args))
+            .map(drop)
+    } else {
+        zp_ipc::spawn_detached(Process::new(&executable).args(&args))
+    };
+    started.map_err(|error| {
         format!(
             "cannot start the vault daemon ({}): {error}",
             executable.display()
@@ -315,6 +356,12 @@ impl Remote {
             self.client.daemon_version()
         )?;
         let status = self.status()?;
+        let sandbox = if status.sandboxed {
+            "yes (no network access)"
+        } else {
+            "NO"
+        };
+        writeln!(out, "  sandbox: {sandbox}")?;
         if !status.vault_exists {
             writeln!(out, "  no vault file yet")?;
             return Ok(());

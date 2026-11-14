@@ -13,20 +13,26 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::ptr;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetHandleInformation, HANDLE,
-    HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HLOCAL, LocalFree, SetHandleInformation,
+    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SUCCESS,
+    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HLOCAL, LocalFree,
+    SetHandleInformation, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+    SetEntriesInAclW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
+use windows::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
 use windows::Win32::Security::{
-    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-    TokenUser,
+    ACL, DACL_SECURITY_INFORMATION, FreeSid, GetTokenInformation, NO_INHERITANCE,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
+    TokenAppContainerSid, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
@@ -36,9 +42,11 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
     PIPE_WAIT,
 };
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess, OpenProcess, OpenProcessToken,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess, GetCurrentProcessId,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -59,8 +67,125 @@ const BUFFER_SIZE: u32 = 64 * 1024;
 /// accepting another client.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn pipe_path(endpoint: &Endpoint) -> String {
-    format!(r"\\.\pipe\zeropass-vaultd-{}", endpoint.id())
+fn pipe_name(endpoint: &Endpoint) -> String {
+    format!("zeropass-vaultd-{}", endpoint.id())
+}
+
+/// The path a daemon creates its pipe at.
+///
+/// A process in an AppContainer may create pipes only in the namespace of its
+/// container, which it reaches through the `LOCAL` prefix.
+fn server_pipe_path(endpoint: &Endpoint, in_container: bool) -> String {
+    let name = pipe_name(endpoint);
+    if in_container {
+        format!(r"\\.\pipe\LOCAL\{name}")
+    } else {
+        format!(r"\\.\pipe\{name}")
+    }
+}
+
+/// The paths a client looks for the daemon at: in the namespace of the
+/// daemon's sandbox, then in the global one (a daemon that is not sandboxed).
+fn client_pipe_paths(endpoint: &Endpoint) -> Vec<String> {
+    let name = pipe_name(endpoint);
+    let mut paths = Vec::new();
+    if let Ok(path) = container_pipe_path(endpoint.sandbox(), &name) {
+        paths.push(path);
+    }
+    paths.push(format!(r"\\.\pipe\{name}"));
+    paths
+}
+
+/// Allows the processes of the AppContainer `container` to ask which
+/// executable this process runs, and nothing more.
+fn show_executable_to(container: PSID) -> io::Result<()> {
+    fn check(status: WIN32_ERROR) -> io::Result<()> {
+        if status == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(status.0 as i32))
+        }
+    }
+
+    // SAFETY: returns a pseudo handle that is always valid.
+    let process = unsafe { GetCurrentProcess() };
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: `dacl` and `descriptor` are valid places for the results; `dacl`
+    // points into the descriptor, which is freed by `SecurityDescriptor`.
+    check(unsafe {
+        GetSecurityInfo(
+            process,
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(&mut dacl),
+            None,
+            Some(&mut descriptor),
+        )
+    })?;
+    let _descriptor = SecurityDescriptor(descriptor);
+
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: PROCESS_QUERY_LIMITED_INFORMATION.0,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: TRUSTEE_W {
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
+            // With TRUSTEE_IS_SID, the "name" is the SID itself.
+            ptstrName: PWSTR(container.0.cast()),
+            ..TRUSTEE_W::default()
+        },
+    };
+    let mut merged: *mut ACL = ptr::null_mut();
+    // SAFETY: `entry` holds a valid SID that outlives the call, `dacl` is the
+    // valid ACL read above (or null: no ACL), and `merged` receives a new ACL
+    // allocated by the system. An entry the ACL already has is not added twice.
+    check(unsafe { SetEntriesInAclW(Some(&[entry]), Some(dacl), &mut merged) })?;
+    // SAFETY: `merged` is the valid ACL created above.
+    let set = check(unsafe {
+        SetSecurityInfo(
+            process,
+            SE_KERNEL_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(merged),
+            None,
+        )
+    });
+    // SAFETY: `SetEntriesInAclW` documents `LocalFree` as the way to release
+    // the ACL, and it is not used afterwards.
+    unsafe {
+        LocalFree(Some(HLOCAL(merged.cast())));
+    }
+    set
+}
+
+/// The path at which a process outside the AppContainer `container` reaches a
+/// pipe that a process inside it created as `LOCAL\<name>`.
+fn container_pipe_path(container: &str, name: &str) -> io::Result<String> {
+    let container = HSTRING::from(container);
+    // SAFETY: `container` is a valid, null-terminated wide string.
+    let sid = unsafe { DeriveAppContainerSidFromAppContainerName(&container) }?;
+    // A daemon in the container cannot look at processes outside it unless
+    // they allow it, and it admits only clients whose executable it can see.
+    let shown = show_executable_to(sid);
+    let text = shown.and_then(|()| sid_to_text(sid));
+    // SAFETY: the SID was allocated by the call above, which documents
+    // `FreeSid` as the way to release it; it is not used afterwards.
+    unsafe {
+        FreeSid(sid);
+    }
+    let mut session = 0u32;
+    // SAFETY: plain call; `session` is a valid place for the result.
+    unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }?;
+    Ok(format!(
+        r"\\.\pipe\Sessions\{session}\AppContainerNamedObjects\{}\{name}",
+        text?
+    ))
 }
 
 /// Takes ownership of a handle returned by the system, so that it is closed.
@@ -94,8 +219,10 @@ impl Drop for SecurityDescriptor {
     }
 }
 
-/// The SID of the user this process runs as, in string form (`S-1-5-21-…`).
-fn current_user_sid() -> io::Result<String> {
+/// A SID from the token of this process, in string form: the user's
+/// (`TokenUser`, `S-1-5-21-…`) or the AppContainer's (`TokenAppContainerSid`,
+/// `S-1-15-2-…`). `None` if the token has no such SID.
+fn token_sid(class: TOKEN_INFORMATION_CLASS) -> io::Result<Option<String>> {
     let mut token = HANDLE::default();
     // SAFETY: `GetCurrentProcess` returns a pseudo handle that is always valid,
     // and `token` is a valid place to store the result.
@@ -105,31 +232,38 @@ fn current_user_sid() -> io::Result<String> {
     let mut len = 0u32;
     // SAFETY: a null buffer of length 0 is allowed; the call fails and reports
     // the size it needs in `len`.
-    let _ = unsafe { GetTokenInformation(raw(&token), TokenUser, None, 0, &mut len) };
+    let _ = unsafe { GetTokenInformation(raw(&token), class, None, 0, &mut len) };
     if len == 0 {
         return Err(io::Error::last_os_error());
     }
-    // `u64` elements give the buffer the alignment `TOKEN_USER` needs.
+    // `u64` elements give the buffer the alignment of a pointer.
     let mut buffer = vec![0u64; (len as usize).div_ceil(8)];
     // SAFETY: the buffer is writable and at least `len` bytes long.
     unsafe {
         GetTokenInformation(
             raw(&token),
-            TokenUser,
+            class,
             Some(buffer.as_mut_ptr().cast()),
             len,
             &mut len,
         )
     }?;
-    // SAFETY: on success the buffer starts with a `TOKEN_USER`, the buffer is
-    // suitably aligned, and the SID it points to lives in the same buffer, which
-    // outlives this reference.
-    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    // SAFETY: both `TOKEN_USER` and `TOKEN_APPCONTAINER_INFORMATION` start with
+    // a pointer to the SID, the buffer is suitably aligned, and the SID lives in
+    // the same buffer, which outlives its use below.
+    let sid = unsafe { *buffer.as_ptr().cast::<PSID>() };
+    if sid.0.is_null() {
+        return Ok(None);
+    }
+    sid_to_text(sid).map(Some)
+}
 
+/// The string form of a SID.
+fn sid_to_text(sid: PSID) -> io::Result<String> {
     let mut text = PWSTR::null();
-    // SAFETY: the SID is valid (see above) and `text` receives a string
+    // SAFETY: every caller passes a valid SID, and `text` receives a string
     // allocated by the system.
-    unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) }?;
+    unsafe { ConvertSidToStringSidW(sid, &mut text) }?;
     // SAFETY: on success `text` is a valid, null-terminated wide string.
     let sid = unsafe { text.to_string() };
     // SAFETY: `ConvertSidToStringSidW` documents `LocalFree` as the way to
@@ -141,10 +275,18 @@ fn current_user_sid() -> io::Result<String> {
 }
 
 /// A security descriptor that gives the current user, and nobody else, access.
-fn user_only_descriptor() -> io::Result<SecurityDescriptor> {
-    // D:P — a protected DACL (nothing inherited) with one entry: allow (A)
-    // generic all (GA) to the user.
-    let sddl = HSTRING::from(format!("D:P(A;;GA;;;{})", current_user_sid()?));
+/// If this process runs in an AppContainer, the container is named too:
+/// without that, the process could not open its own pipe.
+fn user_only_descriptor(container: Option<&str>) -> io::Result<SecurityDescriptor> {
+    let user =
+        token_sid(TokenUser)?.ok_or_else(|| io::Error::other("the process token names no user"))?;
+    // D:P — a protected DACL (nothing inherited); each entry allows (A)
+    // generic all (GA) to one SID.
+    let mut sddl = format!("D:P(A;;GA;;;{user})");
+    if let Some(container) = container {
+        sddl.push_str(&format!("(A;;GA;;;{container})"));
+    }
+    let sddl = HSTRING::from(sddl);
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     // SAFETY: `sddl` is a valid wide string and `descriptor` receives a
     // descriptor allocated by the system.
@@ -222,11 +364,12 @@ pub(crate) struct Listener {
 
 impl Listener {
     pub(crate) fn bind(endpoint: &Endpoint) -> Result<Self, IpcError> {
-        let path = pipe_path(endpoint);
+        let container = token_sid(TokenAppContainerSid)?;
+        let path = server_pipe_path(endpoint, container.is_some());
         let listener = Self {
             name: path.encode_utf16().chain([0]).collect(),
             path,
-            security: user_only_descriptor()?,
+            security: user_only_descriptor(container.as_deref())?,
             next: Mutex::new(None),
         };
         let first = listener.create_instance(true).map_err(|error| {
@@ -310,7 +453,17 @@ impl Listener {
 
 /// Connects to the daemon listening on `endpoint`.
 pub(crate) fn connect(endpoint: &Endpoint) -> Result<(Stream, PeerProcess), IpcError> {
-    let path = pipe_path(endpoint);
+    for path in client_pipe_paths(endpoint) {
+        if let Some(pipe) = open_pipe(&path)? {
+            let process = identify(&pipe, End::Server);
+            return Ok((pipe, process));
+        }
+    }
+    Err(IpcError::NotRunning)
+}
+
+/// Opens the client end of the pipe at `path`; `None` if there is no such pipe.
+fn open_pipe(path: &str) -> io::Result<Option<File>> {
     let deadline = Instant::now() + BUSY_TIMEOUT;
     loop {
         let opened = OpenOptions::new()
@@ -318,22 +471,17 @@ pub(crate) fn connect(endpoint: &Endpoint) -> Result<(Stream, PeerProcess), IpcE
             .write(true)
             // The server may learn who this process is, but may not act as it.
             .security_qos_flags(SECURITY_IDENTIFICATION.0)
-            .open(&path);
+            .open(path);
         match opened {
-            Ok(pipe) => {
-                let process = identify(&pipe, End::Server);
-                return Ok((pipe, process));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(IpcError::NotRunning);
-            }
+            Ok(pipe) => return Ok(Some(pipe)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error)
                 if error.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32)
                     && Instant::now() < deadline =>
             {
                 thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         }
     }
 }

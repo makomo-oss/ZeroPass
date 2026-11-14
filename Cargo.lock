@@ -2221,6 +2221,7 @@ dependencies = [
  "zp-hwkey",
  "zp-ipc",
  "zp-pairing",
+ "zp-sandbox",
  "zp-sync",
  "zp-transport",
  "zp-vault",
@@ -2306,6 +2307,15 @@ name = "zp-passkey"
 version = "0.0.0"
 
 [[package]]
+name = "zp-sandbox"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "windows",
+ "zp-ipc",
+]
+
+[[package]]
 name = "zp-sync"
 version = "0.0.0"
 dependencies = [
@@ -2371,5 +2381,6 @@ dependencies = [
  "zp-crypto",
  "zp-hwkey",
  "zp-ipc",
+ "zp-sandbox",
  "zp-vault",
 ]
