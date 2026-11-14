@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, reason = "test helpers may panic")]
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -58,7 +58,12 @@ impl Cli {
             .unwrap();
         let mut stdin = child.stdin.take().unwrap();
         for line in input {
-            writeln!(stdin, "{line}").unwrap();
+            // The CLI may exit before it has read every answer, for example
+            // when it refuses the command outright.
+            if let Err(error) = writeln!(stdin, "{line}") {
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe, "{error}");
+                break;
+            }
         }
         drop(stdin);
         let output = child.wait_with_output().unwrap();
