@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::DriveError;
 
 /// How often a blocked reader wakes up to see whether its connection was dropped.
-pub(crate) const READ_POLL: Duration = Duration::from_millis(200);
+pub const READ_POLL: Duration = Duration::from_millis(200);
 
 /// A byte stream to one peer.
 pub trait Link: Send {
@@ -38,8 +38,10 @@ pub struct MemoryLink {
     peer: String,
 }
 
+/// Reads, as one byte stream, the chunks delivered through a channel. For links
+/// whose bytes arrive by callback or from another thread.
 #[derive(Debug)]
-pub(crate) struct ChannelReader {
+pub struct ChannelReader {
     incoming: Receiver<Vec<u8>>,
     pending: Vec<u8>,
 }
@@ -69,7 +71,7 @@ impl MemoryLink {
 impl ChannelReader {
     /// A reader over byte chunks delivered through a channel; the stream ends when
     /// the sending side is dropped.
-    pub(crate) fn new(incoming: Receiver<Vec<u8>>) -> Self {
+    pub fn new(incoming: Receiver<Vec<u8>>) -> Self {
         Self {
             incoming,
             pending: Vec::new(),

@@ -2256,6 +2256,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zp-drive"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+ "zp-crypto",
+ "zp-pairing",
+ "zp-sync",
+ "zp-vault",
+]
+
+[[package]]
 name = "zp-ffi"
 version = "0.0.0"
 dependencies = [
@@ -2361,6 +2372,7 @@ dependencies = [
  "windows",
  "zeroize",
  "zp-crypto",
+ "zp-drive",
  "zp-ipc",
  "zp-pairing",
  "zp-sync",

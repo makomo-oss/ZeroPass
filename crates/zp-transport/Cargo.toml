@@ -19,6 +19,7 @@ socket2 = "0.6.5"
 thiserror = "2.0.21"
 zeroize = "1.9.1"
 zp-crypto = { version = "0.0.0", path = "../zp-crypto" }
+zp-drive = { version = "0.0.0", path = "../zp-drive" }
 zp-ipc = { version = "0.0.0", path = "../zp-ipc" }
 zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
 zp-sync = { version = "0.0.0", path = "../zp-sync" }

@@ -10,22 +10,22 @@ pub mod ble_windows;
 pub mod capture;
 pub mod daemon;
 pub mod discovery;
-pub mod driver;
-mod error;
 pub mod lan;
-mod link;
 pub mod local_net;
 pub mod multi;
 mod resilient;
 mod transport;
 
-pub use driver::{
-    Admitted, DriveConfig, Joined, NewVault, PairingLink, pair_as_existing, pair_as_new,
+// The drivers and the link they run on live in `zp-drive`, which has no
+// networking; they are re-exported here for the programs that use both.
+pub use zp_drive::driver::{
+    self, Admitted, DriveConfig, Joined, NewVault, PairingLink, pair_as_existing, pair_as_new,
     sync_as_initiator, sync_as_responder,
 };
-pub use error::DriveError;
+pub(crate) use zp_drive::link;
+pub use zp_drive::{Connection, DriveError, Link, MemoryLink};
+
 pub use lan::LanTransport;
-pub use link::{Connection, Link, MemoryLink};
 pub use multi::{MultiTransport, Nearby, open_nearby};
 pub use resilient::ResilientLan;
 pub use transport::{Address, Discovered, LoopbackNetwork, LoopbackTransport, Transport};
