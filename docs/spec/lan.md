@@ -107,9 +107,9 @@ tag  = SHA-256("zeropass/v1/discovery" ‖ 0x00 ‖ vault_id(16) ‖ noise_pk(32
 パケットキャプチャによる確認（Windows、管理者権限が必要）:
 
 1. 通常のターミナルでビルドする: `cargo build --release -p zp-syncd` と `cargo build --release -p zp-transport --example capture_check`
-2. 管理者として開いた PowerShell で `.\scripts\check-lan-capture.ps1 -Vault <金庫ファイル>` を実行する。スクリプトは `zp-syncd` を起動し、その TCP ポートと mDNS（UDP 5353）のパケットを OS 標準の Packet Monitor で 45 秒間採取する。
-3. 採取中に、同じネットワーク上の別の端末（もう 1 台の PC やスマートフォン）から同期を実行する。
-4. スクリプトが採取結果を解析し、この PC が送ったパケットの宛先がすべてローカルリンク内であること、TCP パケットの TTL がすべて 1 であることを判定する（`zp_transport::capture`）。違反があれば一覧を表示して終了コード 1 を返す。
+2. 管理者として開いた PowerShell で `.\scripts\check-lan-capture.ps1 -Vault "C:\path\to\vault.zpvault"` を実行する（パスは金庫ファイルのものに置き換える）。スクリプトは `zp-syncd` を起動し、その TCP ポートと mDNS（UDP 5353）のパケットを OS 標準の Packet Monitor で 45 秒間採取する。採取はアダプターだけでなくネットワークスタックのすべての層で行う。Wi-Fi のドライバの層ではパケットが 802.11 のフレームとして流れ、Packet Monitor のポート指定がそれに効かないことがあるためである（上の層では同じパケットが Ethernet のフレームとして記録される）。
+3. スクリプトが `Capturing` と表示してから、同じネットワーク上の別の端末（もう 1 台の PC やスマートフォン）から同期を実行する。Packet Monitor の起動には 30 秒ほどかかることがあり、それより前の同期は記録されない。
+4. スクリプトが採取結果を解析し、この PC が送ったパケットの宛先がすべてローカルリンク内であること、TCP パケットの TTL がすべて 1 であることを判定する（`zp_transport::capture`。Packet Monitor は Wi-Fi の 802.11 のフレームも Ethernet として記録するので、両方の形式を読む）。違反があれば一覧を表示して終了コード 1 を返す。この PC が送った TCP パケットが 1 つもなければ、同期が採取されていないので判定せずに終了コード 2 を返す（mDNS だけでは同期の接続を確かめられない）。
 
 同じ PC 上の 2 つの金庫ファイルどうしの通信はネットワークインターフェースを通らないので、この確認には別の端末が必要である。
 

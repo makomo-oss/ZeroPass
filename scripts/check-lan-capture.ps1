@@ -7,8 +7,10 @@
 #
 # It starts zp-syncd on the vault, captures the packets on the ports it uses
 # (its TCP port and mDNS) with the built-in Packet Monitor, and analyses the
-# capture. While it waits, sync from another device of the vault on the same
-# network. The vault is never unlocked: zp-syncd works on the locked file.
+# capture. Once it says "Capturing", sync from another device of the vault on
+# the same network: Packet Monitor can take half a minute to start, and a sync
+# before that is not in the capture. The vault is never unlocked: zp-syncd
+# works on the locked file.
 param(
     [Parameter(Mandatory = $true)][string]$Vault,
     [int]$Seconds = 45,
@@ -64,7 +66,11 @@ try {
     pktmon filter remove | Out-Null
     foreach ($port in $ports) { pktmon filter add zeropass-tcp -t TCP -p $port | Out-Null }
     pktmon filter add zeropass-mdns -t UDP -p 5353 | Out-Null
-    pktmon start --capture --comp nics --pkt-size 96 --file-name $etl | Out-Null
+    Write-Host "Starting Packet Monitor (this can take half a minute)..."
+    # At every layer of the network stack, not only at the adapters: a Wi-Fi
+    # driver handles 802.11 frames, and Packet Monitor may not apply the port
+    # filters to those. The layers above it see the same packets as Ethernet.
+    pktmon start --capture --pkt-size 96 --file-name $etl | Out-Null
 
     Write-Host "Capturing for $Seconds seconds. Sync from another device of this vault NOW (twice if you can)."
     Start-Sleep -Seconds $Seconds
