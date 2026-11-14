@@ -66,6 +66,10 @@ fn run_handshake(
     Ok(handshake.into_channel()?)
 }
 
+/// After a write has failed, how long to wait for more of what the peer had
+/// already sent before giving up on it.
+const DRAIN_WAIT: Duration = Duration::from_millis(100);
+
 /// Framed messages over an established secure channel.
 struct Messenger {
     connection: Connection,
@@ -77,8 +81,11 @@ struct Messenger {
     last_sent: Instant,
     /// Whether bytes arrived from the peer since then.
     received_since_sent: bool,
-    /// Whether a `Progress` message could not be written: the peer is gone.
-    progress_failed: bool,
+    /// Why the peer can no longer be written to, once a write has failed.
+    /// Reported when what it had already sent has been taken in.
+    write_failure: Option<DriveError>,
+    /// Whether a write has failed (the failure may have been reported).
+    write_failed: bool,
 }
 
 impl Messenger {
@@ -95,7 +102,8 @@ impl Messenger {
             progress_interval: config.progress_interval,
             last_sent: Instant::now(),
             received_since_sent: false,
-            progress_failed: false,
+            write_failure: None,
+            write_failed: false,
         };
         // Data the peer sent right behind its last handshake message.
         messenger.absorb(&[])?;
@@ -110,10 +118,24 @@ impl Messenger {
         Ok(())
     }
 
+    /// Sends one message.
+    ///
+    /// If the link can no longer be written to, the failure is not reported
+    /// here but by [`Self::receive`], once what the peer had already sent has
+    /// been taken in: a peer that breaks off mid-transfer may have sent whole
+    /// batches this side has not processed yet, and those are kept
+    /// (`docs/spec/sync.md`). Nothing more is written after a failure.
     fn send(&mut self, message: &[u8]) -> Result<(), DriveError> {
+        if self.write_failed {
+            return Ok(());
+        }
         let frame = encode_frame(message).map_err(store_error)?;
         let bytes = self.channel.send(&frame)?;
-        self.connection.send(&bytes)?;
+        if let Err(error) = self.connection.send(&bytes) {
+            self.write_failed = true;
+            self.write_failure = Some(error);
+            return Ok(());
+        }
         self.last_sent = Instant::now();
         self.received_since_sent = false;
         Ok(())
@@ -125,10 +147,9 @@ impl Messenger {
     /// arriving but this side has sent nothing for the progress interval, so
     /// that the peer, which may be waiting for us, does not time out.
     ///
-    /// Messages that are already complete come first, and a `progress` message
-    /// that cannot be written is not an error: the peer may be gone while
-    /// what it sent is still arriving, and that is worth taking in. The end of
-    /// the link shows once those bytes are used up.
+    /// After a failed write, returns what the peer had already sent, for as
+    /// long as its bytes keep arriving with gaps of at most [`DRAIN_WAIT`],
+    /// and then the failure.
     fn receive(&mut self, progress: Option<&[u8]>) -> Result<Vec<u8>, DriveError> {
         let idle_timeout = self.connection.idle_timeout();
         let mut silent_since = Instant::now();
@@ -136,13 +157,23 @@ impl Messenger {
             if let Some(message) = self.ready.pop_front() {
                 return Ok(message);
             }
+            if self.write_failed {
+                match self.connection.receive_within(DRAIN_WAIT) {
+                    Ok(Some(bytes)) => {
+                        self.absorb(&bytes)?;
+                        continue;
+                    }
+                    Ok(None) | Err(_) => {
+                        return Err(self.write_failure.take().unwrap_or(DriveError::Closed));
+                    }
+                }
+            }
             if let Some(progress) = progress
-                && !self.progress_failed
                 && self.received_since_sent
                 && self.last_sent.elapsed() >= self.progress_interval
-                && self.send(progress).is_err()
             {
-                self.progress_failed = true;
+                self.send(progress)?;
+                continue;
             }
             let left = idle_timeout.saturating_sub(silent_since.elapsed());
             if left.is_zero() {

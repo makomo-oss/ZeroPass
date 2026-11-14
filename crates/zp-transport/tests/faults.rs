@@ -11,13 +11,16 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use zp_crypto::{InsecureSoftwareKeyStore, KdfParams, Password};
-use zp_sync::SessionReport;
+use zp_crypto::{DeviceId, InsecureSoftwareKeyStore, KdfParams, Password, VaultId};
+use zp_sync::{
+    ApplyReport, DeviceRecord, KeyUpdate, Op, OpLog, Registry, Revocation, SessionReport,
+    VersionVector,
+};
 use zp_transport::{
     DriveConfig, DriveError, Link, MemoryLink, sync_as_initiator, sync_as_responder,
 };
 use zp_vault::model::Login;
-use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault};
+use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault, VaultError};
 
 const PASSWORD: &str = "a master password for the tests";
 const ITEMS: usize = 600;
@@ -307,24 +310,57 @@ fn a_transfer_slower_than_the_idle_timeout_completes_on_both_sides() {
     );
 }
 
+/// A store that takes its time to take in the peer's device list, like a slow
+/// disk or a busy machine.
+struct SlowRegistry<'a>(&'a mut Store);
+
+impl OpLog for SlowRegistry<'_> {
+    type Error = VaultError;
+
+    fn vault_id(&self) -> VaultId {
+        self.0.vault_id()
+    }
+    fn device_id(&self) -> DeviceId {
+        self.0.device_id()
+    }
+    fn registry(&self) -> Result<Registry, VaultError> {
+        OpLog::registry(self.0)
+    }
+    fn merge_registry(
+        &mut self,
+        records: Vec<DeviceRecord>,
+        revocations: Vec<Revocation>,
+    ) -> Result<bool, VaultError> {
+        thread::sleep(Duration::from_millis(500));
+        self.0.merge_registry(records, revocations)
+    }
+    fn version_vector(&self) -> Result<VersionVector, VaultError> {
+        OpLog::version_vector(self.0)
+    }
+    fn ops_after(&self, device: DeviceId, after: u64, limit: usize) -> Result<Vec<Op>, VaultError> {
+        self.0.ops_after(device, after, limit)
+    }
+    fn apply(&mut self, ops: Vec<Op>) -> Result<ApplyReport, VaultError> {
+        self.0.apply(ops)
+    }
+    fn key_updates(&self) -> Result<Vec<KeyUpdate>, VaultError> {
+        self.0.key_updates()
+    }
+    fn merge_key_updates(&mut self, updates: Vec<KeyUpdate>) -> Result<usize, VaultError> {
+        self.0.merge_key_updates(updates)
+    }
+}
+
 #[test]
-fn what_arrived_is_kept_when_the_sender_is_gone_before_it_was_taken_in() {
-    // The full device hands about 400 kB to a slow link at once, then its link
-    // breaks and it gives up. The bytes it handed over keep trickling to the
-    // other side for a while, and by the time the first batch is complete the
-    // sender is long gone: the "still receiving" messages the other side sends
-    // meanwhile cannot be delivered. That must not cost it the batch.
+fn what_arrived_is_kept_when_the_receiver_could_not_answer_in_time() {
+    // The receiver is slow to take in the sender's device list. Meanwhile the
+    // sender hands over its first batch and its link breaks; by the time the
+    // receiver answers, the sender is gone and the answer cannot be written.
+    // The batch is already at the receiver and must be kept.
     let mut devices = pair();
-    let config = DriveConfig {
-        progress_interval: Duration::from_millis(1),
-        ..config()
-    };
     let (to_empty, to_full) = MemoryLink::pair();
     let link = FailingLink {
-        inner: Box::new(SlowLink {
-            inner: Box::new(to_empty),
-            bytes_per_second: 512 * 1024,
-        }),
+        inner: Box::new(to_empty),
         budget: Arc::new(AtomicUsize::new(400_000)),
     };
     let mut full_store = Store::open(&devices.full).unwrap();
@@ -335,14 +371,14 @@ fn what_arrived_is_kept_when_the_sender_is_gone_before_it_was_taken_in() {
     let remote = *full_key.public_bytes();
 
     let (full_side, empty_side) = thread::scope(|scope| {
-        let responder =
-            scope.spawn(|| sync_as_responder(Box::new(link), &mut full_store, &full_key, &config));
+        let responder = scope
+            .spawn(|| sync_as_responder(Box::new(link), &mut full_store, &full_key, &config()));
         let initiator = sync_as_initiator(
             Box::new(to_full),
-            &mut empty_store,
+            &mut SlowRegistry(&mut empty_store),
             &empty_key,
             &remote,
-            &config,
+            &config(),
         );
         (responder.join().unwrap(), initiator)
     });
