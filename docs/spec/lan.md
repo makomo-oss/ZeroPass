@@ -73,6 +73,7 @@ tag  = SHA-256("zeropass/v1/discovery" ‖ 0x00 ‖ vault_id(16) ‖ noise_pk(32
 - PoC の実装は IPv4 のみを使う。IPv6 のリンクローカルアドレスへの対応は今後の課題とする。
 - VPN の仮想インターフェースがプライベートアドレスを持っていると、そのインターフェースでも待ち受ける。VPN の相手が 1 ホップで届く構成（ポイントツーポイント型）では、相手の端末と同期できる。届くのは ZeroPass の端末として認証された相手だけだが、「インターネットを経由しない」という性質は VPN の経路に依存する。
 - mDNS のパケット自体はマルチキャスト（`224.0.0.251`）で、リンクローカルの範囲から出ない。内容は §3 のタグとアドレスだけである。
+- 先に接続を閉じた側の OS は、相手の FIN に応える最後の ACK を、閉じたソケットの TTL ではなく OS の既定値で送る（Android で確認。Windows は未確認。`docs/poc-report.md` §4.5）。宛先は §4.2 の検査を通った相手なのでリンクの外へは出ないが、TTL による歯止めはこのパケットにだけ効かない。
 
 ## 5. 接続の流れ
 
@@ -107,7 +108,7 @@ tag  = SHA-256("zeropass/v1/discovery" ‖ 0x00 ‖ vault_id(16) ‖ noise_pk(32
 パケットキャプチャによる確認（Windows、管理者権限が必要）:
 
 1. 通常のターミナルでビルドする: `cargo build --release -p zp-syncd` と `cargo build --release -p zp-transport --example capture_check`
-2. 管理者として開いた PowerShell で `.\scripts\check-lan-capture.ps1 -Vault "C:\path\to\vault.zpvault"` を実行する（パスは金庫ファイルのものに置き換える）。スクリプトは `zp-syncd` を起動し、その TCP ポートと mDNS（UDP 5353）のパケットを OS 標準の Packet Monitor で 45 秒間採取する。採取はアダプターだけでなくネットワークスタックのすべての層で行う。Wi-Fi のドライバの層ではパケットが 802.11 のフレームとして流れ、Packet Monitor のポート指定がそれに効かないことがあるためである（上の層では同じパケットが Ethernet のフレームとして記録される）。
+2. 管理者として開いた PowerShell で `.\scripts\check-lan-capture.ps1 -Vault "C:\path\to\vault.zpvault"` を実行する（パスは金庫ファイルのものに置き換える）。スクリプトは `zp-syncd` を起動し、その TCP ポートと mDNS（UDP 5353）のパケットを OS 標準の Packet Monitor で 45 秒間採取する。採取はアダプターだけでなくネットワークスタックのすべての層で行うので、同じパケットが層ごとに記録される。Wi-Fi では、ドライバの層に 802.11 のフレーム、その上の層に Ethernet のフレームとして残る。
 3. スクリプトが `Capturing` と表示してから、同じネットワーク上の別の端末（もう 1 台の PC やスマートフォン）から同期を実行する。Packet Monitor の起動には 30 秒ほどかかることがあり、それより前の同期は記録されない。
 4. スクリプトが採取結果を解析し、この PC が送ったパケットの宛先がすべてローカルリンク内であること、TCP パケットの TTL がすべて 1 であることを判定する（`zp_transport::capture`。Packet Monitor は Wi-Fi の 802.11 のフレームも Ethernet として記録するので、両方の形式を読む）。違反があれば一覧を表示して終了コード 1 を返す。この PC が送った TCP パケットが 1 つもなければ、同期が採取されていないので判定せずに終了コード 2 を返す（mDNS だけでは同期の接続を確かめられない）。
 

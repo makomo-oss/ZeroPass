@@ -67,9 +67,9 @@ try {
     foreach ($port in $ports) { pktmon filter add zeropass-tcp -t TCP -p $port | Out-Null }
     pktmon filter add zeropass-mdns -t UDP -p 5353 | Out-Null
     Write-Host "Starting Packet Monitor (this can take half a minute)..."
-    # At every layer of the network stack, not only at the adapters: a Wi-Fi
-    # driver handles 802.11 frames, and Packet Monitor may not apply the port
-    # filters to those. The layers above it see the same packets as Ethernet.
+    # At every layer of the network stack, not only at the adapters, so each
+    # packet is recorded several times. On Wi-Fi the driver's layer records
+    # 802.11 frames and the layers above it Ethernet; the checker reads both.
     pktmon start --capture --pkt-size 96 --file-name $etl | Out-Null
 
     Write-Host "Capturing for $Seconds seconds. Sync from another device of this vault NOW (twice if you can)."
