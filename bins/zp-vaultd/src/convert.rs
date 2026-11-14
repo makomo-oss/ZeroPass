@@ -84,6 +84,7 @@ pub(crate) fn vault_error(error: VaultError) -> proto::Error {
         VaultError::WrongItemKind | VaultError::DomainMismatch => ErrorCode::WrongItemKind,
         VaultError::CannotRevokeSelf => ErrorCode::DeviceNotFound,
         VaultError::Totp(_) => ErrorCode::InvalidInput,
+        VaultError::Sync(_) => ErrorCode::SyncRejected,
         VaultError::Crypto(CryptoError::InvalidRecoveryKey) => ErrorCode::InvalidInput,
         VaultError::Crypto(CryptoError::HardwareKey(HardwareKeyError::Unavailable(_))) => {
             ErrorCode::HardwareUnavailable

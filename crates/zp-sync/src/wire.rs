@@ -358,6 +358,57 @@ pub fn encode_registry<'a>(
     .encode_to_vec()
 }
 
+/// Serialises ops, for carrying them between the processes of one device.
+pub fn encode_ops<'a>(ops: impl IntoIterator<Item = &'a Op>) -> Vec<u8> {
+    Ops {
+        ops: ops.into_iter().map(Into::into).collect(),
+        last: false,
+    }
+    .encode_to_vec()
+}
+
+/// Parses what [`encode_ops`] produced. The ops are checked for shape, not
+/// verified: that is the job of [`OpLog::apply`](crate::OpLog::apply).
+pub fn decode_ops(bytes: &[u8]) -> Result<Vec<Op>, SyncError> {
+    Ops::decode(bytes)
+        .map_err(|_| SyncError::MalformedMessage("not a list of ops"))?
+        .ops
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
+/// Serialises a version vector.
+pub fn encode_vector(vector: &VersionVector) -> Vec<u8> {
+    Vector::from(vector).encode_to_vec()
+}
+
+/// Parses what [`encode_vector`] produced.
+pub fn decode_vector(bytes: &[u8]) -> Result<VersionVector, SyncError> {
+    Vector::decode(bytes)
+        .map_err(|_| SyncError::MalformedMessage("not a version vector"))?
+        .try_into()
+}
+
+/// Serialises key updates.
+pub fn encode_key_updates<'a>(updates: impl IntoIterator<Item = &'a KeyUpdate>) -> Vec<u8> {
+    KeyUpdates {
+        updates: updates.into_iter().map(Into::into).collect(),
+    }
+    .encode_to_vec()
+}
+
+/// Parses what [`encode_key_updates`] produced. The updates are not verified
+/// here.
+pub fn decode_key_updates(bytes: &[u8]) -> Result<Vec<KeyUpdate>, SyncError> {
+    KeyUpdates::decode(bytes)
+        .map_err(|_| SyncError::MalformedMessage("not a list of key updates"))?
+        .updates
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
 /// Parses what [`encode_registry`] produced. The records are not verified here;
 /// build a [`Registry`](crate::Registry) from them for that.
 pub fn decode_registry(bytes: &[u8]) -> Result<(Vec<DeviceRecord>, Vec<Revocation>), SyncError> {

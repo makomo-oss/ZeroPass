@@ -343,7 +343,6 @@ fn parse_id(text: &str) -> CliResult<ItemId> {
 }
 
 struct Session {
-    path: PathBuf,
     vault: Vault,
     hardware: Option<Box<dyn HardwareKeyStore>>,
     input: Input,
@@ -400,7 +399,6 @@ impl Session {
     fn open(choice: KeyStoreChoice, path: &Path) -> CliResult<Self> {
         Ok(Self {
             vault: Vault::open(path)?,
-            path: path.to_path_buf(),
             hardware: hardware_key_store(choice, path, false)?,
             input: Input::new(),
         })
@@ -420,10 +418,9 @@ fn run_direct(
     command: Command,
     out: &mut impl Write,
 ) -> CliResult<()> {
-    let mut session = Session::open(choice, vault_path)?;
     match command {
-        Command::Pair => session.pair(out),
-        Command::Sync { seconds } => session.sync(seconds, out),
+        Command::Pair => Session::open(choice, vault_path)?.pair(out),
+        Command::Sync { seconds } => nearby::sync(choice, vault_path, seconds, out),
         _ => unreachable!("not a direct command"),
     }
 }

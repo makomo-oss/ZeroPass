@@ -457,6 +457,7 @@ impl Service {
                 }
                 done()
             }
+            request => crate::sync::handle(self.vault(state)?, request),
         }
     }
 }
@@ -465,9 +466,13 @@ impl Service {
 fn permitted(role: Role, request: &request::Body) -> bool {
     match role {
         Role::Ui => true,
+        // The sync daemon moves ciphertext in and out, and nothing else.
+        Role::Sync => {
+            matches!(request, request::Body::Status(_)) || crate::sync::is_sync_request(request)
+        }
         // What these roles may ask beyond the state of the vault is defined
-        // together with the components themselves (P3-05, P4-04, P7-01).
-        Role::Bridge | Role::Broker | Role::Sync => matches!(request, request::Body::Status(_)),
+        // together with the components themselves (P4-04, P7-01).
+        Role::Bridge | Role::Broker => matches!(request, request::Body::Status(_)),
         Role::Unspecified => false,
     }
 }
@@ -900,6 +905,117 @@ mod tests {
                 .call_as(Role::Unspecified, request::Body::Status(proto::Status {}))
                 .is_err()
         );
+    }
+
+    /// The sync daemon's view of the vault, over the real IPC, shows what the
+    /// vault file holds, and what it hands in is checked like any peer's data.
+    #[test]
+    fn the_sync_daemon_reads_and_writes_ops_through_the_ipc() {
+        use std::sync::Arc;
+        use zp_ipc::{Client, ClientPolicy, DaemonPolicy, Endpoint, RemoteOpLog, Server};
+        use zp_sync::OpLog;
+        use zp_vault::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.zpvault");
+        let service = Arc::new(Service::new(path.clone(), KeyStoreChoice::None));
+        let ui = peer(Role::Ui);
+        let created = service.handle(
+            &ui,
+            request::Body::CreateVault(proto::CreateVault {
+                master_password: PASSWORD.into(),
+            }),
+        );
+        assert!(matches!(created, response::Body::Status(_)));
+        for title in ["One", "Two", "Three"] {
+            let added = service.handle(
+                &ui,
+                request::Body::AddItem(proto::AddItem {
+                    item: Some(proto::NewItem {
+                        content: Some(login(title, "a-password")),
+                    }),
+                }),
+            );
+            assert!(matches!(added, response::Body::ItemAdded(_)));
+        }
+        // The sync daemon works on the locked vault.
+        service.lock_all();
+
+        // This test binary plays the sync daemon.
+        let this = std::env::current_exe().unwrap();
+        let endpoint = Endpoint::for_vault(&path).unwrap();
+        let policy = ClientPolicy::deny_all().allow(&this, Role::Sync);
+        let server = Server::bind(&endpoint, policy, "test").unwrap();
+        let shutdown = server.shutdown_handle();
+        let serving = {
+            let service = Arc::clone(&service);
+            std::thread::spawn(move || server.serve(service))
+        };
+        let client =
+            Client::connect(&endpoint, &DaemonPolicy::default().allow(&this), "syncd").unwrap();
+        let mut remote = RemoteOpLog::new(client).unwrap();
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(remote.vault_id(), store.vault_id());
+        assert_eq!(remote.device_id(), store.device_id());
+        assert_eq!(
+            remote.channel_key().public_bytes(),
+            store.channel_key().unwrap().public_bytes()
+        );
+        let own = store.device_id();
+        let vector = remote.version_vector().unwrap();
+        assert_eq!(vector, store.version_vector().unwrap());
+        assert_eq!(vector.get(&own), 3);
+        let registry = remote.registry().unwrap();
+        assert_eq!(registry.records().count(), 1);
+        assert!(registry.is_active(&own));
+
+        let ops = remote.ops_after(own, 0, 100).unwrap();
+        assert_eq!(ops, store.ops_after(own, 0, 100).unwrap());
+        assert_eq!(ops.len(), 3);
+        assert_eq!(remote.ops_after(own, 2, 100).unwrap().len(), 1);
+        assert_eq!(remote.ops_after(own, 0, 2).unwrap().len(), 2);
+        assert_eq!(remote.key_updates().unwrap().len(), 0);
+
+        // Handing in what is already there changes nothing.
+        let report = remote.apply(ops.clone()).unwrap();
+        assert_eq!((report.applied, report.duplicates), (0, 3));
+        let records: Vec<_> = registry.records().cloned().collect();
+        assert!(!remote.merge_registry(records, Vec::new()).unwrap());
+        assert_eq!(remote.merge_key_updates(Vec::new()).unwrap(), 0);
+
+        // An op that was tampered with is refused, and nothing is stored.
+        let mut forged = ops[2].clone();
+        forged.body.seq = 4;
+        let error = remote.apply(vec![forged]).unwrap_err();
+        match error {
+            zp_ipc::RemoteSyncError::Ipc(error) => {
+                assert_eq!(error.code(), Some(ErrorCode::SyncRejected), "{error}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(remote.version_vector().unwrap().get(&own), 3);
+
+        drop(remote);
+        shutdown.shutdown();
+        serving.join().unwrap();
+    }
+
+    #[test]
+    fn the_sync_daemon_cannot_read_items_and_others_cannot_sync() {
+        let fixture = fixture(KeyStoreChoice::None);
+        fixture.create();
+        let sync = || request::Body::SyncVector(proto::SyncVector {});
+        fixture.call_as(Role::Sync, sync()).unwrap();
+        fixture.call_as(Role::Ui, sync()).unwrap();
+        for role in [Role::Bridge, Role::Broker] {
+            let error = fixture.call_as(role, sync()).err().unwrap();
+            assert_eq!(error.code, ErrorCode::Denied as i32);
+        }
+        // Malformed sync data is the sender's fault.
+        let garbage = request::Body::SyncApply(proto::SyncApply { ops: vec![0xFF; 8] });
+        let error = fixture.call_as(Role::Sync, garbage).err().unwrap();
+        assert_eq!(error.code, ErrorCode::SyncRejected as i32);
     }
 
     #[test]

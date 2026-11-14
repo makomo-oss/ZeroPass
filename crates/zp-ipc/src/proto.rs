@@ -129,6 +129,9 @@ pub enum ErrorCode {
     DeviceNotFound = 17,
     /// A value in the request is not acceptable (for example a bad `otpauth://` URI).
     InvalidInput = 18,
+    /// Sync data handed in was refused: malformed, not signed by a device of
+    /// the vault, or against the rules of the sync protocol.
+    SyncRejected = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +144,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39"
     )]
     pub body: Option<request::Body>,
 }
@@ -204,6 +207,30 @@ pub mod request {
         /// Locks everything and stops the daemon.
         #[prost(message, tag = "17")]
         Shutdown(super::Shutdown),
+        /// Sync: asks for the identity of this device on the sync channel.
+        #[prost(message, tag = "32")]
+        SyncIdentity(super::SyncIdentity),
+        /// Sync: asks for the device registry.
+        #[prost(message, tag = "33")]
+        SyncRegistry(super::SyncRegistry),
+        /// Sync: hands in device records and revocations received from a peer.
+        #[prost(message, tag = "34")]
+        SyncMergeRegistry(super::SyncMergeRegistry),
+        /// Sync: asks for the version vector.
+        #[prost(message, tag = "35")]
+        SyncVector(super::SyncVector),
+        /// Sync: asks for the ops of one device after a sequence number.
+        #[prost(message, tag = "36")]
+        SyncOpsAfter(super::SyncOpsAfter),
+        /// Sync: hands in ops received from a peer.
+        #[prost(message, tag = "37")]
+        SyncApply(super::SyncApply),
+        /// Sync: asks for the key updates.
+        #[prost(message, tag = "38")]
+        SyncKeyUpdates(super::SyncKeyUpdates),
+        /// Sync: hands in key updates received from a peer.
+        #[prost(message, tag = "39")]
+        SyncMergeKeyUpdates(super::SyncMergeKeyUpdates),
     }
 }
 
@@ -353,6 +380,68 @@ pub struct RevokeDevice {
 #[derive(Clone, Copy, PartialEq, Message)]
 pub struct Shutdown {}
 
+// ---------------------------------------------------------------------------
+// Sync requests (`docs/spec/ipc.md` §10)
+//
+// These mirror `zp_sync::OpLog`. Registries, version vectors, ops and key
+// updates travel in the encoding of the sync session (`docs/spec/sync.md` §7),
+// as opaque bytes. All of it is ciphertext, signatures and public keys.
+// ---------------------------------------------------------------------------
+
+/// Asks for the identity of this device on the sync channel.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncIdentity {}
+
+/// Asks for the device registry.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncRegistry {}
+
+/// Hands in device records and revocations received from a peer.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncMergeRegistry {
+    /// The records and revocations (`zp_sync::encode_registry`).
+    #[prost(bytes = "vec", tag = "1")]
+    pub registry: Vec<u8>,
+}
+
+/// Asks for the version vector.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncVector {}
+
+/// Asks for the ops written by one device.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncOpsAfter {
+    /// The device that wrote the ops.
+    #[prost(bytes = "vec", tag = "1")]
+    pub device_id: Vec<u8>,
+    /// Only ops with a higher sequence number.
+    #[prost(uint64, tag = "2")]
+    pub after_seq: u64,
+    /// At most this many ops.
+    #[prost(uint32, tag = "3")]
+    pub limit: u32,
+}
+
+/// Hands in ops received from a peer. All of them are stored, or none.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncApply {
+    /// The ops (`zp_sync::encode_ops`).
+    #[prost(bytes = "vec", tag = "1")]
+    pub ops: Vec<u8>,
+}
+
+/// Asks for the key updates.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncKeyUpdates {}
+
+/// Hands in key updates received from a peer. All are stored, or none.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncMergeKeyUpdates {
+    /// The key updates (`zp_sync::encode_key_updates`).
+    #[prost(bytes = "vec", tag = "1")]
+    pub updates: Vec<u8>,
+}
+
 /// The content of an item to add or to replace another with.
 #[derive(Clone, PartialEq, Message)]
 pub struct NewItem {
@@ -470,7 +559,10 @@ pub struct PasskeyInfo {
 #[derive(Clone, PartialEq, Message)]
 pub struct Response {
     /// The response.
-    #[prost(oneof = "response::Body", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(
+        oneof = "response::Body",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub body: Option<response::Body>,
 }
 
@@ -511,6 +603,16 @@ pub mod response {
         /// Answer to `ListDevices`.
         #[prost(message, tag = "10")]
         Devices(super::Devices),
+        /// Answer to `SyncIdentity`.
+        #[prost(message, tag = "11")]
+        SyncIdentity(super::SyncIdentityReply),
+        /// Answer to `SyncRegistry`, `SyncVector`, `SyncOpsAfter` and
+        /// `SyncKeyUpdates`.
+        #[prost(message, tag = "12")]
+        SyncData(super::SyncData),
+        /// Answer to `SyncMergeRegistry`, `SyncApply` and `SyncMergeKeyUpdates`.
+        #[prost(message, tag = "13")]
+        SyncMerged(super::SyncMerged),
     }
 }
 
@@ -718,7 +820,50 @@ pub struct Device {
     pub changes_held: u64,
 }
 
+/// Answer to [`SyncIdentity`]: who this device is on the sync channel.
+///
+/// The channel key authenticates the device to its peers. It is not a vault
+/// key: it opens no item, and what a peer sends is still verified against the
+/// signatures of the devices in the registry.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct SyncIdentityReply {
+    /// The vault identifier.
+    #[prost(bytes = "vec", tag = "1")]
+    pub vault_id: Vec<u8>,
+    /// The identifier of this device.
+    #[prost(bytes = "vec", tag = "2")]
+    pub device_id: Vec<u8>,
+    /// The private channel key of this device (32 bytes).
+    #[prost(bytes = "vec", tag = "3")]
+    pub channel_key: Vec<u8>,
+}
+
+/// Sync data in the encoding of the sync session.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncData {
+    /// A registry, a version vector, ops or key updates, as asked for.
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+}
+
+/// What handing in sync data changed.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncMerged {
+    /// Ops or key updates that were new and have been stored; 1 if the
+    /// registry changed.
+    #[prost(uint64, tag = "1")]
+    pub added: u64,
+    /// Ops that were already held.
+    #[prost(uint64, tag = "2")]
+    pub duplicates: u64,
+    /// Stored ops that became the current version of their item.
+    #[prost(uint64, tag = "3")]
+    pub became_current: u64,
+}
+
 redacted_debug!(
+    SyncIdentityReply,
     CreateVault,
     RecoverVault,
     Unlock,

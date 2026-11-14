@@ -22,6 +22,7 @@ mod error;
 mod peer;
 pub mod proto;
 mod server;
+mod sync;
 mod sys;
 
 pub use client::Client;
@@ -30,6 +31,7 @@ pub use endpoint::{DAEMON_SANDBOX, Endpoint};
 pub use error::IpcError;
 pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess};
 pub use server::{Handler, Server, ShutdownHandle};
+pub use sync::{RemoteOpLog, RemoteSyncError};
 
 /// Starts `command` as a background process that outlives this one: no console,
 /// no standard streams, and none of this process's open handles.

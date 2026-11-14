@@ -1,11 +1,12 @@
 //! ZeroPass proximity sync daemon (layer 4).
 //!
-//! Keeps one vault file in sync with the other devices of the vault that are on
-//! the same local network. It works on the locked file: it is never given a
-//! master password or a vault key, and handles only ciphertext and signatures.
-//!
-//! This is the minimal version of Phase 2. It opens the vault file itself; in
-//! Phase 3 it will instead exchange ops with the vault daemon over local IPC.
+//! Keeps one vault in sync with the other devices of the vault that are nearby,
+//! on the local network or over Bluetooth LE. It is the process that talks to
+//! the network, so it is given as little as possible: it does not open the
+//! vault file, and it is never given a master password or a vault key. It asks
+//! the vault daemon for the ciphertext to send and hands it the ciphertext it
+//! receives (`docs/spec/ipc.md` §10); the vault daemon verifies every op
+//! against the signatures of the vault's devices before storing it.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -14,14 +15,15 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
+use zp_ipc::{Client, DaemonPolicy, Endpoint, RemoteOpLog};
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
-use zp_transport::{DriveError, open_nearby};
-use zp_vault::Store;
+use zp_transport::open_nearby;
 
 #[derive(Parser)]
 #[command(name = "zp-syncd", version, about = "ZeroPass proximity sync daemon")]
 struct Args {
-    /// Path of the vault file to keep in sync.
+    /// Path of the vault file to keep in sync. The vault daemon of that file
+    /// must be running; this program waits for it.
     #[arg(long, env = "ZEROPASS_VAULT")]
     vault: PathBuf,
 
@@ -30,7 +32,8 @@ struct Args {
     poll_secs: u64,
 }
 
-/// How long to wait before trying again after the network went away.
+/// How long to wait before trying again after the vault daemon or the network
+/// went away.
 const RETRY: Duration = Duration::from_secs(5);
 
 fn log(message: &str) {
@@ -62,13 +65,17 @@ fn report(event: &Event) {
     }
 }
 
-/// Runs the loop on one transport instance until the transport fails.
-fn run(args: &Args) -> Result<(), DriveError> {
-    let sync_error = |error: zp_vault::VaultError| DriveError::Sync(error.to_string());
-    let store = Store::open(&args.vault).map_err(sync_error)?;
-    // Fails early with a clear message if the vault has no device identity yet.
-    store.channel_key().map_err(sync_error)?;
-    let nearby = open_nearby()?;
+/// Connects to the vault daemon and runs the sync loop until either the vault
+/// daemon or the transport fails.
+fn run(args: &Args) -> Result<(), String> {
+    let endpoint = Endpoint::for_vault(&args.vault).map_err(|error| error.to_string())?;
+    let policy = DaemonPolicy::beside_current_exe().map_err(|error| error.to_string())?;
+    let client = Client::connect(&endpoint, &policy, "zp-syncd")
+        .map_err(|error| format!("vault daemon: {error}"))?;
+    // Fails with a clear message if there is no vault yet.
+    let store = RemoteOpLog::new(client).map_err(|error| format!("vault daemon: {error}"))?;
+
+    let nearby = open_nearby().map_err(|error| format!("no transport available: {error}"))?;
     log(&format!(
         "syncing {} over {} (local network endpoints: {:?})",
         args.vault.display(),
@@ -78,14 +85,13 @@ fn run(args: &Args) -> Result<(), DriveError> {
     for problem in &nearby.problems {
         log(&format!("not available: {problem}"));
     }
-    let transport = nearby.transport;
     let config = DaemonConfig {
         poll_interval: Duration::from_secs(args.poll_secs.max(1)),
         ..DaemonConfig::default()
     };
-    let mut daemon = SyncDaemon::new(store, transport, config);
+    let mut daemon = SyncDaemon::new(store, nearby.transport, config);
     loop {
-        for event in daemon.step()? {
+        for event in daemon.step().map_err(|error| error.to_string())? {
             report(&event);
         }
     }
@@ -93,23 +99,28 @@ fn run(args: &Args) -> Result<(), DriveError> {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    if !args.vault.exists() {
-        log(&format!("no vault file at {}", args.vault.display()));
-        return ExitCode::FAILURE;
-    }
+    // The vault daemon may start later or restart, and the network comes and
+    // goes (Wi-Fi off, new address): start over whenever either is back.
+    let mut last = String::new();
     loop {
-        match run(&args) {
-            // The network went away or changed (Wi-Fi off, new address): start
-            // over with a fresh transport once it is back.
-            Err(DriveError::Io(error)) => {
-                log(&format!("no transport available ({error}); retrying"));
-                thread::sleep(RETRY);
+        if let Err(error) = run(&args) {
+            // Say it once, not every few seconds.
+            if error != last {
+                log(&format!("{error}; retrying every {}s", RETRY.as_secs()));
+                last = error;
             }
-            Err(error) => {
-                log(&format!("{error}"));
-                return ExitCode::FAILURE;
-            }
-            Ok(()) => return ExitCode::SUCCESS,
         }
+        thread::sleep(RETRY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_line_is_well_formed() {
+        use clap::CommandFactory;
+        Args::command().debug_assert();
     }
 }
