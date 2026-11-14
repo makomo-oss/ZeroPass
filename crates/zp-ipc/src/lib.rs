@@ -25,12 +25,12 @@ mod server;
 mod sync;
 mod sys;
 
-pub use client::Client;
+pub use client::{Client, Downlink, Uplink};
 pub use codec::MAX_FRAME;
 pub use endpoint::{DAEMON_SANDBOX, Endpoint};
 pub use error::IpcError;
 pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess};
-pub use server::{Handler, Server, ShutdownHandle};
+pub use server::{Handler, RelayEnd, Server, ShutdownHandle};
 pub use sync::{RemoteOpLog, RemoteSyncError};
 
 /// The executable of this process, in the form in which the executables of

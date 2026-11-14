@@ -102,3 +102,57 @@ impl Client {
         }
     }
 }
+
+/// The client's reading end of a relay (`docs/spec/ipc.md` §11): the daemon's
+/// messages arrive here, one after the other, until the last one.
+pub struct Downlink {
+    client: Client,
+}
+
+impl Downlink {
+    /// Waits for the daemon's next message. An error message ends the relay
+    /// and is returned as [`IpcError::Remote`].
+    pub fn receive(&mut self) -> Result<response::Body, IpcError> {
+        let response: Response = read_frame(&mut self.client.stream)?
+            .ok_or(IpcError::Protocol("the daemon closed the relay"))?;
+        match response.body {
+            Some(response::Body::Error(error)) => Err(IpcError::Remote(error)),
+            Some(body) => Ok(body),
+            None => Err(IpcError::Protocol("the daemon sent an unknown response")),
+        }
+    }
+}
+
+/// The client's writing end of a relay: what is sent here reaches the daemon's
+/// side of the relay. Dropping it tells the daemon that nothing more comes.
+pub struct Uplink {
+    client: Client,
+}
+
+impl Uplink {
+    /// Sends one message. There is no answer.
+    pub fn send(&mut self, body: request::Body) -> Result<(), IpcError> {
+        write_frame(&mut self.client.stream, &Request { body: Some(body) })
+    }
+}
+
+impl Client {
+    /// Makes a request that starts a relay. This connection becomes the
+    /// relay's downlink; the returned number names the relay for
+    /// [`Self::attach_relay`] on a second connection.
+    pub fn start_relay(mut self, request: request::Body) -> Result<(u64, Downlink), IpcError> {
+        match self.call(request)? {
+            response::Body::RelayOpened(opened) => Ok((opened.relay_id, Downlink { client: self })),
+            _ => Err(IpcError::Protocol("the daemon did not open a relay")),
+        }
+    }
+
+    /// Makes this connection the uplink of the relay `relay_id`.
+    pub fn attach_relay(mut self, relay_id: u64) -> Result<Uplink, IpcError> {
+        let attach = request::Body::RelayAttach(crate::proto::RelayAttach { relay_id });
+        match self.call(attach)? {
+            response::Body::Done(_) => Ok(Uplink { client: self }),
+            _ => Err(IpcError::Protocol("the daemon did not attach the relay")),
+        }
+    }
+}

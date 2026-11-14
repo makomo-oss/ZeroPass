@@ -11,12 +11,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use zp_ipc::proto::{
-    Domain, Done, Error, ErrorCode, GetItem, Item, Login, Role, Shutdown, Status, StatusReply,
-    item, request, response,
+    Domain, Done, Error, ErrorCode, GetItem, Item, LinkData, Login, PairAdmit, PairConfirm,
+    PairDone, Role, Shutdown, Status, StatusReply, item, request, response,
 };
 use zp_ipc::{
-    Client, ClientPolicy, DaemonPolicy, Endpoint, Handler, IpcError, Peer, PeerProcess, Server,
-    ShutdownHandle,
+    Client, ClientPolicy, DaemonPolicy, Endpoint, Handler, IpcError, Peer, PeerProcess, RelayEnd,
+    Server, ShutdownHandle,
 };
 
 /// Whether this platform tells which executable is at the other end
@@ -61,6 +61,31 @@ impl Handler for TestHandler {
 
     fn rejected(&self, _process: &PeerProcess) {
         self.rejected.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn starts_relay(&self, request: &request::Body) -> bool {
+        matches!(request, request::Body::PairAdmit(_))
+    }
+
+    /// Sends back every chunk it receives, reversed, from a thread of its own,
+    /// and ends when the client says so with `PairConfirm`.
+    fn relay(&self, _peer: &Peer, _request: request::Body, relay: RelayEnd) -> response::Body {
+        let mut total = 0u64;
+        for message in relay.incoming {
+            match message {
+                request::Body::LinkData(mut chunk) => {
+                    total += chunk.data.len() as u64;
+                    chunk.data.reverse();
+                    let _ = relay.outgoing.send(response::Body::LinkData(chunk));
+                }
+                request::Body::PairConfirm(_) => break,
+                _ => {}
+            }
+        }
+        response::Body::PairDone(PairDone {
+            received: total,
+            ..PairDone::default()
+        })
     }
 }
 
@@ -298,4 +323,82 @@ fn connecting_without_a_daemon_reports_that_it_is_not_running() {
         Client::connect(&endpoint, &trusting_this_test(), "test"),
         Err(IpcError::NotRunning)
     ));
+}
+
+#[test]
+fn a_relay_carries_data_both_ways_at_once() {
+    let daemon = start(ClientPolicy::deny_all().allow(this_executable(), Role::Ui));
+    let (id, mut downlink) = connect(&daemon)
+        .unwrap()
+        .start_relay(request::Body::PairAdmit(PairAdmit {}))
+        .unwrap();
+    let mut uplink = connect(&daemon).unwrap().attach_relay(id).unwrap();
+    // A relay has one uplink.
+    assert!(connect(&daemon).unwrap().attach_relay(id).is_err());
+
+    // Far more than the transport buffers hold, sent without waiting for the
+    // echo: neither direction may block the other.
+    const CHUNKS: usize = 200;
+    const SIZE: usize = 50_000;
+    let sending = thread::spawn(move || {
+        for n in 0..CHUNKS {
+            let data = vec![(n % 251) as u8; SIZE];
+            uplink
+                .send(request::Body::LinkData(LinkData { data }))
+                .unwrap();
+        }
+        uplink
+            .send(request::Body::PairConfirm(PairConfirm { approved: true }))
+            .unwrap();
+        uplink
+    });
+    let mut echoed = 0;
+    let done = loop {
+        match downlink.receive().unwrap() {
+            response::Body::LinkData(chunk) => {
+                assert_eq!(chunk.data, vec![(echoed % 251) as u8; SIZE]);
+                echoed += 1;
+            }
+            response::Body::PairDone(done) => break done,
+            other => panic!("unexpected message: {other:?}"),
+        }
+    };
+    assert_eq!(echoed, CHUNKS);
+    assert_eq!(done.received, (CHUNKS * SIZE) as u64);
+    // The relay was the last thing on its connection.
+    assert!(downlink.receive().is_err());
+    drop(sending.join().unwrap());
+
+    // Other requests are still answered once, and a relay that is not there
+    // cannot be attached.
+    let mut client = connect(&daemon).unwrap();
+    client.call(request::Body::Status(Status {})).unwrap();
+    assert!(connect(&daemon).unwrap().attach_relay(id + 100).is_err());
+    stop(daemon);
+}
+
+#[test]
+fn a_relay_ends_when_the_client_goes_away() {
+    let daemon = start(ClientPolicy::deny_all().allow(this_executable(), Role::Ui));
+    let (id, mut downlink) = connect(&daemon)
+        .unwrap()
+        .start_relay(request::Body::PairAdmit(PairAdmit {}))
+        .unwrap();
+    let mut uplink = connect(&daemon).unwrap().attach_relay(id).unwrap();
+    uplink
+        .send(request::Body::LinkData(LinkData {
+            data: vec![1, 2, 3],
+        }))
+        .unwrap();
+    assert!(matches!(
+        downlink.receive().unwrap(),
+        response::Body::LinkData(chunk) if chunk.data == [3, 2, 1]
+    ));
+    // Closing the uplink ends what the handler reads, and with it the relay.
+    drop(uplink);
+    match downlink.receive().unwrap() {
+        response::Body::PairDone(done) => assert_eq!(done.received, 3),
+        other => panic!("unexpected message: {other:?}"),
+    }
+    stop(daemon);
 }
