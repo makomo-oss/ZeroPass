@@ -306,3 +306,58 @@ fn a_transfer_slower_than_the_idle_timeout_completes_on_both_sides() {
         LOGINS
     );
 }
+
+#[test]
+fn what_arrived_is_kept_when_the_sender_is_gone_before_it_was_taken_in() {
+    // The full device hands about 400 kB to a slow link at once, then its link
+    // breaks and it gives up. The bytes it handed over keep trickling to the
+    // other side for a while, and by the time the first batch is complete the
+    // sender is long gone: the "still receiving" messages the other side sends
+    // meanwhile cannot be delivered. That must not cost it the batch.
+    let mut devices = pair();
+    let config = DriveConfig {
+        progress_interval: Duration::from_millis(1),
+        ..config()
+    };
+    let (to_empty, to_full) = MemoryLink::pair();
+    let link = FailingLink {
+        inner: Box::new(SlowLink {
+            inner: Box::new(to_empty),
+            bytes_per_second: 512 * 1024,
+        }),
+        budget: Arc::new(AtomicUsize::new(400_000)),
+    };
+    let mut full_store = Store::open(&devices.full).unwrap();
+    let mut empty_store = Store::open(&devices.empty).unwrap();
+    let author = full_store.device_id();
+    let full_key = full_store.channel_key().unwrap();
+    let empty_key = empty_store.channel_key().unwrap();
+    let remote = *full_key.public_bytes();
+
+    let (full_side, empty_side) = thread::scope(|scope| {
+        let responder =
+            scope.spawn(|| sync_as_responder(Box::new(link), &mut full_store, &full_key, &config));
+        let initiator = sync_as_initiator(
+            Box::new(to_full),
+            &mut empty_store,
+            &empty_key,
+            &remote,
+            &config,
+        );
+        (responder.join().unwrap(), initiator)
+    });
+    assert!(full_side.is_err() && empty_side.is_err());
+    let partial = Store::open(&devices.empty)
+        .unwrap()
+        .version_vector()
+        .unwrap()
+        .get(&author) as usize;
+    assert!(
+        partial > 0 && partial < ITEMS,
+        "{partial} of {ITEMS} arrived"
+    );
+    assert_eq!(
+        devices.empty_vault.list::<Password>().unwrap().len(),
+        partial
+    );
+}

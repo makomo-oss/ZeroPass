@@ -77,6 +77,8 @@ struct Messenger {
     last_sent: Instant,
     /// Whether bytes arrived from the peer since then.
     received_since_sent: bool,
+    /// Whether a `Progress` message could not be written: the peer is gone.
+    progress_failed: bool,
 }
 
 impl Messenger {
@@ -93,6 +95,7 @@ impl Messenger {
             progress_interval: config.progress_interval,
             last_sent: Instant::now(),
             received_since_sent: false,
+            progress_failed: false,
         };
         // Data the peer sent right behind its last handshake message.
         messenger.absorb(&[])?;
@@ -121,18 +124,25 @@ impl Messenger {
     /// With `progress`, sends that message whenever bytes from the peer keep
     /// arriving but this side has sent nothing for the progress interval, so
     /// that the peer, which may be waiting for us, does not time out.
+    ///
+    /// Messages that are already complete come first, and a `progress` message
+    /// that cannot be written is not an error: the peer may be gone while
+    /// what it sent is still arriving, and that is worth taking in. The end of
+    /// the link shows once those bytes are used up.
     fn receive(&mut self, progress: Option<&[u8]>) -> Result<Vec<u8>, DriveError> {
         let idle_timeout = self.connection.idle_timeout();
         let mut silent_since = Instant::now();
         loop {
-            if let Some(progress) = progress
-                && self.received_since_sent
-                && self.last_sent.elapsed() >= self.progress_interval
-            {
-                self.send(progress)?;
-            }
             if let Some(message) = self.ready.pop_front() {
                 return Ok(message);
+            }
+            if let Some(progress) = progress
+                && !self.progress_failed
+                && self.received_since_sent
+                && self.last_sent.elapsed() >= self.progress_interval
+                && self.send(progress).is_err()
+            {
+                self.progress_failed = true;
             }
             let left = idle_timeout.saturating_sub(silent_since.elapsed());
             if left.is_zero() {
