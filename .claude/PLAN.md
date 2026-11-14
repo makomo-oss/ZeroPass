@@ -172,8 +172,10 @@ docs/    threat-model.md  adr/  spec/
   - 方式: capability を持たない AppContainer（[ADR-0006](../docs/adr/0006-windows-sandbox.md)、`docs/spec/ipc.md` §9）。実装は `crates/zp-sandbox`。`zp-cli` はデーモンをこの中で起動する（`--no-sandbox` で通常のプロセスとして起動）。
   - 実証: `cargo test -p zp-sandbox` が、同じ検査プログラムをサンドボックスの外と中で動かす。中では、TCP の接続（自分自身と LAN 上のアドレス）が失敗し、UDP が届かず、待ち受けたソケットに接続できず、許可していないファイルを開けない。`zp-cli` の E2E テスト（LAN のペアリング・同期・失効を含む）は、サンドボックス内のデーモンで通る。
   - 補足: OS が拒否するのはソケットの「作成」ではなく「通信」である（`socket` と `bind` は成功し、接続・送信・着信が遮断される）。
-  - **実機での確認が未了**: AppContainer の中から Windows Hello を使えるか。P3-02 の確認手順（`zp-cli --vault <ファイル> init` → `unlock totp`）をそのまま実行する。`init` の出力で `totp: available` になり、`unlock totp` で確認画面が出れば可。`not available` になる、または確認画面が出ない場合は、`--no-sandbox` を付ければ従来どおり動く。そのときは、確認画面を出す部分をコンテナの外に分ける設計を P3-04 と合わせて行う。
+  - **2026-11-15 判明: Windows Hello の資格情報はコンテナごとに分かれる**（ADR-0006）。サンドボックス内のデーモンからは、外で作った ZeroPass の資格情報が見えない。そのため、P3-03 より前に作った金庫の TOTP・パスキーのドメインは、サンドボックス内のデーモンでは開けない（`zp-cli --no-sandbox daemon start` で起動すれば開ける。エラーメッセージにもそう出す）。
+  - **実機での確認が未了**: サンドボックス内のデーモンで新しい金庫を作ったとき、コンテナ専用の資格情報を作る確認画面が出るか。手順: 新しいファイルで `zp-cli --vault <新しいファイル> init`（`--insecure-software-keystore` なし）→ `zp-cli --vault <同じファイル> lock` → `zp-cli --vault <同じファイル> unlock totp`。`init` の出力が `totp: available` で、`unlock totp` で確認画面が出て解錠できれば可。
 - [ ] **P3-04** ドメイン別プロセス分離: TOTP / パスキー用ワーカーを別プロセス化し、VK-T/VK-K はそのプロセスのみが保持 — P 側プロセスのメモリダンプに T の鍵素材がない（依存: P3-02, P3-08）
+  - **着手前に決めること**（2026-11-15）: Windows Hello の資格情報がコンテナごとに分かれるため、Hello を使う TOTP・パスキーのワーカーをどこで動かすか。(A) コンテナの外、(B) コンテナの中（既存の金庫は一度だけラップし直す。確認画面がコンテナから出ることが前提）、(C) Hello の署名だけを行う補助プロセスを外に置く。ADR-0006 の「結果」を参照。
 - [x] **P3-05** `zp-syncd` を本番構成へ: vaultd とは IPC で暗号文 op のみ授受 — syncd のメモリに金庫鍵が存在しない（依存: P3-02, P2-17）
   - P3-04 より先に行った（2026-11-14）。P3-04 の設計は、ペアリングでの鍵配布を vaultd がどう行うか（P3-08）と、AppContainer の中で Windows Hello を使えるかの確認結果に左右されるため。
   - 実装: `zp-syncd` と `zp-cli sync` は金庫ファイルを開かず、vaultd に同期の要求を出す（`docs/spec/ipc.md` §10、`zp_ipc::RemoteOpLog`）。受け渡すのは暗号文・署名・公開鍵と、この端末のチャネル鍵（金庫鍵ではない）。vaultd は渡された op・レコード・鍵更新の署名を検証してから保存する。同期の役割の接続は、アイテムを読む要求も解錠する要求も出せない。
