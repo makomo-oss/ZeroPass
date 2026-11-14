@@ -65,9 +65,14 @@ fn run(args: Args) -> Result<(), IpcError> {
         );
     }
     log(&format!(
-        "serving {} (domains: {})",
+        "serving {} (domains: {}; sandbox: {})",
         vault.display(),
-        service::domain_names()
+        service::domain_names(),
+        if zp_sandbox::is_sandboxed() {
+            "yes"
+        } else {
+            "no"
+        }
     ));
 
     let service = Arc::new(Service::new(vault, key_store));

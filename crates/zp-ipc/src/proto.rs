@@ -584,6 +584,9 @@ pub struct StatusReply {
     /// Whether a recovery kit exists.
     #[prost(bool, tag = "5")]
     pub has_recovery_kit: bool,
+    /// Whether the daemon runs in a sandbox without network access.
+    #[prost(bool, tag = "6")]
+    pub sandboxed: bool,
 }
 
 /// The state of one key domain.

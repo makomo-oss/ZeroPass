@@ -168,7 +168,11 @@ docs/    threat-model.md  adr/  spec/
   - 実装: `zp-vaultd --vault <ファイル>` が金庫を持ち、`zp-cli` は IPC で操作を頼む（デーモンが動いていなければ自動で起動する）。解錠の状態はデーモンが持つので、あるコマンドで解錠したドメインは、`lock`・自動施錠・`zp-cli daemon stop` まで次のコマンドでも開いている。仕様は `docs/spec/ipc.md` §7・§8。
   - **P3-05 まで直接ファイルを開くもの**: `zp-cli pair` / `join` / `sync` と `zp-syncd`（同期 op の受け渡しを IPC に載せるまで）。デーモンと同時に同じ金庫ファイルを開く（SQLite の排他制御に任せる。LAN の E2E テストで確認済み）。
   - **実機での確認が未了**: Windows Hello の確認画面を、コンソールを持たないデーモンから出せるか。`--insecure-software-keystore` を付けずに `zp-cli --vault <ファイル> init` → `zp-cli --vault <ファイル> unlock totp` を実行し、確認画面が出て解錠できることを確かめる（指紋／顔／PIN の操作が必要なため、自動テストにできない）。出ない場合は、確認画面だけを UI 側のプロセスに出させる方式を P3-03 と合わせて検討する。
-- [ ] **P3-03** Windows サンドボックス: ネットワーク capability なしの AppContainer / 制限トークンで起動 — デーモン内からのソケット作成が OS に拒否される実証テスト（依存: P3-02）
+- [x] **P3-03** Windows サンドボックス: ネットワーク capability なしの AppContainer / 制限トークンで起動 — デーモン内からのソケット作成が OS に拒否される実証テスト（依存: P3-02）
+  - 方式: capability を持たない AppContainer（[ADR-0006](../docs/adr/0006-windows-sandbox.md)、`docs/spec/ipc.md` §9）。実装は `crates/zp-sandbox`。`zp-cli` はデーモンをこの中で起動する（`--no-sandbox` で通常のプロセスとして起動）。
+  - 実証: `cargo test -p zp-sandbox` が、同じ検査プログラムをサンドボックスの外と中で動かす。中では、TCP の接続（自分自身と LAN 上のアドレス）が失敗し、UDP が届かず、待ち受けたソケットに接続できず、許可していないファイルを開けない。`zp-cli` の E2E テスト（LAN のペアリング・同期・失効を含む）は、サンドボックス内のデーモンで通る。
+  - 補足: OS が拒否するのはソケットの「作成」ではなく「通信」である（`socket` と `bind` は成功し、接続・送信・着信が遮断される）。
+  - **実機での確認が未了**: AppContainer の中から Windows Hello を使えるか。P3-02 の確認手順（`zp-cli --vault <ファイル> init` → `unlock totp`）をそのまま実行する。`init` の出力で `totp: available` になり、`unlock totp` で確認画面が出れば可。`not available` になる、または確認画面が出ない場合は、`--no-sandbox` を付ければ従来どおり動く。そのときは、確認画面を出す部分をコンテナの外に分ける設計を P3-04 と合わせて行う。
 - [ ] **P3-04** ドメイン別プロセス分離: TOTP / パスキー用ワーカーを別プロセス化し、VK-T/VK-K はそのプロセスのみが保持 — P 側プロセスのメモリダンプに T の鍵素材がない（依存: P3-02）
 - [ ] **P3-05** `zp-syncd` を本番構成へ: vaultd とは IPC で暗号文 op のみ授受 — syncd のメモリに金庫鍵が存在しない（依存: P3-02, P2-17）
 - [ ] **P3-06** プロセス硬化（コアダンプ無効、デバッガ接続拒否、DLL 検索パス固定、クリップボード自動消去 API） — チェックリスト消化（依存: P3-03）

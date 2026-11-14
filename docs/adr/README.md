@@ -9,6 +9,7 @@
 | [0003](0003-sync-model.md) | 同期モデル | 採用 |
 | [0004](0004-process-architecture.md) | プロセス構成と権限分離 | 採用 |
 | [0005](0005-noise-patterns-and-sans-io.md) | Noise のパターンと入出力を持たないプロトコル実装 | 採用 |
+| [0006](0006-windows-sandbox.md) | Windows では vaultd を AppContainer で動かす | 採用 |
 
 ## テンプレート
 

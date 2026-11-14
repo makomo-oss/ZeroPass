@@ -143,7 +143,10 @@ impl Service {
 
     fn status(&self, state: &mut State) -> Result<proto::StatusReply, proto::Error> {
         if state.vault.is_none() && !self.path.exists() {
-            return Ok(proto::StatusReply::default());
+            return Ok(proto::StatusReply {
+                sandboxed: zp_sandbox::is_sandboxed(),
+                ..proto::StatusReply::default()
+            });
         }
         let vault = self.vault(state)?;
         let mut domains = Vec::new();
@@ -160,6 +163,7 @@ impl Service {
             device_id: vault.device_id().as_bytes().to_vec(),
             domains,
             has_recovery_kit: vault.has_recovery_kit().map_err(vault_error)?,
+            sandboxed: zp_sandbox::is_sandboxed(),
         })
     }
 

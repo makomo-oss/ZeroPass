@@ -44,6 +44,11 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "insecure_software_keystore")]
     no_hardware_keystore: bool,
 
+    /// DEVELOPMENT ONLY: if this command starts the vault daemon, start it as an
+    /// ordinary process instead of in a sandbox without network access.
+    #[arg(long, global = true)]
+    no_sandbox: bool,
+
     #[command(subcommand)]
     command: TopCommand,
 }
@@ -555,6 +560,9 @@ fn run(cli: Cli) -> CliResult<()> {
         .ok_or("no vault file given: pass --vault <PATH> or set ZEROPASS_VAULT")?;
     let mut out = io::stdout().lock();
     let choice = KeyStoreChoice::from_flags(&cli);
+    if cli.no_sandbox {
+        remote::disable_sandbox();
+    }
     match cli.command {
         TopCommand::Init => init(choice, &vault_path, &mut out),
         TopCommand::Recover => recover(choice, &vault_path, &mut out),

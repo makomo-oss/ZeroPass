@@ -9,7 +9,12 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Endpoint {
     id: String,
+    sandbox: String,
 }
+
+/// The name of the sandbox the vault daemon runs in (on Windows, its
+/// AppContainer). Clients look for the daemon's endpoint there first.
+pub const DAEMON_SANDBOX: &str = "ZeroPass.Vault";
 
 impl Endpoint {
     /// The endpoint of the daemon for the vault file at `vault`. The file does
@@ -26,7 +31,24 @@ impl Endpoint {
         hasher.update(text.as_bytes());
         let digest = hasher.finalize();
         let id = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-        Ok(Self { id })
+        Ok(Self {
+            id,
+            sandbox: DAEMON_SANDBOX.to_owned(),
+        })
+    }
+
+    /// Looks for the daemon in the sandbox `name` instead of
+    /// [`DAEMON_SANDBOX`]. Only clients use this; a daemon listens wherever
+    /// the sandbox it was started in lets it.
+    #[must_use]
+    pub fn with_sandbox(mut self, name: &str) -> Self {
+        name.clone_into(&mut self.sandbox);
+        self
+    }
+
+    /// The name of the sandbox clients look for the daemon in.
+    pub fn sandbox(&self) -> &str {
+        &self.sandbox
     }
 
     /// The identifier derived from the vault path: 16 hexadecimal digits.
