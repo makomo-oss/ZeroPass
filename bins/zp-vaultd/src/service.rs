@@ -232,19 +232,39 @@ impl Service {
         if !vault.has_domain(domain).map_err(vault_error)? {
             return Err(vault_error(VaultError::DomainUnavailable(domain)));
         }
+        let hint = self.sandbox_hint();
         let hardware = self.hardware(false)?.ok_or_else(|| {
             proto::Error::about(
                 ErrorCode::HardwareUnavailable,
                 convert::domain_to_proto(domain),
-                "no hardware key store is available to unlock this domain",
+                format!("no hardware key store is available to unlock this domain{hint}"),
             )
         })?;
         match domain {
             DomainId::Totp => vault.unlock_hardware::<Totp>(hardware.as_ref()),
             _ => vault.unlock_hardware::<Passkey>(hardware.as_ref()),
         }
-        .map_err(vault_error)?;
+        .map_err(|error| {
+            let mut error = vault_error(error);
+            if error.code == ErrorCode::Internal as i32 {
+                error.message.push_str(&hint);
+            }
+            error
+        })?;
         done()
+    }
+
+    /// What to add to an error of the platform's key store when this daemon runs
+    /// in a sandbox: Windows Hello keeps the credentials of a sandbox apart
+    /// from the user's own (ADR-0006), so a vault whose keys were wrapped
+    /// outside the sandbox cannot be opened inside it.
+    fn sandbox_hint(&self) -> String {
+        if self.key_store == KeyStoreChoice::Platform && zp_sandbox::is_sandboxed() {
+            " (the daemon runs in a sandbox, which does not see Windows Hello credentials \n             made outside it; for a vault created outside the sandbox, stop the daemon \n             and start it with `zp-cli --no-sandbox daemon start`)"
+                .to_owned()
+        } else {
+            String::new()
+        }
     }
 
     fn list_items(&self, state: &mut State, request: &proto::ListItems) -> Reply {

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::codec::{read_frame, write_frame};
 use crate::peer::{ClientPolicy, Peer, PeerProcess};
@@ -146,6 +146,7 @@ impl Server {
 
     /// Serves clients, one thread per connection, until a client's `Shutdown`
     /// request is answered with `Done` or [`ShutdownHandle::shutdown`] is called.
+    /// When it returns, the endpoint is free for another server.
     pub fn serve<H: Handler>(self, handler: Arc<H>) {
         let shutdown = self.shutdown_handle();
         loop {
@@ -193,6 +194,28 @@ impl Server {
                     shutdown.shutdown();
                 }
             });
+        }
+        release(self.listener);
+    }
+}
+
+/// Closes the listening endpoint, so that it is free again when [`Server::serve`]
+/// returns. A [`ShutdownHandle`] may hold the listener for a moment while it
+/// wakes the loop; wait for it to let go, briefly.
+fn release(mut listener: Arc<sys::Listener>) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match Arc::try_unwrap(listener) {
+            Ok(listener) => {
+                drop(listener);
+                return;
+            }
+            Err(shared) if Instant::now() < deadline => {
+                listener = shared;
+                thread::sleep(Duration::from_millis(1));
+            }
+            // Freed by whoever holds it last.
+            Err(_) => return,
         }
     }
 }
