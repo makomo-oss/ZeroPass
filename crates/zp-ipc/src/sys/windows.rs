@@ -11,7 +11,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::Mutex;
@@ -35,7 +35,8 @@ use windows::Win32::Security::{
     TokenAppContainerSid, TokenUser,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, GetFinalPathNameByHandleW, PIPE_ACCESS_DUPLEX,
+    SECURITY_IDENTIFICATION, VOLUME_NAME_NT,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
@@ -45,7 +46,7 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess, GetCurrentProcessId,
-    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, OpenProcessToken, PROCESS_NAME_NATIVE, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
@@ -301,24 +302,62 @@ fn user_only_descriptor(container: Option<&str>) -> io::Result<SecurityDescripto
     Ok(SecurityDescriptor(descriptor))
 }
 
-/// The executable of the process `pid`.
-fn executable_of(pid: u32) -> io::Result<PathBuf> {
-    // SAFETY: plain call; failure is reported through the result.
-    let process = owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }?);
+/// The executable a process runs, as a path in the namespace of the kernel
+/// (`\Device\HarddiskVolume3\…`).
+///
+/// Paths are compared in this form, not in the familiar one with a drive
+/// letter: a sandboxed process may be unable to translate a volume to its
+/// drive letter, and then the system hands it this form anyway.
+fn image_of(process: HANDLE) -> io::Result<PathBuf> {
     // The longest path Windows can return.
     let mut buffer = vec![0u16; 32_768];
     let mut len = buffer.len() as u32;
-    // SAFETY: the buffer is writable and `len` holds its length in characters;
-    // on success `len` is the number of characters written.
+    // SAFETY: every caller passes a valid process handle; the buffer is
+    // writable and `len` holds its length in characters; on success `len` is
+    // the number of characters written.
     unsafe {
         QueryFullProcessImageNameW(
-            raw(&process),
-            PROCESS_NAME_WIN32,
+            process,
+            PROCESS_NAME_NATIVE,
             PWSTR(buffer.as_mut_ptr()),
             &mut len,
         )
     }?;
     Ok(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
+}
+
+/// The executable of the process `pid`.
+fn executable_of(pid: u32) -> io::Result<PathBuf> {
+    // SAFETY: plain call; failure is reported through the result.
+    let process = owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }?);
+    image_of(raw(&process))
+}
+
+/// The executable of this process, in the form paths are compared in.
+pub(crate) fn current_exe() -> io::Result<PathBuf> {
+    // SAFETY: returns a pseudo handle that is always valid.
+    image_of(unsafe { GetCurrentProcess() })
+}
+
+/// Brings the path of an existing file into the form paths are compared in.
+/// A path that is already in that form, or that cannot be opened, is returned
+/// as it is.
+pub(crate) fn comparable(path: &Path) -> PathBuf {
+    if path.as_os_str().to_string_lossy().starts_with(r"\Device\") {
+        return path.to_path_buf();
+    }
+    let Ok(file) = File::open(path) else {
+        return path.to_path_buf();
+    };
+    let mut buffer = vec![0u16; 32_768];
+    // SAFETY: `file` is a valid file handle and the buffer is writable; the
+    // result is the number of characters written, or more than the buffer
+    // holds if it is too small, or zero on failure.
+    let len = unsafe { GetFinalPathNameByHandleW(raw(&file), &mut buffer, VOLUME_NAME_NT) };
+    if len == 0 || len as usize > buffer.len() {
+        return path.to_path_buf();
+    }
+    PathBuf::from(OsString::from_wide(&buffer[..len as usize]))
 }
 
 /// Which end of the pipe to ask about.

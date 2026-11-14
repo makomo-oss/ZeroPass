@@ -80,7 +80,7 @@ Unix の実行時ディレクトリは `$XDG_RUNTIME_DIR/zeropass`、なけれ�
 | `zp-broker` | Agent Broker |
 | `zp-syncd` | 同期 |
 
-パスの比較は、Windows では大文字小文字を区別しない。
+パスの比較は、Windows では大文字小文字を区別しない。また Windows では、ドライブ文字を使わないカーネルの名前空間でのパス（`DeviceHarddiskVolume3…`）どうしで比べる。サンドボックス内のプロセスは、ボリュームをドライブ文字に変換できないことがあるためである。
 
 ### 3.2 クライアントがデーモンを検査する
 

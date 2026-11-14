@@ -88,7 +88,8 @@ fn observe(sandboxed: bool) -> Observation {
             )
             .into(),
         udp.local_addr().unwrap().to_string().into(),
-        std::env::current_exe().unwrap().into(),
+        // In the form the probe's server will see it in.
+        zp_ipc::current_executable().unwrap().into(),
     ];
 
     // Start it; it reports and then serves the IPC until told to stop.
@@ -246,7 +247,7 @@ fn a_sandboxed_process_opens_only_what_it_was_granted() {
 
 #[test]
 fn a_sandboxed_process_serves_the_local_ipc_and_sees_who_connects() {
-    let this = std::env::current_exe().unwrap();
+    let this = zp_ipc::current_executable().unwrap();
     for observation in [outside(), inside()] {
         assert!(observation.ok("ipc_bind"), "{:?}", observation.report);
         let seen = observation.ipc_client.as_ref().unwrap();

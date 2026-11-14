@@ -36,9 +36,12 @@ pub struct Peer {
     pub role: Role,
 }
 
-/// Brings a path into the form paths are compared in: without the verbatim
-/// prefix and, on Windows, in lower case.
+/// Brings a path into the form paths are compared in. On Windows that is the
+/// path in the namespace of the kernel where the file can be opened (which is
+/// what the system reports for a running process), without the verbatim
+/// prefix and in lower case.
 fn normalize(path: &Path) -> PathBuf {
+    let path = &crate::sys::comparable(path);
     if cfg!(windows) {
         let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
         let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
@@ -53,7 +56,7 @@ fn executable_name(name: &str) -> String {
 }
 
 fn current_exe_dir() -> io::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::sys::current_exe()?;
     exe.parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| io::Error::other("the current executable has no directory"))

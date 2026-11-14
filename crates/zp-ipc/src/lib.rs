@@ -33,6 +33,14 @@ pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess};
 pub use server::{Handler, Server, ShutdownHandle};
 pub use sync::{RemoteOpLog, RemoteSyncError};
 
+/// The executable of this process, in the form in which the executables of
+/// connecting processes are reported and compared. On Windows this is not the
+/// familiar path with a drive letter; use it for policies and messages, not
+/// to start programs.
+pub fn current_executable() -> std::io::Result<std::path::PathBuf> {
+    sys::current_exe()
+}
+
 /// Starts `command` as a background process that outlives this one: no console,
 /// no standard streams, and none of this process's open handles.
 ///
