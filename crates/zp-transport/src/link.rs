@@ -188,13 +188,26 @@ impl Connection {
         Ok(())
     }
 
-    /// Waits for the next bytes from the peer.
+    /// How long the peer may stay silent.
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    /// Waits for the next bytes from the peer, failing with
+    /// [`DriveError::Timeout`] after the idle timeout.
     pub fn receive(&mut self) -> Result<Vec<u8>, DriveError> {
-        match self.incoming.recv_timeout(self.idle_timeout) {
+        self.receive_within(self.idle_timeout)?
+            .ok_or(DriveError::Timeout)
+    }
+
+    /// Waits at most `wait` for the next bytes from the peer: `None` if nothing
+    /// arrived in that time. The caller keeps track of the idle timeout.
+    pub fn receive_within(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, DriveError> {
+        match self.incoming.recv_timeout(wait) {
             Ok(Ok(bytes)) if bytes.is_empty() => Err(DriveError::Closed),
-            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Ok(bytes)) => Ok(Some(bytes)),
             Ok(Err(error)) => Err(error.into()),
-            Err(RecvTimeoutError::Timeout) => Err(DriveError::Timeout),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err(DriveError::Closed),
         }
     }
