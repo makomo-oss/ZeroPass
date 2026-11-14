@@ -39,7 +39,7 @@ fn runtime_dir() -> io::Result<PathBuf> {
 }
 
 fn socket_path(endpoint: &Endpoint) -> io::Result<PathBuf> {
-    Ok(runtime_dir()?.join(format!("vaultd-{}.sock", endpoint.id())))
+    Ok(runtime_dir()?.join(format!("{}-{}.sock", endpoint.service(), endpoint.id())))
 }
 
 #[cfg(target_os = "linux")]

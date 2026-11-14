@@ -521,10 +521,23 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
 
     // The phone joins with the code and its own master password.
     let phone = Cli::new();
-    let out = phone.ok(
+    let joined = phone.run(
         &["join", "--name", "Test phone"],
         &[NEW_PASSWORD, NEW_PASSWORD, &code],
     );
+    if !joined.success {
+        // Show the other side too: why the pairing failed is often there.
+        let _ = pairing.kill();
+        let mut rest = String::new();
+        let _ = stdout.read_to_string(&mut rest);
+        let mut errors = String::new();
+        let _ = pairing.stderr.take().unwrap().read_to_string(&mut errors);
+        panic!(
+            "join failed: {}\n--- pair, output:\n{rest}\n--- pair, errors:\n{errors}",
+            joined.stderr
+        );
+    }
+    let out = joined.stdout;
     assert!(out.contains("joined vault"), "{out}");
     assert!(out.contains("as \"Test phone\""), "{out}");
     assert!(out.contains("totp:    available"), "{out}");

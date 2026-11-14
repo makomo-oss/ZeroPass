@@ -165,6 +165,11 @@ fn another_program_of_the_user_cannot_read_the_memory_of_the_daemon() {
         zp_sandbox::can_read_memory_of(daemon.child.id()),
         Some(false)
     );
+    // Nor duplicate its handles: it uses no network (unlike the sync daemon).
+    assert_ne!(
+        zp_sandbox::can_duplicate_handles_of(daemon.child.id()),
+        Some(true)
+    );
 }
 
 #[cfg(windows)]

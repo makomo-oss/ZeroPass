@@ -12,6 +12,7 @@
 use core::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 use zp_crypto::{CryptoError, rng};
 
@@ -24,6 +25,28 @@ const VERSION: u8 = 0x01;
 pub const OFFER_LIFETIME_SECS: u64 = 60;
 /// Most connection hints an offer may carry.
 pub const MAX_HINTS: usize = 8;
+
+/// Length of the tag a device announces over Bluetooth LE while it waits for a
+/// pairing (`docs/spec/ble.md`).
+pub const PAIRING_TAG_LEN: usize = 8;
+
+const LABEL_BLE_PAIRING: &[u8] = b"zeropass/v1/ble-pairing\0";
+
+/// The tag a peripheral shows while it waits for a pairing with the one-time
+/// secret `psk`: `SHA-256("zeropass/v1/ble-pairing" ‖ 0x00 ‖ psk)[..8]`.
+///
+/// A central that scanned the QR code computes the same value to pick the right
+/// peripheral. The secret cannot be derived from the tag, so the tag can be
+/// handed to a process that must not learn the secret (the sync daemon).
+pub fn pairing_tag(psk: &[u8; PSK_LEN]) -> [u8; PAIRING_TAG_LEN] {
+    let digest = Sha256::new()
+        .chain_update(LABEL_BLE_PAIRING)
+        .chain_update(psk)
+        .finalize();
+    let mut tag = [0u8; PAIRING_TAG_LEN];
+    tag.copy_from_slice(&digest[..PAIRING_TAG_LEN]);
+    tag
+}
 
 const HINT_IPV4: u8 = 0x01;
 const HINT_IPV6: u8 = 0x02;

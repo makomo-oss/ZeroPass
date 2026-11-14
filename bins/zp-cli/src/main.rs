@@ -12,6 +12,7 @@
 mod clipboard;
 mod nearby;
 mod remote;
+mod syncd;
 
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -315,13 +316,13 @@ fn parse_id(text: &str) -> CliResult<ItemId> {
     Ok(ItemId::from_bytes(bytes))
 }
 
-/// Whether a command talks to other devices: this process opens the
-/// connection, and the daemon does the rest.
+/// Whether a command involves other devices: the sync daemon holds the
+/// connection, the vault daemon runs the protocol.
 fn is_direct(command: &Command) -> bool {
     matches!(command, Command::Pair | Command::Sync { .. })
 }
 
-/// Runs a command that talks to other devices.
+/// Runs a command that involves other devices.
 fn run_direct(
     choice: KeyStoreChoice,
     vault_path: &Path,
@@ -330,7 +331,7 @@ fn run_direct(
 ) -> CliResult<()> {
     match command {
         Command::Pair => nearby::pair(choice, vault_path, out),
-        Command::Sync { seconds } => nearby::sync(choice, vault_path, seconds, out),
+        Command::Sync { seconds } => nearby::sync(vault_path, seconds, out),
         _ => unreachable!("not a direct command"),
     }
 }
@@ -441,23 +442,52 @@ fn daemon(
     action: &DaemonAction,
     out: &mut impl Write,
 ) -> CliResult<()> {
+    if matches!(action, DaemonAction::Stop) {
+        // The sync daemon first: it works through the vault daemon.
+        let sync_stopped = syncd::stop(vault_path)?;
+        let vault_stopped = match remote::connect(vault_path, choice, Start::Never)? {
+            Some(client) => {
+                Remote::with(client).stop()?;
+                true
+            }
+            None => false,
+        };
+        if vault_stopped {
+            writeln!(out, "the vault daemon was stopped")?;
+        } else {
+            writeln!(out, "the vault daemon is not running")?;
+        }
+        if sync_stopped {
+            writeln!(out, "the sync daemon was stopped")?;
+        }
+        return Ok(());
+    }
     let start = match action {
         DaemonAction::Start => Start::Always,
-        DaemonAction::Status | DaemonAction::Stop => Start::Never,
+        _ => Start::Never,
     };
-    let Some(client) = remote::connect(vault_path, choice, start)? else {
-        writeln!(out, "the vault daemon is not running")?;
-        return Ok(());
-    };
-    let mut remote = Remote::with(client);
-    match action {
-        DaemonAction::Status | DaemonAction::Start => remote.describe(out),
-        DaemonAction::Stop => {
-            remote.stop()?;
-            writeln!(out, "the vault daemon was stopped")?;
-            Ok(())
-        }
+    match remote::connect(vault_path, choice, start)? {
+        Some(client) => Remote::with(client).describe(out)?,
+        None => writeln!(out, "the vault daemon is not running")?,
     }
+    match syncd::connect(vault_path, false)? {
+        Some(mut client) => {
+            let status = syncd::status(&mut client)?;
+            writeln!(
+                out,
+                "the sync daemon is running (version {})",
+                client.daemon_version()
+            )?;
+            writeln!(out, "  process: {}", status.pid)?;
+            if status.syncing {
+                writeln!(out, "  syncing over: {}", status.transports.join(", "))?;
+            } else {
+                writeln!(out, "  not syncing: {}", status.not_syncing_because)?;
+            }
+        }
+        None => writeln!(out, "the sync daemon is not running")?,
+    }
+    Ok(())
 }
 
 fn run(cli: Cli) -> CliResult<()> {

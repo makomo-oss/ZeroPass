@@ -37,6 +37,39 @@ pub const PSK_LEN: usize = 32;
 /// A device's public channel key.
 pub type ChannelPublicKey = [u8; PUBLIC_KEY_LEN];
 
+/// Which handshake a peer opened a connection with.
+///
+/// A device that accepts connections (the sync daemon) takes both on the same
+/// listener. The two patterns differ in the length of their first message, so
+/// the first frame on a new connection tells them apart before anything is
+/// decrypted: the pairing initiator sends only its ephemeral key (with the tag
+/// of the empty payload, which the PSK already encrypts), the sync initiator
+/// also its encrypted static key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opening {
+    /// The pairing handshake (`XXpsk3`).
+    Pairing,
+    /// The sync handshake (`IK`).
+    Sync,
+}
+
+impl Opening {
+    /// Length of the first handshake message of a pairing.
+    pub const PAIRING_FIRST_MESSAGE_LEN: usize = PUBLIC_KEY_LEN + TAG_LEN;
+    /// Length of the first handshake message of a sync.
+    pub const SYNC_FIRST_MESSAGE_LEN: usize = PUBLIC_KEY_LEN + (PUBLIC_KEY_LEN + TAG_LEN) + TAG_LEN;
+
+    /// The handshake whose first message has `length` bytes (the value of the
+    /// first frame's 2-byte length prefix); `None` for neither.
+    pub fn from_first_message_len(length: usize) -> Option<Self> {
+        match length {
+            Self::PAIRING_FIRST_MESSAGE_LEN => Some(Opening::Pairing),
+            Self::SYNC_FIRST_MESSAGE_LEN => Some(Opening::Sync),
+            _ => None,
+        }
+    }
+}
+
 /// Splits a byte stream into `length(2) ‖ body` frames.
 #[derive(Debug, Default)]
 struct Deframer {
@@ -367,6 +400,37 @@ mod tests {
             Handshake::sync_responder(b, &VAULT).unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_first_message_tells_pairing_from_sync() {
+        let (a, b) = (key(), key());
+        let first_frame = |mut handshake: Handshake| {
+            let bytes = handshake.step(&[]).unwrap();
+            let length = usize::from(u16::from_be_bytes([bytes[0], bytes[1]]));
+            assert_eq!(bytes.len(), 2 + length, "one frame");
+            length
+        };
+        for initiator in [
+            Handshake::pairing(true, &a, &[7; PSK_LEN]).unwrap(),
+            Handshake::pairing(true, &b, &[8; PSK_LEN]).unwrap(),
+        ] {
+            assert_eq!(
+                Opening::from_first_message_len(first_frame(initiator)),
+                Some(Opening::Pairing)
+            );
+        }
+        for vault in [[1; 16], [2; 16]] {
+            let initiator =
+                Handshake::sync_initiator(&a, b.public_bytes(), &VaultId::from_bytes(vault))
+                    .unwrap();
+            assert_eq!(
+                Opening::from_first_message_len(first_frame(initiator)),
+                Some(Opening::Sync)
+            );
+        }
+        assert_eq!(Opening::from_first_message_len(0), None);
+        assert_eq!(Opening::from_first_message_len(64), None);
     }
 
     #[test]

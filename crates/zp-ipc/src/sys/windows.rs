@@ -69,7 +69,7 @@ const BUFFER_SIZE: u32 = 64 * 1024;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn pipe_name(endpoint: &Endpoint) -> String {
-    format!("zeropass-vaultd-{}", endpoint.id())
+    format!("zeropass-{}-{}", endpoint.service(), endpoint.id())
 }
 
 /// The path a daemon creates its pipe at.
@@ -90,7 +90,9 @@ fn server_pipe_path(endpoint: &Endpoint, in_container: bool) -> String {
 fn client_pipe_paths(endpoint: &Endpoint) -> Vec<String> {
     let name = pipe_name(endpoint);
     let mut paths = Vec::new();
-    if let Ok(path) = container_pipe_path(endpoint.sandbox(), &name) {
+    if let Some(sandbox) = endpoint.sandbox()
+        && let Ok(path) = container_pipe_path(sandbox, &name)
+    {
         paths.push(path);
     }
     paths.push(format!(r"\\.\pipe\{name}"));

@@ -17,7 +17,10 @@ mod windows;
 #[cfg(windows)]
 mod windows_harden;
 
-pub use harden::{Hardening, Measure, can_read_memory_of, harden_process, runs_as_administrator};
+pub use harden::{
+    Hardening, Measure, can_duplicate_handles_of, can_read_memory_of, harden_network_process,
+    harden_process, runs_as_administrator,
+};
 
 use std::ffi::OsString;
 use std::io;

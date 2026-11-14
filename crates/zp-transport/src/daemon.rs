@@ -20,17 +20,22 @@
 //! happen, and chains of waiting devices always end at the highest identifier.
 
 use std::collections::HashMap;
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zp_crypto::{ChannelKey, DeviceId};
+use zp_drive::{Link, Opening, read_opening};
 use zp_ipc::RemoteOpLog;
 use zp_sync::{OpLog, SessionReport};
 use zp_vault::Store;
 
 use crate::DriveError;
-use crate::discovery::{identify, slot_of, tag_for};
+use crate::discovery::{Tag, identify, slot_of, tag_for};
 use crate::driver::{DriveConfig, sync_as_initiator, sync_as_responder};
 use crate::transport::Transport;
+
+/// How long a peer that connected may take to start its handshake.
+const OPENING_WAIT: Duration = Duration::from_secs(2);
 
 /// Settings of the sync loop.
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +131,8 @@ pub struct SyncDaemon<S: SyncStore, T: Transport> {
     transport: T,
     config: DaemonConfig,
     peers: HashMap<DeviceId, PeerState>,
+    /// Where an incoming pairing link goes, while a pairing waits for one.
+    pairing: Option<Sender<Box<dyn Link>>>,
 }
 
 fn unix_secs() -> u64 {
@@ -143,7 +150,38 @@ impl<S: SyncStore, T: Transport> SyncDaemon<S, T> {
             transport,
             config,
             peers: HashMap::new(),
+            pairing: None,
         }
+    }
+
+    /// Waits for a device that wants to pair: shows `tag` (the tag of the
+    /// pairing code, [`crate::ble::pairing_tag`]) where joining devices look
+    /// for it, and hands the next link that opens with the pairing handshake
+    /// to `sink`. Links that open with the sync handshake are synced as usual.
+    ///
+    /// One pairing at a time; a new call replaces the previous one. It ends
+    /// with [`Self::stop_pairing`], or when the first link has been handed over.
+    pub fn wait_for_pairing(
+        &mut self,
+        tag: Tag,
+        sink: Sender<Box<dyn Link>>,
+    ) -> Result<(), DriveError> {
+        self.transport.announce_pairing(Some(tag))?;
+        self.pairing = Some(sink);
+        Ok(())
+    }
+
+    /// Stops waiting for a pairing and withdraws its tag.
+    pub fn stop_pairing(&mut self) -> Result<(), DriveError> {
+        self.pairing = None;
+        self.transport.announce_pairing(None)?;
+        Ok(())
+    }
+
+    /// Makes this device contact the peers it dials at the next step, instead
+    /// of when they are next due.
+    pub fn sync_soon(&mut self) {
+        self.peers.clear();
     }
 
     /// The store being synced.
@@ -196,27 +234,56 @@ impl<S: SyncStore, T: Transport> SyncDaemon<S, T> {
         self.transport
             .advertise(tag_for(&vault_id, key.public_bytes(), slot_of(now)))?;
 
-        // Answer a waiting connection.
+        // Answer a waiting connection: a sync, or a pairing someone waits for.
         if let Some(link) = self.transport.accept(self.config.accept_wait)? {
-            let own_seq = self.own_seq()?;
-            match sync_as_responder(link, &mut self.store, &key, &self.config.drive) {
-                Ok(report) => {
-                    if let Some(peer) = report.peer {
-                        self.record(peer, false, Some(own_seq));
-                        let name = self.peer_name(peer);
-                        events.push(Event::Synced {
-                            peer,
-                            name,
-                            initiated: false,
-                            report,
-                        });
+            let link = match read_opening(link, OPENING_WAIT) {
+                Ok((Some(Opening::Sync), link)) => Some(link),
+                Ok((Some(Opening::Pairing), link)) => {
+                    if let Some(sink) = self.pairing.take() {
+                        // One device per pairing code.
+                        let _ = self.transport.announce_pairing(None);
+                        let _ = sink.send(link);
                     }
+                    None
                 }
-                Err(error) => events.push(Event::Failed {
-                    peer: None,
-                    initiated: false,
-                    error,
-                }),
+                Ok((None, _)) => {
+                    events.push(Event::Failed {
+                        peer: None,
+                        initiated: false,
+                        error: DriveError::Sync("the peer opened with an unknown handshake".into()),
+                    });
+                    None
+                }
+                Err(error) => {
+                    events.push(Event::Failed {
+                        peer: None,
+                        initiated: false,
+                        error: error.into(),
+                    });
+                    None
+                }
+            };
+            if let Some(link) = link {
+                let own_seq = self.own_seq()?;
+                match sync_as_responder(link, &mut self.store, &key, &self.config.drive) {
+                    Ok(report) => {
+                        if let Some(peer) = report.peer {
+                            self.record(peer, false, Some(own_seq));
+                            let name = self.peer_name(peer);
+                            events.push(Event::Synced {
+                                peer,
+                                name,
+                                initiated: false,
+                                report,
+                            });
+                        }
+                    }
+                    Err(error) => events.push(Event::Failed {
+                        peer: None,
+                        initiated: false,
+                        error,
+                    }),
+                }
             }
         }
 

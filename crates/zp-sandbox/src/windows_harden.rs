@@ -27,9 +27,9 @@ use windows::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories, SetDllDirectoryW,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_MITIGATION_POLICY,
-    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, PROCESS_VM_READ, ProcessDynamicCodePolicy,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_DUP_HANDLE,
+    PROCESS_MITIGATION_POLICY, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ, ProcessDynamicCodePolicy,
     ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy, SetProcessMitigationPolicy,
 };
 use windows::core::{BOOL, HSTRING, PWSTR};
@@ -167,14 +167,22 @@ pub(crate) fn restrict_image_loads() -> io::Result<()> {
 /// as `taskkill` and the Task Manager want before they end a process), wait
 /// for it, and end it.
 ///
+/// With `keep_handle_duplication`, the right to copy handles stays: a process
+/// that uses the network needs it, because Windows duplicates a socket by
+/// opening the process that owns it with that right, which can only be granted
+/// to the user, not to the process alone.
+///
 /// This stops other programs of the user from simply opening the process. It
 /// does not stop an administrator, and the user owns the process and could
 /// give the rights back: it raises the bar, it is not a wall.
-pub(crate) fn protect_memory() -> io::Result<()> {
-    let rights = PROCESS_QUERY_LIMITED_INFORMATION.0
+pub(crate) fn protect_memory(keep_handle_duplication: bool) -> io::Result<()> {
+    let mut rights = PROCESS_QUERY_LIMITED_INFORMATION.0
         | PROCESS_QUERY_INFORMATION.0
         | PROCESS_SYNCHRONIZE.0
         | PROCESS_TERMINATE.0;
+    if keep_handle_duplication {
+        rights |= PROCESS_DUP_HANDLE.0;
+    }
     // D:P — a protected DACL (nothing inherited): the user gets the rights
     // above, the system gets everything (GA).
     let sddl = HSTRING::from(format!("D:P(A;;{rights:#x};;;{})(A;;GA;;;SY)", user_sid()?));
@@ -254,4 +262,17 @@ pub(crate) fn is_elevated() -> bool {
         )
     };
     queried.is_ok() && elevated != 0
+}
+
+/// Whether this process is allowed to open the process `pid` for duplicating
+/// its handles.
+pub(crate) fn can_duplicate_handles_of(pid: u32) -> bool {
+    // SAFETY: plain call; failure is reported through the result.
+    match unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, pid) } {
+        Ok(handle) => {
+            drop(owned(handle));
+            true
+        }
+        Err(_) => false,
+    }
 }

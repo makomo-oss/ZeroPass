@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fail if any crate that must stay offline (layer 1: the vault) depends, directly or
-# transitively, on a networking crate. See docs/adr/0004-process-architecture.md.
+# Fail if any crate that must stay offline (the vault, and the user interfaces) depends,
+# directly or transitively, on a networking crate. See docs/adr/0004-process-architecture.md.
 #
 # This is a build-time guard; the OS sandbox (P3-03) is the runtime guard.
 # The workspace-wide cargo-deny ban list cannot express this, because zp-syncd is
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # Crates that must never reach the network.
-OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-vaultd)
+OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-vaultd zp-cli)
 
 # Crates that provide sockets, network protocols or radio access.
 # `mio` covers tokio's net/process/signal features; tokio without them is allowed.

@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mdns_sd::{IfKind, Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -90,15 +91,26 @@ impl TcpLink {
 }
 
 /// The writing half; closing it tells the peer that the link is finished.
-struct TcpWriter(TcpStream);
+/// The reading half of a TCP link. Both halves share one socket: duplicating it
+/// (`TcpStream::try_clone`) needs the right to duplicate handles in this
+/// process, which a hardened process does not grant (`docs/spec/hardening.md`).
+struct TcpReader(Arc<TcpStream>);
+
+impl Read for TcpReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        (&*self.0).read(buffer)
+    }
+}
+
+struct TcpWriter(Arc<TcpStream>);
 
 impl Write for TcpWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.write(bytes)
+        (&*self.0).write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        (&*self.0).flush()
     }
 }
 
@@ -110,10 +122,14 @@ impl Drop for TcpWriter {
 
 impl Link for TcpLink {
     fn split(self: Box<Self>) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
-        let reader = self.stream.try_clone()?;
         // Wake up regularly so the reading thread notices a dropped connection.
-        reader.set_read_timeout(Some(READ_POLL))?;
-        Ok((Box::new(reader), Box::new(TcpWriter(self.stream))))
+        // (This affects reads only.)
+        self.stream.set_read_timeout(Some(READ_POLL))?;
+        let stream = Arc::new(self.stream);
+        Ok((
+            Box::new(TcpReader(Arc::clone(&stream))),
+            Box::new(TcpWriter(stream)),
+        ))
     }
 
     fn peer(&self) -> String {

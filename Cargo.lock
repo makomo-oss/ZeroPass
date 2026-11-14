@@ -2219,11 +2219,10 @@ dependencies = [
  "zeroize",
  "zp-clipboard",
  "zp-crypto",
+ "zp-drive",
  "zp-ipc",
  "zp-pairing",
  "zp-sandbox",
- "zp-sync",
- "zp-transport",
  "zp-vault",
 ]
 
@@ -2314,6 +2313,7 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "prost",
+ "sha2 0.11.1",
  "snow",
  "tempfile",
  "thiserror",
@@ -2353,6 +2353,8 @@ name = "zp-syncd"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "tempfile",
+ "zp-crypto",
  "zp-ipc",
  "zp-sandbox",
  "zp-transport",

@@ -53,7 +53,22 @@ impl Hardening {
 /// Applies every hardening measure of this platform to the current process.
 /// Call it first thing, before any secret is in memory. A measure that fails
 /// does not stop the others; the caller decides what a failure means.
+///
+/// For a process that does not use the network (the vault daemon).
 pub fn harden_process() -> Hardening {
+    harden(false)
+}
+
+/// Like [`harden_process`], for a process that uses the network (the sync
+/// daemon): other programs of the user keep the right to copy its handles,
+/// which Windows needs to duplicate a socket (`docs/spec/hardening.md` §2.1).
+/// They still cannot read or write its memory or start threads in it.
+pub fn harden_network_process() -> Hardening {
+    harden(true)
+}
+
+fn harden(network: bool) -> Hardening {
+    let _ = network;
     let mut hardening = Hardening::default();
     #[cfg(windows)]
     {
@@ -65,7 +80,7 @@ pub fn harden_process() -> Hardening {
         hardening.apply("no crash dumps", os::disable_crash_dumps());
         hardening.apply(
             "no access to memory by other programs",
-            os::protect_memory(),
+            os::protect_memory(network),
         );
         hardening.apply("no extension points", os::disable_extension_points());
         hardening.apply("no remote images", os::restrict_image_loads());
@@ -118,5 +133,22 @@ pub fn runs_as_administrator() -> bool {
     #[cfg(unix)]
     {
         rustix::process::geteuid().is_root()
+    }
+}
+
+/// Whether this process is allowed to duplicate the handles of the process
+/// `pid`. `None` where this platform has no such right.
+///
+/// For tests: [`harden_network_process`] leaves this right to other programs
+/// of the user, [`harden_process`] does not.
+pub fn can_duplicate_handles_of(pid: u32) -> Option<bool> {
+    #[cfg(windows)]
+    {
+        Some(crate::windows_harden::can_duplicate_handles_of(pid))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        None
     }
 }
