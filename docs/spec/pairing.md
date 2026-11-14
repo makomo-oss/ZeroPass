@@ -1,6 +1,6 @@
 # ZeroPass ペアリング・チャネル仕様（pairing.md）
 
-- 版: 0.1（ドラフト。G-01 でバージョン 1 として凍結する）
+- 版: 1.0（2026-11-14、G-01 で凍結。互換性のない変更は、形式またはプロトコルのバージョンを上げて行う）
 - 関連: [sync.md](sync.md)、[crypto.md](crypto.md)、[ADR-0005](../adr/0005-noise-patterns-and-sans-io.md)、[脅威モデル](../threat-model.md) §5.2
 - 実装: `crates/zp-pairing`（入出力を持たない）
 

@@ -1,6 +1,6 @@
 # ZeroPass BLE トランスポート仕様（ble.md）
 
-- 版: 0.1（ドラフト。G-01 でバージョン 1 として凍結する）
+- 版: 1.0（2026-11-14、G-01 で凍結。互換性のない変更は、形式またはプロトコルのバージョンを上げて行う）
 - 関連: [lan.md](lan.md)、[pairing.md](pairing.md)、[sync.md](sync.md)、[脅威モデル](../threat-model.md) §5.2
 - 実装: `crates/zp-transport`（デスクトップ側）、各モバイルアプリ（Kotlin / Swift）
 
