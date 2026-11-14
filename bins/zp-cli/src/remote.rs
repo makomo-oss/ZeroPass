@@ -243,7 +243,7 @@ impl Remote {
     }
 
     /// Unlocks every domain the vault has, for the operations that need all.
-    fn unlock_every_domain(&mut self) -> CliResult<()> {
+    pub(crate) fn unlock_every_domain(&mut self) -> CliResult<()> {
         let status = self.vault_status()?;
         for domain in DomainId::ALL {
             let available = status
@@ -273,9 +273,21 @@ impl Remote {
         Ok(self.call(request.clone())?)
     }
 
-    fn lock_all(&mut self) -> CliResult<()> {
+    pub(crate) fn lock_all(&mut self) -> CliResult<()> {
         self.call(request::Body::Lock(proto::Lock { domain: None }))?;
         Ok(())
+    }
+
+    /// Asks the daemon for a pairing offer that names `hints` as where this
+    /// device can be reached. Returns the offer as text and how many seconds
+    /// it is valid. Every domain must be unlocked.
+    pub(crate) fn pair_offer(&mut self, hints: Vec<String>) -> CliResult<(String, u32)> {
+        match self.call(request::Body::PairOffer(proto::PairOffer { hints }))? {
+            response::Body::PairOffered(offered) => {
+                Ok((offered.offer.clone(), offered.lifetime_secs))
+            }
+            _ => Err(unexpected()),
+        }
     }
 
     /// `init`: creates the vault.
@@ -363,6 +375,7 @@ impl Remote {
             "NO"
         };
         writeln!(out, "  sandbox: {sandbox}")?;
+        writeln!(out, "  process: {}", status.pid)?;
         if !status.vault_exists {
             writeln!(out, "  no vault file yet")?;
             return Ok(());
@@ -510,7 +523,7 @@ impl Remote {
                 writeln!(out, "master password changed")?;
             }
             Command::Pair | Command::Sync { .. } => {
-                unreachable!("pairing and sync do not go through the daemon yet")
+                unreachable!("pairing and sync open a connection to another device: see `nearby`")
             }
         }
         Ok(())

@@ -5,8 +5,9 @@
 //! unlocks stays unlocked in the daemon until it is locked or times out, so the
 //! next command does not ask again.
 //!
-//! Pairing and sync (`pair`, `join`, `sync`) still open the vault file
-//! themselves; they move behind the daemon together with `zp-syncd` (P3-05).
+//! This program never opens the vault file. For pairing and sync (`pair`,
+//! `join`, `sync`) it opens the connection to the other device and carries
+//! what the daemon sends and receives over it: ciphertext only.
 
 mod clipboard;
 mod nearby;
@@ -19,10 +20,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
-use zp_crypto::{
-    DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId, Passkey, Totp,
-};
-use zp_vault::{AutoLock, Vault, VaultError};
+use zp_crypto::{DomainId, ItemId};
+use zp_vault::VaultError;
 
 use remote::{Remote, Start};
 
@@ -304,51 +303,6 @@ fn dev_key_path(vault: &Path) -> PathBuf {
     vault.with_extension("devkey")
 }
 
-/// Sets up the hardware key store for the TOTP and passkey domains.
-fn hardware_key_store(
-    choice: KeyStoreChoice,
-    vault: &Path,
-    create: bool,
-) -> CliResult<Option<Box<dyn HardwareKeyStore>>> {
-    match choice {
-        KeyStoreChoice::None => return Ok(None),
-        KeyStoreChoice::Platform => {
-            return match zp_hwkey::platform_key_store(create) {
-                Ok(store) => Ok(Some(store)),
-                // No biometrics on this device: carry on with the password domain only.
-                Err(HardwareKeyError::Unavailable(reason)) => {
-                    if create {
-                        writeln!(io::stderr(), "note: no hardware key store ({reason})")?;
-                    }
-                    Ok(None)
-                }
-                Err(error) => Err(error.into()),
-            };
-        }
-        KeyStoreChoice::InsecureSoftware => {}
-    }
-    let path = dev_key_path(vault);
-    writeln!(
-        io::stderr(),
-        "warning: using the INSECURE software key store ({}); TOTP and passkey data are NOT protected by biometrics",
-        path.display()
-    )?;
-    let store = if create {
-        let store = InsecureSoftwareKeyStore::generate()?;
-        std::fs::write(&path, store.key_bytes().as_slice())?;
-        store
-    } else {
-        let bytes =
-            Zeroizing::new(std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?);
-        let key: &[u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "the software key store file is malformed")?;
-        InsecureSoftwareKeyStore::from_key_bytes(key)
-    };
-    Ok(Some(Box::new(store)))
-}
-
 fn parse_id(text: &str) -> CliResult<ItemId> {
     let invalid = || "an item identifier is 32 hexadecimal digits";
     if text.len() != 32 || !text.is_ascii() {
@@ -361,76 +315,13 @@ fn parse_id(text: &str) -> CliResult<ItemId> {
     Ok(ItemId::from_bytes(bytes))
 }
 
-struct Session {
-    vault: Vault,
-    hardware: Option<Box<dyn HardwareKeyStore>>,
-    input: Input,
-}
-
-impl Session {
-    /// Unlocks every domain of the vault and keeps them unlocked until this
-    /// command ends, for commands that need all of them after waiting for
-    /// someone: the idle timeout of the hardware-bound domains (one minute) is
-    /// shorter than a pairing code lives.
-    fn unlock_every_domain(&mut self) -> CliResult<()> {
-        for domain in DomainId::ALL {
-            if self.vault.has_domain(domain)? {
-                self.ensure_unlocked(domain)?;
-            }
-        }
-        self.vault.set_auto_lock(AutoLock {
-            password: None,
-            hardware: None,
-        });
-        Ok(())
-    }
-
-    /// Makes sure `domain` is unlocked, prompting if necessary.
-    fn ensure_unlocked(&mut self, domain: DomainId) -> CliResult<()> {
-        if self.vault.is_unlocked(domain) {
-            return Ok(());
-        }
-        if domain == DomainId::Password {
-            let password = self.input.secret("Master password: ")?;
-            self.vault.unlock_password(&password)?;
-            return Ok(());
-        }
-        if !self.vault.has_domain(domain)? {
-            return Err(format!(
-                "this vault has no {} domain (it was created without a hardware key store)",
-                domain_name(domain)
-            )
-            .into());
-        }
-        let hardware = self
-            .hardware
-            .as_deref()
-            .ok_or("no hardware key store is available to unlock this domain")?;
-        match domain {
-            DomainId::Totp => self.vault.unlock_hardware::<Totp>(hardware)?,
-            _ => self.vault.unlock_hardware::<Passkey>(hardware)?,
-        }
-        Ok(())
-    }
-
-    /// Opens the vault file directly, for the commands that do not go through
-    /// the daemon yet.
-    fn open(choice: KeyStoreChoice, path: &Path) -> CliResult<Self> {
-        Ok(Self {
-            vault: Vault::open(path)?,
-            hardware: hardware_key_store(choice, path, false)?,
-            input: Input::new(),
-        })
-    }
-}
-
-/// Whether a command is carried out by this process on the vault file, rather
-/// than by the daemon.
+/// Whether a command talks to other devices: this process opens the
+/// connection, and the daemon does the rest.
 fn is_direct(command: &Command) -> bool {
     matches!(command, Command::Pair | Command::Sync { .. })
 }
 
-/// Runs a command that works on the vault file itself.
+/// Runs a command that talks to other devices.
 fn run_direct(
     choice: KeyStoreChoice,
     vault_path: &Path,
@@ -438,7 +329,7 @@ fn run_direct(
     out: &mut impl Write,
 ) -> CliResult<()> {
     match command {
-        Command::Pair => Session::open(choice, vault_path)?.pair(out),
+        Command::Pair => nearby::pair(choice, vault_path, out),
         Command::Sync { seconds } => nearby::sync(choice, vault_path, seconds, out),
         _ => unreachable!("not a direct command"),
     }

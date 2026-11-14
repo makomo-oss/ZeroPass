@@ -785,6 +785,9 @@ pub struct StatusReply {
     /// Whether the daemon runs in a sandbox without network access.
     #[prost(bool, tag = "6")]
     pub sandboxed: bool,
+    /// The process identifier of the daemon, for diagnostics.
+    #[prost(uint32, tag = "7")]
+    pub pid: u32,
 }
 
 /// The state of one key domain.

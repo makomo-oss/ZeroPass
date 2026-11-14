@@ -491,7 +491,9 @@ fn two_vaults_pair_and_sync_on_the_local_network() {
     let totp_id = added_id(&pc.ok(&["add", "totp"], &[TOTP_URI]));
 
     // The PC shows a pairing code and waits. Its prompts are answered in order:
-    // the master password, then the confirmation of the new device.
+    // the master password, then the confirmation of the new device. (Locked
+    // first: the daemon still holds what `add` unlocked.)
+    pc.ok(&["lock"], &[]);
     let mut pairing = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
         .arg("--vault")
         .arg(&pc.vault)

@@ -2219,7 +2219,6 @@ dependencies = [
  "zeroize",
  "zp-clipboard",
  "zp-crypto",
- "zp-hwkey",
  "zp-ipc",
  "zp-pairing",
  "zp-sandbox",

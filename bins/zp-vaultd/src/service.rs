@@ -152,6 +152,7 @@ impl Service {
         if state.vault.is_none() && !self.path.exists() {
             return Ok(proto::StatusReply {
                 sandboxed: zp_sandbox::is_sandboxed(),
+                pid: std::process::id(),
                 ..proto::StatusReply::default()
             });
         }
@@ -171,6 +172,7 @@ impl Service {
             domains,
             has_recovery_kit: vault.has_recovery_kit().map_err(vault_error)?,
             sandboxed: zp_sandbox::is_sandboxed(),
+            pid: std::process::id(),
         })
     }
 

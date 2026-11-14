@@ -18,7 +18,6 @@ rpassword = "7.5.5"
 zeroize = "1.9.1"
 zp-clipboard = { version = "0.0.0", path = "../../crates/zp-clipboard" }
 zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
-zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
 zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }
 zp-pairing = { version = "0.0.0", path = "../../crates/zp-pairing" }

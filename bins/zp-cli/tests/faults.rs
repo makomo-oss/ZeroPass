@@ -1,6 +1,7 @@
-//! Fault injection with the real binaries (plan task P2-18): a sync process is
-//! killed while it is writing, and the vault file must still be usable and
-//! catch up afterwards. Also measures how fast a large sync runs on the local
+//! Fault injection with the real binaries (plan task P2-18): the process that
+//! writes the vault file during a sync is killed, and the vault file must still
+//! be usable and catch up afterwards. Since the vault daemon holds the file
+//! (P3-05), that process is the daemon, not the `sync` command. Also measures how fast a large sync runs on the local
 //! network.
 //!
 //! Needs a network interface with a private address and working multicast:
@@ -145,14 +146,15 @@ fn a_sync_killed_while_writing_leaves_a_usable_vault_that_catches_up() {
     let before = std::fs::metadata(&phone).unwrap().len();
     assert_eq!(held(&phone, &pc), 0);
 
-    // Both sides sync; the phone's process is killed as soon as the first
-    // changes have landed in its file.
+    // Both sides sync; the process that writes the phone's file, its vault
+    // daemon, is killed as soon as the first changes have landed in it.
     let mut pc_sync = start_sync(&pc);
     let mut phone_sync = start_sync(&phone);
     assert!(
         wait_until(Duration::from_secs(60), || held(&phone, &pc) > 0),
         "the sync never started"
     );
+    common::kill_daemon(&phone);
     phone_sync.kill().unwrap();
     phone_sync.wait().unwrap();
     pc_sync.kill().unwrap();
