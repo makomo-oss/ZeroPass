@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use zp_ipc::proto::{
     Domain, Done, Error, ErrorCode, GetItem, Item, Login, Role, Shutdown, Status, StatusReply,
@@ -246,6 +247,12 @@ fn a_process_that_is_not_on_the_list_is_refused() {
     let daemon = start(ClientPolicy::beside_current_exe().unwrap());
     for _ in 0..2 {
         assert!(matches!(connect(&daemon), Err(IpcError::Refused)));
+    }
+    // The server counts a refusal just after closing the connection, so the
+    // client can hear of it first.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while daemon.handler.rejected.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(daemon.handler.rejected.load(Ordering::SeqCst), 2);
     assert!(!daemon.thread.is_finished());
