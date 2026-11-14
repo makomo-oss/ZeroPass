@@ -1,53 +1,35 @@
-//! Commands that talk to other devices nearby: pairing and sync.
+//! Commands that involve other devices nearby: pairing and sync.
 //!
-//! This process opens the connection to the other device, but it never works
-//! on vault data itself. For sync it asks the vault daemon for ciphertext and
-//! hands it ciphertext (`docs/spec/ipc.md` §10); for pairing it only carries
-//! bytes between the other device and the vault daemon, which runs the
-//! protocol, and those bytes are the pairing channel's ciphertext (§11).
+//! This process has no connection to another device and no vault data. The
+//! sync daemon holds the connections and syncs (`docs/spec/ipc.md` §12); the
+//! vault daemon runs the pairing protocol (§11). For pairing, this process
+//! carries the bytes between the two: the pairing channel's ciphertext.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use qrcode::QrCode;
 use qrcode::render::unicode;
 use zp_crypto::DomainId;
+use zp_drive::Link;
 use zp_ipc::proto::{self, request, response};
-use zp_ipc::{Client, IpcError, RemoteOpLog, Uplink};
+use zp_ipc::{Client, IpcError, Uplink};
+use zp_pairing::qr::pairing_tag;
 use zp_pairing::{Hint, OfferRole, PairingOffer};
-use zp_sync::{OpLog, SessionReport};
-use zp_transport::ble::pairing_tag;
-use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
-use zp_transport::{Address, LanTransport, Link, Nearby, Transport, open_nearby};
 use zp_vault::{VaultError, default_device_name};
 
 use super::remote::{self, Remote, Start};
+use super::syncd::{self, DeviceLink};
 use super::{CliResult, Input, KeyStoreChoice, domain_name};
 
 fn unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-/// The local network and, where this machine has it, Bluetooth LE.
-fn nearby() -> CliResult<Nearby> {
-    open_nearby().map_err(|error| format!("cannot reach other devices: {error}").into())
-}
-
-fn lan() -> CliResult<LanTransport> {
-    LanTransport::new().map_err(|error| format!("cannot use the local network: {error}").into())
-}
-
-fn describe(report: &SessionReport) -> String {
-    format!(
-        "sent {} change(s), received {}",
-        report.sent, report.received.applied
-    )
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -85,15 +67,64 @@ fn close_up(uplink: &SharedUplink) {
         .take();
 }
 
-/// Carries a pairing between `link`, which leads to the other device, and the
-/// vault daemon, which runs it. `request` starts the pairing in the daemon;
-/// `confirm` is asked when the daemon wants the user's consent.
+/// The link to the other device, for [`relay_pairing`].
+enum DeviceSide {
+    /// Already open: the other device starts the handshake.
+    Open(Box<dyn Link>),
+    /// To be opened once the vault daemon has its first message ready: this
+    /// device starts the handshake, and the other one does not wait long for
+    /// it (the vault daemon may first have to set up its key store).
+    WhenReady(Box<dyn FnOnce() -> CliResult<Box<dyn Link>>>),
+}
+
+/// Starts carrying what the other device sends to the vault daemon. Returns
+/// where to write what the vault daemon sends, and the forwarding thread.
+fn forward_from_device(
+    link: Box<dyn Link>,
+    uplink: &SharedUplink,
+    finished: &Arc<AtomicBool>,
+) -> CliResult<(Box<dyn Write + Send>, thread::JoinHandle<()>)> {
+    let (mut from_device, to_device) = link.split()?;
+    let uplink = Arc::clone(uplink);
+    let finished = Arc::clone(finished);
+    let forwarding = thread::spawn(move || {
+        let mut buffer = vec![0u8; 32 * 1024];
+        while !finished.load(Ordering::Relaxed) {
+            match from_device.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = buffer[..n].to_vec();
+                    if !send_up(&uplink, request::Body::LinkData(proto::LinkData { data })) {
+                        break;
+                    }
+                }
+                // Nothing arrived for a moment (links wake their reader up
+                // regularly so that it can notice the end).
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                            | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+        // The other device is gone, or the pairing is over.
+        close_up(&uplink);
+    });
+    Ok((to_device, forwarding))
+}
+
+/// Carries a pairing between the other device and the vault daemon, which
+/// runs it. `request` starts the pairing in the daemon; `confirm` is asked
+/// when the daemon wants the user's consent.
 fn relay_pairing(
     vault_path: &Path,
     choice: KeyStoreChoice,
     start: Start,
     request: request::Body,
-    link: Box<dyn Link>,
+    device: DeviceSide,
     mut confirm: impl FnMut(&proto::PairConfirmRequest) -> bool,
 ) -> CliResult<proto::PairDone> {
     let connect = || -> CliResult<Client> {
@@ -111,50 +142,35 @@ fn relay_pairing(
         }
     };
     let uplink: SharedUplink = Arc::new(Mutex::new(Some(uplink)));
-    let (mut from_device, mut to_device) = link.split()?;
     let finished = Arc::new(AtomicBool::new(false));
-
-    // Other device → daemon.
-    let forwarding = {
-        let uplink = Arc::clone(&uplink);
-        let finished = Arc::clone(&finished);
-        thread::spawn(move || {
-            let mut buffer = vec![0u8; 32 * 1024];
-            while !finished.load(Ordering::Relaxed) {
-                match from_device.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let data = buffer[..n].to_vec();
-                        if !send_up(&uplink, request::Body::LinkData(proto::LinkData { data })) {
-                            break;
-                        }
-                    }
-                    // Nothing arrived for a moment (links wake their reader
-                    // up regularly so that it can notice the end).
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::TimedOut
-                                | io::ErrorKind::WouldBlock
-                                | io::ErrorKind::Interrupted
-                        ) => {}
-                    Err(_) => break,
-                }
-            }
-            // The other device is gone, or the pairing is over.
-            close_up(&uplink);
-        })
+    let (mut to_device, mut forwarding, mut pending) = match device {
+        DeviceSide::Open(link) => {
+            let (to_device, forwarding) = forward_from_device(link, &uplink, &finished)?;
+            (Some(to_device), Some(forwarding), None)
+        }
+        DeviceSide::WhenReady(open) => (None, None, Some(open)),
     };
 
     // Daemon → other device, and the daemon's questions.
-    let outcome = loop {
+    let outcome: CliResult<proto::PairDone> = loop {
         match downlink.receive() {
             Ok(response::Body::LinkData(chunk)) => {
-                let written = to_device
-                    .write_all(&chunk.data)
-                    .and_then(|()| to_device.flush());
-                if let Err(error) = written {
-                    break Err(IpcError::Io(error));
+                if let Some(open) = pending.take() {
+                    let opened =
+                        open().and_then(|link| forward_from_device(link, &uplink, &finished));
+                    match opened {
+                        Ok((writer, thread)) => {
+                            to_device = Some(writer);
+                            forwarding = Some(thread);
+                        }
+                        Err(error) => break Err(error),
+                    }
+                }
+                let Some(writer) = to_device.as_mut() else {
+                    break Err("the vault daemon sent data before there was a link".into());
+                };
+                if let Err(error) = writer.write_all(&chunk.data).and_then(|()| writer.flush()) {
+                    break Err(IpcError::Io(error).into());
                 }
             }
             Ok(response::Body::PairConfirmRequest(question)) => {
@@ -166,40 +182,25 @@ fn relay_pairing(
             }
             Ok(response::Body::PairDone(done)) => break Ok(done),
             Ok(_) => {}
-            Err(error) => break Err(error),
+            Err(error) => break Err(error.into()),
         }
     };
     finished.store(true, Ordering::Relaxed);
     close_up(&uplink);
-    let _ = forwarding.join();
-    Ok(outcome?)
+    drop(to_device);
+    if let Some(forwarding) = forwarding {
+        let _ = forwarding.join();
+    }
+    outcome
 }
 
-/// `pair`: shows a pairing code and admits the device that enters it.
-pub(super) fn pair(
-    choice: KeyStoreChoice,
-    vault_path: &Path,
+/// Shows the pairing code, as text and as a QR code, and what to do with it.
+fn show_code(
     out: &mut impl Write,
+    code: &str,
+    lifetime: u32,
+    status: &proto::SyncdStatusReply,
 ) -> CliResult<()> {
-    let mut remote = Remote::open(vault_path, choice)?;
-    // Admitting a device hands over every vault key, so every domain of the
-    // vault must be unlocked. The daemon keeps them unlocked from the moment it
-    // hands out the code until the device is admitted or the code expires.
-    remote.unlock_every_domain()?;
-    let mut nearby = nearby()?;
-    let hints = nearby
-        .lan_endpoints
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    let (code, lifetime) = remote.pair_offer(hints)?;
-    let offer = PairingOffer::parse(&code, unix_secs())?;
-    // Over Bluetooth the code carries no address: the other device finds this
-    // one by a tag derived from the code's secret.
-    nearby
-        .transport
-        .announce_pairing(Some(pairing_tag(&offer.psk)))?;
-
     writeln!(
         out,
         "Pairing code (valid for {lifetime} seconds, usable once):"
@@ -220,8 +221,8 @@ pub(super) fn pair(
         out,
         "On a phone, scan the picture. On a computer, run `zp-cli --vault <new file> join` and enter the code."
     )?;
-    writeln!(out, "Waiting on: {}", nearby.transport.names().join(", "))?;
-    for problem in &nearby.problems {
+    writeln!(out, "Waiting on: {}", status.transports.join(", "))?;
+    for problem in &status.problems {
         writeln!(out, "  not available: {problem}")?;
     }
     writeln!(
@@ -229,23 +230,45 @@ pub(super) fn pair(
         "Anyone who sees the code within its lifetime can ask to join; check the name before you confirm."
     )?;
     out.flush()?;
+    Ok(())
+}
 
-    let deadline = Instant::now() + Duration::from_secs(u64::from(lifetime));
-    let link = loop {
-        if let Some(link) = nearby.transport.accept(Duration::from_millis(500))? {
-            break link;
-        }
-        if Instant::now() >= deadline {
-            return Err("no device connected before the code expired".into());
-        }
-    };
+/// `pair`: shows a pairing code and admits the device that enters it.
+pub(super) fn pair(
+    choice: KeyStoreChoice,
+    vault_path: &Path,
+    out: &mut impl Write,
+) -> CliResult<()> {
+    let mut remote = Remote::open(vault_path, choice)?;
+    // Admitting a device hands over every vault key, so every domain of the
+    // vault must be unlocked. The daemon keeps them unlocked from the moment it
+    // hands out the code until the device is admitted or the code expires.
+    remote.unlock_every_domain()?;
+    // The sync daemon tells where other devices reach this one; those
+    // addresses go into the code.
+    let status = syncd::status_when_syncing(&mut syncd::open(vault_path)?)?;
+    let (code, lifetime) = remote.pair_offer(status.lan_endpoints.clone())?;
+    let offer = PairingOffer::parse(&code, unix_secs())?;
+
+    // The sync daemon waits for the device. It is given the tag a joining
+    // device looks for over Bluetooth, derived from the code's secret, but
+    // never the code: it must not be able to take part in the pairing. The
+    // code is shown only once the sync daemon waits, so that a device that
+    // enters it at once finds someone waiting.
+    let listen = request::Body::PairListen(proto::PairListen {
+        tag: pairing_tag(&offer.psk).to_vec(),
+        seconds: lifetime,
+    });
+    let link = DeviceLink::open(vault_path, listen, || {
+        show_code(&mut *out, &code, lifetime, &status)
+    })?;
     let input = &remote.input;
     let admitted = relay_pairing(
         vault_path,
         choice,
         Start::IfVaultExists,
         request::Body::PairAdmit(proto::PairAdmit {}),
-        link,
+        DeviceSide::Open(Box::new(link)),
         |question| {
             let text = format!(
                 "Add the device \"{}\" ({}) to this vault? [y/N] ",
@@ -254,9 +277,7 @@ pub(super) fn pair(
             );
             matches!(input.line(&text), Ok(Some(answer)) if answer.trim().eq_ignore_ascii_case("y"))
         },
-    );
-    nearby.transport.announce_pairing(None)?;
-    let admitted = admitted?;
+    )?;
 
     writeln!(
         out,
@@ -274,55 +295,37 @@ pub(super) fn pair(
     Ok(())
 }
 
-/// `sync`: looks for the other devices of the vault on the local network for a
-/// while and syncs with those it finds. The ops are read from and handed to
-/// the vault daemon; this process does not open the vault file.
-pub(super) fn sync(
-    choice: KeyStoreChoice,
-    vault_path: &Path,
-    seconds: u64,
-    out: &mut impl Write,
-) -> CliResult<()> {
-    let client = remote::connect(vault_path, choice, Start::IfVaultExists)?
-        .ok_or("the vault daemon is not running")?;
-    let store = RemoteOpLog::new(client)?;
-    let others: usize = store
-        .registry()?
-        .active()
-        .filter(|record| record.device_id != store.device_id())
-        .count();
-    if others == 0 {
+/// `sync`: has the sync daemon sync with the other devices of the vault now,
+/// for at most `seconds`, and reports what it did.
+pub(super) fn sync(vault_path: &Path, seconds: u64, out: &mut impl Write) -> CliResult<()> {
+    if !vault_path.exists() {
+        return Err(VaultError::NotFound.into());
+    }
+    let mut client = syncd::open(vault_path)?;
+    let request = request::Body::SyncNow(proto::SyncNow {
+        seconds: u32::try_from(seconds).unwrap_or(u32::MAX),
+    });
+    let response::Body::SyncResults(results) = client.call(request)? else {
+        return Err("the sync daemon gave an unexpected answer".into());
+    };
+    if results.other_devices == 0 {
         writeln!(
             out,
             "this vault has no other devices yet; use `pair` to add one"
         )?;
         return Ok(());
     }
-    let mut daemon = SyncDaemon::new(store, nearby()?.transport, DaemonConfig::default());
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    // Done once a session with every other device has completed.
-    let events = daemon.run_until(deadline, |events| {
-        let mut peers: Vec<_> = events
-            .iter()
-            .filter_map(|event| match event {
-                Event::Synced { peer, .. } => Some(*peer),
-                Event::Failed { .. } => None,
-            })
-            .collect();
-        peers.sort();
-        peers.dedup();
-        peers.len() >= others
-    })?;
-    daemon.stop();
-
     let mut synced = 0;
-    for event in &events {
-        match event {
-            Event::Synced { name, report, .. } => {
-                synced += 1;
-                writeln!(out, "synced with \"{name}\": {}", describe(report))?;
-            }
-            Event::Failed { error, .. } => writeln!(out, "a sync attempt failed: {error}")?,
+    for result in &results.results {
+        if result.error.is_empty() {
+            synced += 1;
+            writeln!(
+                out,
+                "synced with \"{}\": sent {} change(s), received {}",
+                result.name, result.sent, result.received
+            )?;
+        } else {
+            writeln!(out, "a sync attempt failed: {}", result.error)?;
         }
     }
     if synced == 0 {
@@ -353,30 +356,24 @@ pub(super) fn join(
         return Err("this code was not created by `zp-cli pair`".into());
     }
     let name = name.unwrap_or_else(default_device_name);
-    let mut transport = lan()?;
 
-    // Try the addresses from the code until one answers.
-    let mut link = None;
-    let mut last_error = None;
-    for hint in &offer.hints {
-        let Hint::Socket(address) = hint else {
-            continue;
-        };
-        match transport.connect(&Address::Socket(*address)) {
-            Ok(connected) => {
-                link = Some(connected);
-                break;
-            }
-            Err(error) => last_error = Some(error),
+    // The sync daemon connects to the other device. It is given the addresses
+    // from the code, never the code.
+    let addresses = offer
+        .hints
+        .iter()
+        .filter_map(|hint| match hint {
+            Hint::Socket(address) => Some(address.to_string()),
+            Hint::Ble => None,
+        })
+        .collect();
+    let connect = request::Body::PairConnect(proto::PairConnect { addresses });
+    let device = DeviceSide::WhenReady(Box::new({
+        let vault_path = vault_path.to_path_buf();
+        move || -> CliResult<Box<dyn Link>> {
+            Ok(Box::new(DeviceLink::open(&vault_path, connect, || Ok(()))?))
         }
-    }
-    let Some(link) = link else {
-        let reason = last_error.map_or_else(
-            || "the code contains no address".to_owned(),
-            |e| e.to_string(),
-        );
-        return Err(format!("cannot reach the other device on the local network: {reason}").into());
-    };
+    }));
 
     let join = request::Body::PairJoin(proto::PairJoin {
         offer: code.as_str().to_owned(),
@@ -384,7 +381,7 @@ pub(super) fn join(
         master_password: password.as_str().to_owned(),
     });
     // Nobody is asked on this side: the user of the other device confirms.
-    let joined = relay_pairing(vault_path, choice, Start::Always, join, link, |_| false)?;
+    let joined = relay_pairing(vault_path, choice, Start::Always, join, device, |_| false)?;
 
     writeln!(out, "joined vault {} as \"{name}\"", hex(&joined.vault_id))?;
     let mut remote = Remote::open(vault_path, choice)?;
