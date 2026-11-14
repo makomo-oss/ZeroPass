@@ -70,7 +70,7 @@ fn devices(dir: &Path, others: usize) -> Vec<Device> {
     all
 }
 
-fn daemon(path: &Path, network: &LoopbackNetwork) -> SyncDaemon<LoopbackTransport> {
+fn daemon(path: &Path, network: &LoopbackNetwork) -> SyncDaemon<Store, LoopbackTransport> {
     SyncDaemon::new(Store::open(path).unwrap(), network.endpoint(), fast())
 }
 

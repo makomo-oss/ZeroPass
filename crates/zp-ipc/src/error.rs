@@ -17,10 +17,10 @@ pub enum IpcError {
     /// The process at the other end is not one this process talks to.
     #[error("the process at the other end of the connection is not trusted: {0}")]
     UntrustedPeer(String),
-    /// The daemon closed the connection without answering: it does not accept
-    /// this executable as a client.
-    #[error("the vault daemon refused the connection")]
-    Refused,
+    /// The daemon does not accept this executable as a client. The text is the
+    /// daemon's reason, if it gave one.
+    #[error("the vault daemon refused the connection{}", reason(.0))]
+    Refused(String),
     /// A frame is longer than the protocol allows.
     #[error("a message of {0} bytes exceeds the frame limit")]
     FrameTooLarge(usize),
@@ -36,6 +36,15 @@ pub enum IpcError {
     /// The underlying pipe or socket failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+/// Formats the reason of a refusal for the end of a sentence.
+fn reason(text: &str) -> String {
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
+    }
 }
 
 impl IpcError {

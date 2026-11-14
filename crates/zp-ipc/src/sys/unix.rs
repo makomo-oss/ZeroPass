@@ -139,3 +139,13 @@ pub(crate) fn spawn_detached(command: &mut std::process::Command) -> io::Result<
         .spawn()
         .map(drop)
 }
+
+/// The executable of this process, in the form paths are compared in.
+pub(crate) fn current_exe() -> io::Result<PathBuf> {
+    std::env::current_exe()
+}
+
+/// Brings a path into the form paths are compared in: here, as it is.
+pub(crate) fn comparable(path: &std::path::Path) -> PathBuf {
+    path.to_path_buf()
+}

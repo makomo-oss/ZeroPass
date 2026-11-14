@@ -95,8 +95,19 @@ impl Server {
                 }
             };
             let Some(role) = self.policy.admit(&process) else {
-                // Closed without a word: nothing is read from, or told to, a
-                // process that is not admitted.
+                // Nothing is read from a process that is not admitted. It is
+                // told why, which helps with a broken installation and tells
+                // an intruder nothing it could use. Best effort, and without
+                // waiting for it to read: this is the thread that accepts.
+                let mut stream = stream;
+                let why = match &process.executable {
+                    Some(path) => format!(
+                        "{} is not a ZeroPass program installed with the daemon",
+                        path.display()
+                    ),
+                    None => "the daemon could not tell which program is connecting".to_owned(),
+                };
+                let _ = write_frame(&mut stream, &error(ErrorCode::Denied, &why));
                 drop(stream);
                 handler.rejected(&process);
                 continue;

@@ -103,7 +103,7 @@ fn a_program_that_is_not_installed_beside_the_daemon_is_refused() {
 
     // This test binary is not one of the executables beside the daemon.
     for _ in 0..2 {
-        assert!(matches!(daemon.connect(), Err(IpcError::Refused)));
+        assert!(matches!(daemon.connect(), Err(IpcError::Refused(_))));
         let line = daemon.log_line();
         assert!(line.contains("refused a connection from"), "{line}");
         let this = std::env::current_exe().unwrap();

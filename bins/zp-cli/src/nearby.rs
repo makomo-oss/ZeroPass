@@ -7,8 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use qrcode::QrCode;
 use qrcode::render::unicode;
 use zp_crypto::DomainId;
+use zp_ipc::RemoteOpLog;
 use zp_pairing::qr::OFFER_LIFETIME_SECS;
 use zp_pairing::{Hint, Joiner, OfferRole, PairingOffer};
+use zp_sync::OpLog;
 use zp_sync::SessionReport;
 use zp_transport::ble::pairing_tag;
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
@@ -16,8 +18,9 @@ use zp_transport::{
     Address, DriveConfig, LanTransport, Nearby, NewVault, PairingLink, Transport, open_nearby,
     pair_as_existing, pair_as_new,
 };
-use zp_vault::{CreateOptions, Store, VaultError, default_device_name};
+use zp_vault::{CreateOptions, VaultError, default_device_name};
 
+use super::remote::{self, Start};
 use super::{
     CliResult, Input, KeyStoreChoice, Session, dev_key_path, domain_name, hardware_key_store,
 };
@@ -140,55 +143,63 @@ impl Session {
         }
         Ok(())
     }
+}
 
-    /// `sync`: looks for the other devices of the vault on the local network for
-    /// a while and syncs with those it finds.
-    pub(super) fn sync(&mut self, seconds: u64, out: &mut impl Write) -> CliResult<()> {
-        let store = Store::open(&self.path)?;
-        let others: usize = store
-            .registry()?
-            .active()
-            .filter(|record| record.device_id != store.device_id())
-            .count();
-        if others == 0 {
-            writeln!(
-                out,
-                "this vault has no other devices yet; use `pair` to add one"
-            )?;
-            return Ok(());
-        }
-        let mut daemon = SyncDaemon::new(store, nearby()?.transport, DaemonConfig::default());
-        let deadline = Instant::now() + Duration::from_secs(seconds);
-        // Done once a session with every other device has completed.
-        let events = daemon.run_until(deadline, |events| {
-            let mut peers: Vec<_> = events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::Synced { peer, .. } => Some(*peer),
-                    Event::Failed { .. } => None,
-                })
-                .collect();
-            peers.sort();
-            peers.dedup();
-            peers.len() >= others
-        })?;
-        daemon.stop();
-
-        let mut synced = 0;
-        for event in &events {
-            match event {
-                Event::Synced { name, report, .. } => {
-                    synced += 1;
-                    writeln!(out, "synced with \"{name}\": {}", describe(report))?;
-                }
-                Event::Failed { error, .. } => writeln!(out, "a sync attempt failed: {error}")?,
-            }
-        }
-        if synced == 0 {
-            writeln!(out, "no other device of this vault was found nearby")?;
-        }
-        Ok(())
+/// `sync`: looks for the other devices of the vault on the local network for a
+/// while and syncs with those it finds. The ops are read from and handed to
+/// the vault daemon; this process does not open the vault file.
+pub(super) fn sync(
+    choice: KeyStoreChoice,
+    vault_path: &Path,
+    seconds: u64,
+    out: &mut impl Write,
+) -> CliResult<()> {
+    let client = remote::connect(vault_path, choice, Start::IfVaultExists)?
+        .ok_or("the vault daemon is not running")?;
+    let store = RemoteOpLog::new(client)?;
+    let others: usize = store
+        .registry()?
+        .active()
+        .filter(|record| record.device_id != store.device_id())
+        .count();
+    if others == 0 {
+        writeln!(
+            out,
+            "this vault has no other devices yet; use `pair` to add one"
+        )?;
+        return Ok(());
     }
+    let mut daemon = SyncDaemon::new(store, nearby()?.transport, DaemonConfig::default());
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    // Done once a session with every other device has completed.
+    let events = daemon.run_until(deadline, |events| {
+        let mut peers: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Synced { peer, .. } => Some(*peer),
+                Event::Failed { .. } => None,
+            })
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers.len() >= others
+    })?;
+    daemon.stop();
+
+    let mut synced = 0;
+    for event in &events {
+        match event {
+            Event::Synced { name, report, .. } => {
+                synced += 1;
+                writeln!(out, "synced with \"{name}\": {}", describe(report))?;
+            }
+            Event::Failed { error, .. } => writeln!(out, "a sync attempt failed: {error}")?,
+        }
+    }
+    if synced == 0 {
+        writeln!(out, "no other device of this vault was found nearby")?;
+    }
+    Ok(())
 }
 
 /// `join`: creates this device's vault file by joining an existing vault with a

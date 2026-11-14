@@ -10,6 +10,7 @@
 
 mod convert;
 mod service;
+mod sync;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

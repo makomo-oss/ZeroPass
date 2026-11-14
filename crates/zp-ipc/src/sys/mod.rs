@@ -5,9 +5,13 @@
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub(crate) use windows::{IDENTIFIES_PEERS, Listener, Stream, connect, spawn_detached};
+pub(crate) use windows::{
+    IDENTIFIES_PEERS, Listener, Stream, comparable, connect, current_exe, spawn_detached,
+};
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub(crate) use unix::{IDENTIFIES_PEERS, Listener, Stream, connect, spawn_detached};
+pub(crate) use unix::{
+    IDENTIFIES_PEERS, Listener, Stream, comparable, connect, current_exe, spawn_detached,
+};

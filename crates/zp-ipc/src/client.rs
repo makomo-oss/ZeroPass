@@ -3,7 +3,9 @@
 
 use crate::codec::{read_frame, write_frame};
 use crate::peer::DaemonPolicy;
-use crate::proto::{Hello, PROTOCOL_VERSION, Request, Response, Role, request, response};
+use crate::proto::{
+    ErrorCode, Hello, PROTOCOL_VERSION, Request, Response, Role, request, response,
+};
 use crate::{Endpoint, IpcError, sys};
 
 /// An open conversation with the daemon.
@@ -49,15 +51,25 @@ impl Client {
             protocol: PROTOCOL_VERSION,
             client: name.to_owned(),
         });
-        // A daemon that does not admit this executable closes the connection
-        // without answering; the write may or may not still succeed.
-        let reply = match client.call(hello) {
-            Ok(reply) => reply,
-            Err(IpcError::Protocol(_) | IpcError::Io(_)) => return Err(IpcError::Refused),
+        // A daemon that does not admit this executable says why and closes the
+        // connection without reading: the write may fail, and the reason may
+        // still be there to read.
+        let _ = write_frame(&mut client.stream, &Request { body: Some(hello) });
+        let reply = match read_frame::<_, Response>(&mut client.stream) {
+            Ok(Some(Response {
+                body: Some(response::Body::Hello(reply)),
+            })) => reply,
+            Ok(Some(Response {
+                body: Some(response::Body::Error(error)),
+            })) if error.code == ErrorCode::Denied as i32 => {
+                return Err(IpcError::Refused(error.message.clone()));
+            }
+            Ok(Some(Response {
+                body: Some(response::Body::Error(error)),
+            })) => return Err(IpcError::Remote(error)),
+            Ok(Some(_)) => return Err(IpcError::Protocol("the daemon did not answer Hello")),
+            Ok(None) | Err(IpcError::Io(_)) => return Err(IpcError::Refused(String::new())),
             Err(error) => return Err(error),
-        };
-        let response::Body::Hello(reply) = reply else {
-            return Err(IpcError::Protocol("the daemon did not answer Hello"));
         };
         if reply.protocol != PROTOCOL_VERSION {
             return Err(IpcError::Protocol("unsupported protocol version"));

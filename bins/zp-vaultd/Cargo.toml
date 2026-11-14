@@ -20,6 +20,7 @@ zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
 zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
 zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }
+zp-sync = { version = "0.0.0", path = "../../crates/zp-sync" }
 zp-vault = { version = "0.0.0", path = "../../crates/zp-vault" }
 
 [dev-dependencies]

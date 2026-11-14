@@ -22,8 +22,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use zp_crypto::DeviceId;
-use zp_sync::SessionReport;
+use zp_crypto::{ChannelKey, DeviceId};
+use zp_ipc::RemoteOpLog;
+use zp_sync::{OpLog, SessionReport};
 use zp_vault::Store;
 
 use crate::DriveError;
@@ -93,9 +94,35 @@ struct PeerState {
     own_seq_synced: u64,
 }
 
-/// The sync loop of one vault file over one transport.
-pub struct SyncDaemon<T: Transport> {
-    store: Store,
+/// What the sync loop keeps in sync: the ops of a vault, and the key that
+/// authenticates this device to its peers.
+pub trait SyncStore: OpLog {
+    /// This device's channel key.
+    fn channel_key(&self) -> Result<ChannelKey, DriveError>;
+}
+
+/// The vault file itself, opened without any key.
+impl SyncStore for Store {
+    fn channel_key(&self) -> Result<ChannelKey, DriveError> {
+        Store::channel_key(self).map_err(store_error)
+    }
+}
+
+/// The vault file as served by the vault daemon.
+impl SyncStore for RemoteOpLog {
+    fn channel_key(&self) -> Result<ChannelKey, DriveError> {
+        let secret = RemoteOpLog::channel_key(self).secret_bytes();
+        Ok(ChannelKey::from_secret_bytes(secret))
+    }
+}
+
+fn store_error(error: impl core::fmt::Display) -> DriveError {
+    DriveError::Sync(error.to_string())
+}
+
+/// The sync loop of one vault over one transport.
+pub struct SyncDaemon<S: SyncStore, T: Transport> {
+    store: S,
     transport: T,
     config: DaemonConfig,
     peers: HashMap<DeviceId, PeerState>,
@@ -107,9 +134,10 @@ fn unix_secs() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-impl<T: Transport> SyncDaemon<T> {
-    /// Prepares the loop. `store` is the vault file, opened without any key.
-    pub fn new(store: Store, transport: T, config: DaemonConfig) -> Self {
+impl<S: SyncStore, T: Transport> SyncDaemon<S, T> {
+    /// Prepares the loop. `store` holds the ops of the vault: the vault file
+    /// opened without any key, or the vault daemon.
+    pub fn new(store: S, transport: T, config: DaemonConfig) -> Self {
         Self {
             store,
             transport,
@@ -118,16 +146,13 @@ impl<T: Transport> SyncDaemon<T> {
         }
     }
 
-    /// The vault file being synced.
-    pub fn store(&self) -> &Store {
+    /// The store being synced.
+    pub fn store(&self) -> &S {
         &self.store
     }
 
     fn own_seq(&self) -> Result<u64, DriveError> {
-        let vector = self
-            .store
-            .version_vector()
-            .map_err(|error| DriveError::Sync(error.to_string()))?;
+        let vector = self.store.version_vector().map_err(store_error)?;
         Ok(vector.get(&self.store.device_id()))
     }
 
@@ -164,10 +189,9 @@ impl<T: Transport> SyncDaemon<T> {
 
     /// Runs one round of the loop and reports what happened.
     pub fn step(&mut self) -> Result<Vec<Event>, DriveError> {
-        let sync_error = |error: zp_vault::VaultError| DriveError::Sync(error.to_string());
         let mut events = Vec::new();
         let now = unix_secs();
-        let key = self.store.channel_key().map_err(sync_error)?;
+        let key = self.store.channel_key()?;
         let vault_id = self.store.vault_id();
         self.transport
             .advertise(tag_for(&vault_id, key.public_bytes(), slot_of(now)))?;
@@ -197,7 +221,7 @@ impl<T: Transport> SyncDaemon<T> {
         }
 
         // Connect to the peers that are due.
-        let registry = self.store.registry().map_err(sync_error)?;
+        let registry = self.store.registry().map_err(store_error)?;
         let own = self.store.device_id();
         for discovered in self.transport.discover(self.config.discover_wait)? {
             let Some(record) = identify(&registry, &discovered.tag, now) else {
@@ -269,7 +293,7 @@ impl<T: Transport> SyncDaemon<T> {
     }
 }
 
-impl<T: Transport> Drop for SyncDaemon<T> {
+impl<S: SyncStore, T: Transport> Drop for SyncDaemon<S, T> {
     fn drop(&mut self) {
         self.stop();
     }

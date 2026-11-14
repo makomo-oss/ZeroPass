@@ -2281,6 +2281,8 @@ dependencies = [
  "thiserror",
  "windows",
  "zeroize",
+ "zp-crypto",
+ "zp-sync",
 ]
 
 [[package]]
@@ -2331,8 +2333,8 @@ name = "zp-syncd"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "zp-ipc",
  "zp-transport",
- "zp-vault",
 ]
 
 [[package]]
@@ -2348,6 +2350,7 @@ dependencies = [
  "windows",
  "zeroize",
  "zp-crypto",
+ "zp-ipc",
  "zp-pairing",
  "zp-sync",
  "zp-vault",
@@ -2382,5 +2385,6 @@ dependencies = [
  "zp-hwkey",
  "zp-ipc",
  "zp-sandbox",
+ "zp-sync",
  "zp-vault",
 ]

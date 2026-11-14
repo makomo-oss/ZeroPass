@@ -27,4 +27,7 @@ pub use registry::{ChannelPublicKey, DeviceRecord, MAX_DEVICE_NAME_LEN, Registry
 pub use rotation::{KeyUpdate, MAX_KEY_UPDATES};
 pub use session::{InMemoryError, PROTOCOL_VERSION, Session, SessionReport, sync_in_memory};
 pub use vector::VersionVector;
-pub use wire::{MAX_MESSAGE_LEN, decode_registry, encode_registry};
+pub use wire::{
+    MAX_MESSAGE_LEN, decode_key_updates, decode_ops, decode_registry, decode_vector,
+    encode_key_updates, encode_ops, encode_registry, encode_vector,
+};
