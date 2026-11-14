@@ -354,7 +354,7 @@ fn what_arrived_is_kept_when_the_sender_is_gone_before_it_was_taken_in() {
         .get(&author) as usize;
     assert!(
         partial > 0 && partial < ITEMS,
-        "{partial} of {ITEMS} arrived"
+        "{partial} of {ITEMS} arrived; sender: {full_side:?}; receiver: {empty_side:?}"
     );
     assert_eq!(
         devices.empty_vault.list::<Password>().unwrap().len(),
