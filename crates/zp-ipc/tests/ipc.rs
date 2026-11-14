@@ -246,7 +246,7 @@ fn a_process_that_is_not_on_the_list_is_refused() {
     // test binary is none of them.
     let daemon = start(ClientPolicy::beside_current_exe().unwrap());
     for _ in 0..2 {
-        assert!(matches!(connect(&daemon), Err(IpcError::Refused)));
+        assert!(matches!(connect(&daemon), Err(IpcError::Refused(_))));
     }
     // The server counts a refusal just after closing the connection, so the
     // client can hear of it first.
