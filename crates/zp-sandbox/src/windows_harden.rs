@@ -16,7 +16,8 @@ use windows::Win32::Security::Authorization::{
 };
 use windows::Win32::Security::{
     ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TokenUser,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TokenElevation,
+    TokenUser,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     EXCEPTION_POINTERS, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
@@ -222,4 +223,30 @@ pub(crate) fn can_read_memory_of(pid: u32) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Whether the token of this process is elevated (an administrator's full
+/// token).
+pub(crate) fn is_elevated() -> bool {
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess` returns a pseudo handle that is always valid,
+    // and `token` is a valid place to store the result.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.is_err() {
+        return false;
+    }
+    let token = owned(token);
+    let mut elevated = 0u32;
+    let mut len = 0u32;
+    // SAFETY: `TokenElevation` returns a structure of one `u32`; `elevated` is
+    // a writable `u32` and its size is passed along.
+    let queried = unsafe {
+        GetTokenInformation(
+            HANDLE(token.as_raw_handle()),
+            TokenElevation,
+            Some((&raw mut elevated).cast()),
+            size_of::<u32>() as u32,
+            &mut len,
+        )
+    };
+    queried.is_ok() && elevated != 0
 }

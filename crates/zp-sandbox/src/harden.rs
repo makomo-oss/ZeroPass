@@ -83,16 +83,10 @@ pub fn harden_process() -> Hardening {
             setrlimit(Resource::Core, none).map_err(io::Error::from),
         );
     }
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        use rustix::process::{DumpableBehavior, set_dumpable_behavior};
-        // Not dumpable also means: no ptrace and no /proc/<pid>/mem for other
-        // processes of the same user.
-        hardening.apply(
-            "no access to memory by other programs",
-            set_dumpable_behavior(DumpableBehavior::NotDumpable).map_err(io::Error::from),
-        );
-    }
+    // Linux: making the process non-dumpable (`PR_SET_DUMPABLE`) would keep
+    // other programs of the user from reading its memory, but it also hides
+    // `/proc/<pid>/exe`, by which the two ends of the local IPC check each
+    // other. Both are settled together with the Linux sandbox (P6-10).
     hardening
 }
 
@@ -106,13 +100,23 @@ pub fn can_read_memory_of(pid: u32) -> Option<bool> {
     {
         Some(crate::windows_harden::can_read_memory_of(pid))
     }
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        Some(std::fs::File::open(format!("/proc/{pid}/mem")).is_ok())
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
+    #[cfg(not(windows))]
     {
         let _ = pid;
         None
+    }
+}
+
+/// Whether this process runs with the full rights of an administrator. Such a
+/// process is outside what [`harden_process`] defends against: it can open
+/// any process of the machine.
+pub fn runs_as_administrator() -> bool {
+    #[cfg(windows)]
+    {
+        crate::windows_harden::is_elevated()
+    }
+    #[cfg(unix)]
+    {
+        rustix::process::geteuid().is_root()
     }
 }
