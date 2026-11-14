@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use zp_crypto::{InsecureSoftwareKeyStore, ItemId, KdfParams, Password};
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
-use zp_transport::{DriveConfig, LoopbackNetwork, LoopbackTransport};
+use zp_transport::{DriveConfig, DriveError, LoopbackNetwork, LoopbackTransport};
 use zp_vault::model::Login;
 use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault};
 
@@ -180,9 +180,19 @@ fn changes_propagate_between_two_running_daemons() {
             .iter()
             .filter(|event| matches!(event, Event::Synced { .. }))
             .count();
+        // The two loops stop one after the other: the one that is still
+        // running may dial the other once more and find it gone. Anything
+        // else that failed is a failure of the test.
+        let gone = |event: &Event| {
+            matches!(
+                event,
+                Event::Failed { initiated: true, error: DriveError::Io(error), .. }
+                    if error.kind() == std::io::ErrorKind::NotFound
+            )
+        };
         let failed = all_events
             .iter()
-            .filter(|event| matches!(event, Event::Failed { .. }))
+            .filter(|event| matches!(event, Event::Failed { .. }) && !gone(event))
             .count();
         assert!(synced >= 4, "{synced} sessions");
         assert_eq!(failed, 0, "{all_events:?}");
