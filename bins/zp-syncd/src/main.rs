@@ -98,6 +98,11 @@ fn run(args: &Args) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    // This process holds the channel key and talks to the network: make it
+    // hard to read and to tamper with (docs/spec/hardening.md).
+    for failure in zp_sandbox::harden_process().failed() {
+        log(&format!("warning: could not apply: {failure}"));
+    }
     let args = Args::parse();
     // The vault daemon may start later or restart, and the network comes and
     // goes (Wi-Fi off, new address): start over whenever either is back.

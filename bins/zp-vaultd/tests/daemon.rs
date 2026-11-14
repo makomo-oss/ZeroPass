@@ -51,8 +51,14 @@ impl Daemon {
             endpoint: Endpoint::for_vault(&vault).unwrap(),
             _dir: dir,
         };
-        let line = daemon.log_line();
-        assert!(line.contains("serving"), "{line}");
+        // It says what it hardened, then that it serves.
+        loop {
+            let line = daemon.log_line();
+            assert!(!line.is_empty(), "the daemon ended before it served");
+            if line.contains("serving") {
+                break;
+            }
+        }
         daemon
     }
 
@@ -139,4 +145,19 @@ fn the_daemon_needs_a_vault_path() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--vault"));
+}
+
+#[test]
+fn another_program_of_the_user_cannot_read_the_memory_of_the_daemon() {
+    let daemon = Daemon::start();
+    // The control: this test process did nothing to protect itself.
+    let Some(own) = zp_sandbox::can_read_memory_of(std::process::id()) else {
+        // This platform has no such protection yet (docs/spec/hardening.md).
+        return;
+    };
+    assert!(own, "a process can normally be opened by its user");
+    assert_eq!(
+        zp_sandbox::can_read_memory_of(daemon.child.id()),
+        Some(false)
+    );
 }

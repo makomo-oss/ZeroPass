@@ -16,7 +16,8 @@ use zp_sandbox::Access;
 use zp_vault::VaultError;
 
 use super::{
-    AddKind, CliResult, Command, Input, KeyStoreChoice, dev_key_path, domain_name, mask, parse_id,
+    AddKind, CliResult, Command, Input, KeyStoreChoice, clipboard, dev_key_path, domain_name, mask,
+    parse_id,
 };
 
 /// How long a daemon that was just started may take to listen.
@@ -408,14 +409,31 @@ impl Remote {
                 let id = self.add(kind)?;
                 writeln!(out, "added {}", hex(&id))?;
             }
-            Command::Get { id, reveal } => {
+            Command::Get { id, reveal, copy } => {
                 let request = request::Body::GetItem(proto::GetItem {
                     item_id: parse_id(&id)?.as_bytes().to_vec(),
                 });
                 let response::Body::Item(item) = self.call_unlocking(&request)? else {
                     return Err(unexpected());
                 };
-                print_item(out, &item, reveal)?;
+                if copy {
+                    match &item.content {
+                        Some(item::Content::Login(login)) => {
+                            clipboard::copy(&login.password, "password", out)?;
+                        }
+                        Some(item::Content::Note(note)) => {
+                            clipboard::copy(&note.body, "note text", out)?;
+                        }
+                        _ => {
+                            return Err(
+                                "only the password of a login or the text of a note can be copied"
+                                    .into(),
+                            );
+                        }
+                    }
+                } else {
+                    print_item(out, &item, reveal)?;
+                }
             }
             Command::List { domain } => {
                 let domain = DomainId::from(domain);
@@ -438,14 +456,18 @@ impl Remote {
                 }
                 writeln!(out, "{} item(s)", items.items.len())?;
             }
-            Command::Totp { id } => {
+            Command::Totp { id, copy } => {
                 let request = request::Body::TotpCode(proto::TotpCode {
                     item_id: parse_id(&id)?.as_bytes().to_vec(),
                 });
                 let response::Body::TotpCode(code) = self.call_unlocking(&request)? else {
                     return Err(unexpected());
                 };
-                writeln!(out, "{} (valid for {}s)", code.code, code.seconds_remaining)?;
+                if copy {
+                    clipboard::copy(&code.code, "code", out)?;
+                } else {
+                    writeln!(out, "{} (valid for {}s)", code.code, code.seconds_remaining)?;
+                }
             }
             Command::Delete { id } => {
                 let id = parse_id(&id)?;

@@ -2217,6 +2217,7 @@ dependencies = [
  "rpassword",
  "tempfile",
  "zeroize",
+ "zp-clipboard",
  "zp-crypto",
  "zp-hwkey",
  "zp-ipc",
@@ -2225,6 +2226,14 @@ dependencies = [
  "zp-sync",
  "zp-transport",
  "zp-vault",
+]
+
+[[package]]
+name = "zp-clipboard"
+version = "0.0.0"
+dependencies = [
+ "windows",
+ "zeroize",
 ]
 
 [[package]]
@@ -2312,6 +2321,7 @@ version = "0.0.0"
 name = "zp-sandbox"
 version = "0.0.0"
 dependencies = [
+ "rustix",
  "tempfile",
  "windows",
  "zp-ipc",
@@ -2334,6 +2344,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "zp-ipc",
+ "zp-sandbox",
  "zp-transport",
 ]
 

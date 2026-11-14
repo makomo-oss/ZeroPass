@@ -11,8 +11,13 @@
 //! | macOS | App Sandbox | planned (P6-09) |
 //! | Linux | seccomp / Landlock | planned (P6-10) |
 
+mod harden;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_harden;
+
+pub use harden::{Hardening, Measure, can_read_memory_of, harden_process};
 
 use std::ffi::OsString;
 use std::io;
