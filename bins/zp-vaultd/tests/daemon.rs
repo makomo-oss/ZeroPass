@@ -166,3 +166,19 @@ fn another_program_of_the_user_cannot_read_the_memory_of_the_daemon() {
         Some(false)
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn the_user_can_still_end_a_hung_daemon_with_the_usual_tools() {
+    let mut daemon = Daemon::start();
+    // `taskkill` opens the process for more than ending it; the daemon must
+    // leave those rights to its user (docs/spec/hardening.md §2.1).
+    let ended = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &daemon.child.id().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(ended.success());
+    assert!(!daemon.child.wait().unwrap().success());
+}
