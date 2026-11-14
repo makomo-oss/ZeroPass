@@ -29,7 +29,7 @@ pub use client::{Client, Downlink, Uplink};
 pub use codec::MAX_FRAME;
 pub use endpoint::{DAEMON_SANDBOX, Endpoint};
 pub use error::IpcError;
-pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess};
+pub use peer::{ClientPolicy, DAEMON_NAME, DaemonPolicy, Peer, PeerProcess, SYNC_DAEMON_NAME};
 pub use server::{Handler, RelayEnd, Server, ShutdownHandle};
 pub use sync::{RemoteOpLog, RemoteSyncError};
 

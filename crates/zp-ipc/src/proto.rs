@@ -144,7 +144,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83"
     )]
     pub body: Option<request::Body>,
 }
@@ -251,6 +251,20 @@ pub mod request {
         /// Relay, uplink: the user's answer to `PairConfirmRequest`.
         #[prost(message, tag = "45")]
         PairConfirm(super::PairConfirm),
+        /// Sync daemon: asks where it can be reached and what it can use.
+        #[prost(message, tag = "80")]
+        SyncdStatus(super::SyncdStatus),
+        /// Sync daemon: syncs with the devices nearby now and reports.
+        #[prost(message, tag = "81")]
+        SyncNow(super::SyncNow),
+        /// Sync daemon: waits for a device that wants to pair and relays its
+        /// link. Starts a relay.
+        #[prost(message, tag = "82")]
+        PairListen(super::PairListen),
+        /// Sync daemon: connects to a device to join its vault and relays the
+        /// link. Starts a relay.
+        #[prost(message, tag = "83")]
+        PairConnect(super::PairConnect),
     }
 }
 
@@ -565,6 +579,45 @@ pub struct PairConfirm {
 }
 
 // ---------------------------------------------------------------------------
+// Sync daemon (`docs/spec/ipc.md` §12)
+// ---------------------------------------------------------------------------
+
+/// Asks the sync daemon where it can be reached and what it can use.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncdStatus {}
+
+/// Asks the sync daemon to sync with the devices nearby now.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SyncNow {
+    /// How long to look for the other devices, in seconds.
+    #[prost(uint32, tag = "1")]
+    pub seconds: u32,
+}
+
+/// Asks the sync daemon to wait for a device that wants to pair. The pairing
+/// code itself is not handed over: its secret stays with the vault daemon and
+/// the user interface.
+#[derive(Clone, PartialEq, Message)]
+pub struct PairListen {
+    /// The tag joining devices look for over Bluetooth LE
+    /// (`zp_pairing::qr::pairing_tag`, 8 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub tag: Vec<u8>,
+    /// How long to wait, in seconds.
+    #[prost(uint32, tag = "2")]
+    pub seconds: u32,
+}
+
+/// Asks the sync daemon to connect to a device whose pairing code this device
+/// scanned. Only the addresses from the code are handed over.
+#[derive(Clone, PartialEq, Message)]
+pub struct PairConnect {
+    /// The addresses (`address:port`) to try, in order.
+    #[prost(string, repeated, tag = "1")]
+    pub addresses: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Item content
 // ---------------------------------------------------------------------------
 
@@ -642,7 +695,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
     )]
     pub body: Option<response::Body>,
 }
@@ -709,6 +762,20 @@ pub mod response {
         /// Relay, downlink: pairing is complete. The last message of the relay.
         #[prost(message, tag = "18")]
         PairDone(super::PairDone),
+        /// Answer to `SyncdStatus`.
+        #[prost(message, tag = "19")]
+        SyncdStatus(super::SyncdStatusReply),
+        /// Answer to `SyncNow`.
+        #[prost(message, tag = "20")]
+        SyncResults(super::SyncResults),
+        /// Relay of the sync daemon: the link to the other device ended. The
+        /// last message of the relay.
+        #[prost(message, tag = "21")]
+        LinkEnded(super::LinkEnded),
+        /// Relay of `PairListen`: the sync daemon now waits for the device. The
+        /// pairing code can be shown from here on.
+        #[prost(message, tag = "22")]
+        Listening(super::Listening),
     }
 }
 
@@ -1016,6 +1083,73 @@ pub struct PairDone {
     /// Changes received in the first sync.
     #[prost(uint64, tag = "6")]
     pub received: u64,
+}
+
+/// Answer to [`SyncdStatus`].
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncdStatusReply {
+    /// Where other devices reach this one on the local network
+    /// (`address:port`), to put into a pairing code.
+    #[prost(string, repeated, tag = "1")]
+    pub lan_endpoints: Vec<String>,
+    /// The transports in use (`lan`, `ble`).
+    #[prost(string, repeated, tag = "2")]
+    pub transports: Vec<String>,
+    /// Transports that could not be used, and why.
+    #[prost(string, repeated, tag = "3")]
+    pub problems: Vec<String>,
+    /// Whether the sync daemon is connected to the vault daemon and syncing.
+    #[prost(bool, tag = "4")]
+    pub syncing: bool,
+    /// Why not, if it is not.
+    #[prost(string, tag = "5")]
+    pub not_syncing_because: String,
+    /// The process identifier of the sync daemon, for diagnostics.
+    #[prost(uint32, tag = "6")]
+    pub pid: u32,
+}
+
+/// Answer to [`SyncNow`].
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncResults {
+    /// How many other active devices the vault has.
+    #[prost(uint32, tag = "1")]
+    pub other_devices: u32,
+    /// One entry per session that took place.
+    #[prost(message, repeated, tag = "2")]
+    pub results: Vec<SyncResult>,
+}
+
+/// One sync session.
+#[derive(Clone, PartialEq, Message)]
+pub struct SyncResult {
+    /// The other device, if it was identified.
+    #[prost(bytes = "vec", tag = "1")]
+    pub device_id: Vec<u8>,
+    /// Its name.
+    #[prost(string, tag = "2")]
+    pub name: String,
+    /// Changes sent.
+    #[prost(uint64, tag = "3")]
+    pub sent: u64,
+    /// Changes received.
+    #[prost(uint64, tag = "4")]
+    pub received: u64,
+    /// Why the session failed; empty if it completed.
+    #[prost(string, tag = "5")]
+    pub error: String,
+}
+
+/// The sync daemon waits for the device that wants to pair.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct Listening {}
+
+/// The relayed link ended.
+#[derive(Clone, PartialEq, Message)]
+pub struct LinkEnded {
+    /// Why, if it did not simply close.
+    #[prost(string, tag = "1")]
+    pub reason: String,
 }
 
 redacted_debug!(

@@ -8,6 +8,9 @@ use crate::proto::Role;
 /// The file name of the daemon executable, without the platform's suffix.
 pub const DAEMON_NAME: &str = "zp-vaultd";
 
+/// The file name of the sync daemon executable, without the platform's suffix.
+pub const SYNC_DAEMON_NAME: &str = "zp-syncd";
+
 /// The executables that may connect when installed beside the daemon, and the
 /// role each one gets.
 const CLIENTS: [(&str, Role); 5] = [
@@ -124,6 +127,12 @@ impl DaemonPolicy {
     /// The default policy for the directory of the running executable.
     pub fn beside_current_exe() -> io::Result<Self> {
         Ok(Self::installed_in(&current_exe_dir()?))
+    }
+
+    /// Accepts the ZeroPass program `name` (without the platform's suffix)
+    /// installed beside the running executable, such as [`SYNC_DAEMON_NAME`].
+    pub fn program_beside_current_exe(name: &str) -> io::Result<Self> {
+        Ok(Self::default().allow(current_exe_dir()?.join(executable_name(name))))
     }
 
     /// Also accepts the executable at `path` as the daemon.
