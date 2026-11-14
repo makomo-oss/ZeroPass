@@ -8,6 +8,7 @@
 //! Pairing and sync (`pair`, `join`, `sync`) still open the vault file
 //! themselves; they move behind the daemon together with `zp-syncd` (P3-05).
 
+mod clipboard;
 mod nearby;
 mod remote;
 
@@ -97,6 +98,17 @@ enum TopCommand {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// Internal: empties the clipboard later, if it still holds what this
+    /// program copied. Started by the commands that copy a secret.
+    #[command(hide = true)]
+    ClipboardClear {
+        /// How long to wait, in seconds.
+        #[arg(long)]
+        after: u64,
+        /// The state of the clipboard right after the secret was copied.
+        #[arg(long)]
+        token: u32,
+    },
     #[command(flatten)]
     Session(Command),
 }
@@ -143,6 +155,10 @@ enum Command {
         /// Print secret fields instead of masking them.
         #[arg(long)]
         reveal: bool,
+        /// Copy the password of a login, or the text of a note, to the clipboard
+        /// instead of printing the item. It is removed from there after a while.
+        #[arg(long, conflicts_with = "reveal")]
+        copy: bool,
     },
     /// List the items of a domain.
     List {
@@ -153,6 +169,9 @@ enum Command {
     Totp {
         /// Item identifier (32 hex digits).
         id: String,
+        /// Copy the code to the clipboard instead of printing it.
+        #[arg(long)]
+        copy: bool,
     },
     /// Delete an item.
     Delete {
@@ -551,6 +570,9 @@ fn daemon(
 }
 
 fn run(cli: Cli) -> CliResult<()> {
+    if let TopCommand::ClipboardClear { after, token } = cli.command {
+        return clipboard::clear_later(after, token);
+    }
     let vault_path = cli
         .vault
         .clone()
@@ -566,6 +588,7 @@ fn run(cli: Cli) -> CliResult<()> {
         TopCommand::Join { name } => nearby::join(choice, &vault_path, name, &mut out),
         TopCommand::Shell => shell(choice, &vault_path, &mut out),
         TopCommand::Daemon { action } => daemon(choice, &vault_path, &action, &mut out),
+        TopCommand::ClipboardClear { .. } => unreachable!("handled above"),
         TopCommand::Session(command) if is_direct(&command) => {
             run_direct(choice, &vault_path, command, &mut out)
         }

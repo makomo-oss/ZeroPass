@@ -237,6 +237,44 @@ fn init_add_get_list_totp_and_lock() {
         "the seed is never printed: {out}"
     );
 
+    // get --copy: the password goes to the clipboard, not to the terminal.
+    // This replaces what is on the clipboard, so it runs only when asked to
+    // (ZEROPASS_TEST_CLIPBOARD=1); the text that was there is put back.
+    if cfg!(windows) && std::env::var_os("ZEROPASS_TEST_CLIPBOARD").is_some() {
+        let before = zp_clipboard::text().unwrap();
+        let out = cli.ok(&["get", &login_id, "--copy"], &[]);
+        assert!(out.contains("password copied to the clipboard"), "{out}");
+        assert!(!out.contains("s3cret-login-password"), "{out}");
+        assert_eq!(
+            zp_clipboard::text().unwrap().as_deref(),
+            Some("s3cret-login-password")
+        );
+        let out = cli.ok(&["totp", &totp_id, "--copy"], &[]);
+        assert!(out.contains("code copied to the clipboard"), "{out}");
+        let code = zp_clipboard::text().unwrap().unwrap();
+        assert!(code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()));
+        let stderr = cli.fails(&["get", &totp_id, "--copy"], &[]);
+        assert!(stderr.contains("can be copied"), "{stderr}");
+
+        // The helper that the copy left behind clears the clipboard when its
+        // time is up (here: at once), unless something else was copied since.
+        let copied = zp_clipboard::copy_secret("still the secret").unwrap();
+        let token = copied.token().to_string();
+        cli.ok(&["clipboard-clear", "--after", "0", "--token", &token], &[]);
+        assert_eq!(zp_clipboard::text().unwrap(), None);
+        let copied = zp_clipboard::copy_secret("the secret").unwrap();
+        let token = copied.token().to_string();
+        zp_clipboard::set_text("copied by the user since").unwrap();
+        cli.ok(&["clipboard-clear", "--after", "0", "--token", &token], &[]);
+        assert_eq!(
+            zp_clipboard::text().unwrap().as_deref(),
+            Some("copied by the user since")
+        );
+        if let Some(text) = before {
+            zp_clipboard::set_text(&text).unwrap();
+        }
+    }
+
     // totp
     let out = cli.ok(&["totp", &totp_id], &[]);
     let code = out.split_whitespace().next().unwrap();

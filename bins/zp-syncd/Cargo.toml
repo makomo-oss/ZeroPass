@@ -14,4 +14,5 @@ workspace = true
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
+zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }
 zp-transport = { version = "0.0.0", path = "../../crates/zp-transport" }

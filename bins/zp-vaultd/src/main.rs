@@ -44,6 +44,9 @@ struct Args {
 /// How often idle domains are checked for their timeout.
 const TICK: Duration = Duration::from_secs(1);
 
+/// Exit code after an internal error (a panic).
+const EXIT_PANIC: i32 = 101;
+
 /// Exit code when another daemon already serves the vault.
 const EXIT_ALREADY_RUNNING: u8 = 2;
 
@@ -94,7 +97,20 @@ fn run(args: Args) -> Result<(), IpcError> {
 }
 
 fn main() -> ExitCode {
-    match run(Args::parse()) {
+    // Before anything else, and before any secret is in memory.
+    let hardening = zp_sandbox::harden_process();
+    // A panic must not end in a crash report with the process's memory in it:
+    // say what happened and leave.
+    std::panic::set_hook(Box::new(|info| {
+        log(&format!("internal error: {info}"));
+        std::process::exit(EXIT_PANIC);
+    }));
+    let args = Args::parse();
+    for failure in hardening.failed() {
+        log(&format!("warning: could not apply: {failure}"));
+    }
+    log(&format!("hardening: {}", hardening.applied().join("; ")));
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(IpcError::AlreadyRunning) => {
             log("a daemon is already running for this vault");
