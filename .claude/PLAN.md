@@ -132,8 +132,8 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P2-10** `zp-transport`: `Transport` トレイト（探索 + バイトストリーム）とループバック実装 — P2-06 がトレイト越しに動く（依存: P2-06）
 - [x] **P2-11** LAN トランスポート: mDNS 広告／探索（ペア鍵から導出する回転式匿名 ID で端末特定を防止）+ TCP + Noise — 同一 Wi-Fi の PC 2 台が自動発見（依存: P2-08, P2-10）
   - 2026-11-13 確認: 同じ Wi-Fi 上の Windows PC（`zp-syncd`）と Android タブレット（検証アプリ）が mDNS で互いを見つけて同期した。2 台目は PC ではなくタブレットである。同じ PC 上の 2 インスタンスでの確認は `cargo test -p zp-transport -- --ignored`。
-- [ ] **P2-12** LAN のインターネット遮断: プライベート／リンクローカル IF のみに bind、TTL/Hop Limit=1、非ローカル宛先を拒否 — パケットキャプチャで LAN 外宛が 0 件（依存: P2-11）
-  - 実装済み（ローカルアドレスへのみ bind・接続・受け入れ、全ソケットで TTL=1。仕様は `docs/spec/lan.md`）。ソケット単位の検査は自動テストで確認済み。**完了条件のパケットキャプチャによる確認だけが未了**: 採取には管理者権限が必要。管理者の PowerShell で `scripts/check-lan-capture.ps1` を実行し、採取中に別の端末から同期する（手順は `docs/spec/lan.md` §6）。確認できたらこの行を削除して `[x]` にする。
+- [x] **P2-12** LAN のインターネット遮断: プライベート／リンクローカル IF のみに bind、TTL/Hop Limit=1、非ローカル宛先を拒否 — パケットキャプチャで LAN 外宛が 0 件（依存: P2-11）
+  - 2026-11-14 確認: タブレットが Wi-Fi で同期する間の PC のキャプチャで、PC が送ったパケットの宛先はタブレットと mDNS のマルチキャストだけ、TCP の TTL はすべて 1（`docs/poc-report.md` §4.5）。先に閉じた側の OS が送る最後の ACK だけは TTL が OS の既定値になる（同 §7.2、G-01 で扱う）。
 - [x] **P2-13** `zp-syncd` 最小版 + `zp-cli pair / sync`: PC 2 台で QR 文字列ペアリング → LAN 自動同期 — 片方の変更が数秒で他方に反映（依存: P2-09, P2-11）
   - 2026-11-13 確認: PC で追加したログインが、同じ Wi-Fi 上のタブレットの同期操作 1 回（約 3 秒）で届き、逆方向も届いた（PC 側は `zp-syncd`）。**2 台の間での LAN 経由のペアリングは未確認**（タブレットのペアリングは BLE で行った。LAN 経由のペアリングは同じ PC 上の 2 つの金庫ファイルで確認済み: `cargo test -p zp-cli --test e2e -- --ignored`）。PC 2 台で試す場合の手順:
     1. 両方の PC でビルドする: `cargo build --release -p zp-cli -p zp-syncd`

@@ -12,7 +12,12 @@
 //! * a TCP packet must carry a hop limit (TTL) of 1.
 //!
 //! This is a verification aid, not part of the product: it parses just enough
-//! of pcapng, Ethernet and IPv4 for that.
+//! of pcapng, Ethernet, IEEE 802.11 and IPv4 for that.
+//!
+//! On a Wi-Fi adapter, Windows' Packet Monitor records the frames the driver
+//! handles: IEEE 802.11 data frames, not Ethernet. It still labels the whole
+//! capture Ethernet, so a frame labelled Ethernet is first tried as an 802.11
+//! data frame that carries IPv4, and read as Ethernet only if it is not one.
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -24,8 +29,11 @@ const BLOCK_ENHANCED_PACKET: u32 = 6;
 const BYTE_ORDER_MAGIC: u32 = 0x1A2B_3C4D;
 const LINKTYPE_ETHERNET: u16 = 1;
 const LINKTYPE_RAW: u16 = 101;
+const LINKTYPE_IEEE802_11: u16 = 105;
 const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_VLAN: u16 = 0x8100;
+/// The LLC/SNAP header in front of an Ethernet type in an 802.11 data frame.
+const LLC_SNAP: [u8; 6] = [0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00];
 const PROTOCOL_TCP: u8 = 6;
 const PROTOCOL_UDP: u8 = 17;
 
@@ -100,20 +108,54 @@ impl Reader<'_> {
 fn ipv4_of(frame: &[u8], link_type: u16) -> Option<&[u8]> {
     match link_type {
         LINKTYPE_RAW => Some(frame),
-        LINKTYPE_ETHERNET => {
-            let mut offset = 12;
-            let mut ether_type =
-                u16::from_be_bytes(frame.get(offset..offset + 2)?.try_into().ok()?);
-            if ether_type == ETHERTYPE_VLAN {
-                offset += 4;
-                ether_type = u16::from_be_bytes(frame.get(offset..offset + 2)?.try_into().ok()?);
-            }
-            (ether_type == ETHERTYPE_IPV4)
-                .then(|| frame.get(offset + 2..))
-                .flatten()
-        }
+        LINKTYPE_IEEE802_11 => ipv4_of_802_11(frame),
+        // An Ethernet frame that carries IPv4 cannot pass for an 802.11 one: it
+        // would need the LLC/SNAP bytes where its IPv4 header has its checksum
+        // and addresses.
+        LINKTYPE_ETHERNET => ipv4_of_802_11(frame).or_else(|| ipv4_of_ethernet(frame)),
         _ => None,
     }
+}
+
+fn ipv4_of_ethernet(frame: &[u8]) -> Option<&[u8]> {
+    let mut offset = 12;
+    let mut ether_type = u16::from_be_bytes(frame.get(offset..offset + 2)?.try_into().ok()?);
+    if ether_type == ETHERTYPE_VLAN {
+        offset += 4;
+        ether_type = u16::from_be_bytes(frame.get(offset..offset + 2)?.try_into().ok()?);
+    }
+    (ether_type == ETHERTYPE_IPV4)
+        .then(|| frame.get(offset + 2..))
+        .flatten()
+}
+
+/// The IPv4 packet in an unencrypted IEEE 802.11 data frame, behind its MAC
+/// header and an LLC/SNAP header.
+fn ipv4_of_802_11(frame: &[u8]) -> Option<&[u8]> {
+    let (&control, &flags) = (frame.first()?, frame.get(1)?);
+    let is_data = (control >> 2) & 0b11 == 2;
+    let protected = flags & 0x40 != 0;
+    if !is_data || protected {
+        return None;
+    }
+    // 24 bytes, plus a fourth address between access points, plus QoS
+    // control in a QoS data frame, plus HT control when such a frame has the
+    // order bit.
+    let qos = control & 0x80 != 0;
+    let mut header_len = 24;
+    if flags & 0b11 == 0b11 {
+        header_len += 6;
+    }
+    if qos {
+        header_len += 2;
+        if flags & 0x80 != 0 {
+            header_len += 4;
+        }
+    }
+    let llc = frame.get(header_len..header_len + 8)?;
+    (llc[..6] == LLC_SNAP && llc[6..] == ETHERTYPE_IPV4.to_be_bytes())
+        .then(|| frame.get(header_len + 8..))
+        .flatten()
 }
 
 /// Whether a packet to `destination` stays on the local link.
@@ -263,12 +305,16 @@ mod tests {
     }
 
     fn header() -> Vec<u8> {
+        header_with(LINKTYPE_ETHERNET)
+    }
+
+    fn header_with(link_type: u16) -> Vec<u8> {
         let mut section = Vec::new();
         section.extend_from_slice(&BYTE_ORDER_MAGIC.to_le_bytes());
         section.extend_from_slice(&[1, 0, 0, 0]); // version 1.0
         section.extend_from_slice(&u64::MAX.to_le_bytes()); // section length unknown
         let mut interface = Vec::new();
-        interface.extend_from_slice(&LINKTYPE_ETHERNET.to_le_bytes());
+        interface.extend_from_slice(&link_type.to_le_bytes());
         interface.extend_from_slice(&[0, 0]);
         interface.extend_from_slice(&96u32.to_le_bytes());
         let mut bytes = block(BLOCK_SECTION_HEADER, &section);
@@ -276,24 +322,61 @@ mod tests {
         bytes
     }
 
-    fn packet(source: Ipv4Addr, destination: Ipv4Addr, protocol: u8, ttl: u8) -> Vec<u8> {
-        let mut frame = vec![0u8; 12];
-        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+    fn ip(source: Ipv4Addr, destination: Ipv4Addr, protocol: u8, ttl: u8) -> Vec<u8> {
         let mut ip = vec![0x45, 0, 0, 40, 0, 0, 0, 0, ttl, protocol, 0, 0];
         ip.extend_from_slice(&source.octets());
         ip.extend_from_slice(&destination.octets());
         ip.extend_from_slice(&47000u16.to_be_bytes());
         ip.extend_from_slice(&51000u16.to_be_bytes());
         ip.extend_from_slice(&[0; 16]);
-        frame.extend(ip);
+        ip
+    }
 
+    fn captured(frame: &[u8]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&0u32.to_le_bytes()); // interface
         body.extend_from_slice(&[0; 8]); // timestamp
         body.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         body.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-        body.extend(frame);
+        body.extend_from_slice(frame);
         block(BLOCK_ENHANCED_PACKET, &body)
+    }
+
+    fn packet(source: Ipv4Addr, destination: Ipv4Addr, protocol: u8, ttl: u8) -> Vec<u8> {
+        let mut frame = vec![0u8; 12];
+        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame.extend(ip(source, destination, protocol, ttl));
+        captured(&frame)
+    }
+
+    /// An 802.11 data frame with the given frame control bytes, carrying `ip`
+    /// (or an IPv6 packet if `ip` is `None`).
+    fn wifi_frame(control: [u8; 2], ip: Option<Vec<u8>>) -> Vec<u8> {
+        let mut frame = control.to_vec();
+        frame.extend_from_slice(&[0, 0]); // duration
+        frame.extend_from_slice(&[0x0a; 18]); // three addresses
+        frame.extend_from_slice(&[0, 0]); // sequence control
+        if control[1] & 0b11 == 0b11 {
+            frame.extend_from_slice(&[0x0b; 6]); // fourth address
+        }
+        if control[0] & 0x80 != 0 {
+            frame.extend_from_slice(&[0, 0]); // QoS control
+            if control[1] & 0x80 != 0 {
+                frame.extend_from_slice(&[0; 4]); // HT control
+            }
+        }
+        frame.extend_from_slice(&LLC_SNAP);
+        match ip {
+            Some(ip) => {
+                frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+                frame.extend(ip);
+            }
+            None => {
+                frame.extend_from_slice(&0x86DDu16.to_be_bytes());
+                frame.extend_from_slice(&[0x60; 40]);
+            }
+        }
+        frame
     }
 
     #[test]
@@ -357,6 +440,42 @@ mod tests {
         let report = analyse(&capture, &[HERE]).unwrap();
         assert_eq!((report.packets, report.sent), (2, 1));
         assert!(report.violations.is_empty());
+    }
+
+    #[test]
+    fn wifi_frames_are_read_even_when_labelled_ethernet() {
+        // Frame control: data to the access point (as Packet Monitor recorded
+        // mDNS), QoS data to it (unicast), QoS data with HT control, data
+        // between access points, and data from the access point.
+        let frames = [
+            wifi_frame([0x08, 0x01], Some(ip(HERE, MDNS, PROTOCOL_UDP, 255))),
+            wifi_frame([0x88, 0x01], Some(ip(HERE, PEER, PROTOCOL_TCP, 1))),
+            wifi_frame([0x88, 0x81], Some(ip(HERE, FAR, PROTOCOL_TCP, 1))),
+            wifi_frame([0x08, 0x03], Some(ip(HERE, PEER, PROTOCOL_TCP, 64))),
+            wifi_frame([0x88, 0x02], Some(ip(PEER, HERE, PROTOCOL_TCP, 64))),
+            // Not counted: IPv6, a protected frame, a management frame.
+            wifi_frame([0x88, 0x01], None),
+            wifi_frame([0x88, 0x41], Some(ip(HERE, FAR, PROTOCOL_TCP, 1))),
+            wifi_frame([0x80, 0x00], Some(ip(HERE, FAR, PROTOCOL_TCP, 1))),
+        ];
+        for link_type in [LINKTYPE_ETHERNET, LINKTYPE_IEEE802_11] {
+            let mut capture = header_with(link_type);
+            for frame in &frames {
+                capture.extend(captured(frame));
+            }
+            let report = analyse(&capture, &[HERE]).unwrap();
+            assert_eq!(report.packets, 8);
+            assert_eq!((report.sent, report.sent_tcp, report.sent_udp), (4, 3, 1));
+            assert_eq!(report.destinations, [FAR, PEER, MDNS]);
+            let reasons: Vec<_> = report.violations.iter().map(|v| v.reason).collect();
+            assert_eq!(reasons.len(), 2);
+            assert!(reasons[0].contains("not on the local link"));
+            assert!(reasons[1].contains("hop limit"));
+        }
+        // Ethernet frames in an 802.11 capture are not misread.
+        let mut capture = header_with(LINKTYPE_IEEE802_11);
+        capture.extend(packet(HERE, FAR, PROTOCOL_TCP, 1));
+        assert_eq!(analyse(&capture, &[HERE]).unwrap().sent, 0);
     }
 
     #[test]

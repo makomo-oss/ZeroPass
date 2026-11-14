@@ -5,7 +5,8 @@
 //! cargo run -p zp-transport --example capture_check -- <capture.pcapng> <this machine's IPv4 address>...
 //! ```
 //!
-//! Exits with status 1 if a packet breaks a rule, 2 if the input is unusable.
+//! Exits with status 1 if a packet breaks a rule, 2 if the input is unusable or
+//! holds no sync connection (no TCP packet from this machine).
 
 use std::net::Ipv4Addr;
 use std::process::ExitCode;
@@ -48,13 +49,15 @@ fn main() -> ExitCode {
     for destination in &report.destinations {
         println!("  {destination}");
     }
-    if report.sent == 0 {
-        println!(
-            "RESULT: nothing was sent during the capture; sync during the capture and try again"
-        );
-        return ExitCode::from(2);
-    }
     if report.violations.is_empty() {
+        if report.sent_tcp == 0 {
+            // mDNS alone does not show how a sync connection behaves.
+            println!(
+                "RESULT: no sync was captured (no TCP packet from this machine); \
+                 sync from the other device while the capture runs and try again"
+            );
+            return ExitCode::from(2);
+        }
         println!(
             "RESULT: ok, every packet stays on the local link and every TCP packet has hop limit 1"
         );
