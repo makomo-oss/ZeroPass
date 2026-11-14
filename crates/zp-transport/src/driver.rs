@@ -14,7 +14,7 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zp_crypto::{ChannelKey, DeviceId, HardwareKeyStore, VaultId};
 use zp_pairing::flow::{ack_message, is_ack, refusal_message};
@@ -33,12 +33,17 @@ use crate::link::{Connection, Link};
 pub struct DriveConfig {
     /// How long the peer may stay silent before the run is abandoned.
     pub idle_timeout: Duration,
+    /// In a sync session, how long this side may send nothing while the peer's
+    /// data keeps arriving before it sends a `Progress` message
+    /// (`docs/spec/sync.md` §7). Well below the peer's idle timeout.
+    pub progress_interval: Duration,
 }
 
 impl Default for DriveConfig {
     fn default() -> Self {
         Self {
             idle_timeout: Duration::from_secs(30),
+            progress_interval: Duration::from_secs(10),
         }
     }
 }
@@ -67,15 +72,27 @@ struct Messenger {
     channel: SecureChannel,
     decoder: FrameDecoder,
     ready: VecDeque<Vec<u8>>,
+    progress_interval: Duration,
+    /// When this side last sent something.
+    last_sent: Instant,
+    /// Whether bytes arrived from the peer since then.
+    received_since_sent: bool,
 }
 
 impl Messenger {
-    fn new(connection: Connection, channel: SecureChannel) -> Result<Self, DriveError> {
+    fn new(
+        connection: Connection,
+        channel: SecureChannel,
+        config: &DriveConfig,
+    ) -> Result<Self, DriveError> {
         let mut messenger = Self {
             connection,
             channel,
             decoder: FrameDecoder::new(),
             ready: VecDeque::new(),
+            progress_interval: config.progress_interval,
+            last_sent: Instant::now(),
+            received_since_sent: false,
         };
         // Data the peer sent right behind its last handshake message.
         messenger.absorb(&[])?;
@@ -93,16 +110,43 @@ impl Messenger {
     fn send(&mut self, message: &[u8]) -> Result<(), DriveError> {
         let frame = encode_frame(message).map_err(store_error)?;
         let bytes = self.channel.send(&frame)?;
-        self.connection.send(&bytes)
+        self.connection.send(&bytes)?;
+        self.last_sent = Instant::now();
+        self.received_since_sent = false;
+        Ok(())
     }
 
-    fn receive(&mut self) -> Result<Vec<u8>, DriveError> {
+    /// Waits for the next message, for at most the idle timeout of silence.
+    ///
+    /// With `progress`, sends that message whenever bytes from the peer keep
+    /// arriving but this side has sent nothing for the progress interval, so
+    /// that the peer, which may be waiting for us, does not time out.
+    fn receive(&mut self, progress: Option<&[u8]>) -> Result<Vec<u8>, DriveError> {
+        let idle_timeout = self.connection.idle_timeout();
+        let mut silent_since = Instant::now();
         loop {
+            if let Some(progress) = progress
+                && self.received_since_sent
+                && self.last_sent.elapsed() >= self.progress_interval
+            {
+                self.send(progress)?;
+            }
             if let Some(message) = self.ready.pop_front() {
                 return Ok(message);
             }
-            let bytes = self.connection.receive()?;
-            self.absorb(&bytes)?;
+            let left = idle_timeout.saturating_sub(silent_since.elapsed());
+            if left.is_zero() {
+                return Err(DriveError::Timeout);
+            }
+            let wait = match progress {
+                Some(_) => left.min(self.progress_interval),
+                None => left,
+            };
+            if let Some(bytes) = self.connection.receive_within(wait)? {
+                silent_since = Instant::now();
+                self.received_since_sent = true;
+                self.absorb(&bytes)?;
+            }
         }
     }
 }
@@ -114,6 +158,7 @@ fn run_session<S: OpLog>(
 ) -> Result<SessionReport, DriveError> {
     let channel_peer = *messenger.channel.remote_static();
     let mut session = Session::start(log, Some(channel_peer)).map_err(store_error)?;
+    let progress = Session::progress_message();
     loop {
         while let Some(message) = session.poll_send(log).map_err(store_error)? {
             messenger.send(&message)?;
@@ -121,7 +166,9 @@ fn run_session<S: OpLog>(
         if session.is_complete() {
             return Ok(session.report().clone());
         }
-        let message = messenger.receive()?;
+        // While the peer's ops are still coming, tell it now and then that
+        // they are: it may have sent everything and be waiting for `Done`.
+        let message = messenger.receive(session.is_receiving().then_some(progress.as_slice()))?;
         session.receive(log, &message).map_err(store_error)?;
     }
 }
@@ -143,7 +190,7 @@ pub fn sync_as_initiator<S: OpLog>(
         &mut connection,
         Handshake::sync_initiator(local, remote, &vault_id)?,
     )?;
-    run_session(&mut Messenger::new(connection, channel)?, log)
+    run_session(&mut Messenger::new(connection, channel, config)?, log)
 }
 
 /// Answers an incoming link and syncs with whoever connected, provided it turns
@@ -165,7 +212,7 @@ pub fn sync_as_responder<S: OpLog>(
         &mut connection,
         Handshake::sync_responder(local, &vault_id)?,
     )?;
-    run_session(&mut Messenger::new(connection, channel)?, log)
+    run_session(&mut Messenger::new(connection, channel, config)?, log)
 }
 
 /// How a pairing connection was set up, as far as the handshake is concerned.
@@ -223,9 +270,9 @@ pub fn pair_as_existing(
     let mut connection = Connection::open(link, config.idle_timeout)?;
     let channel = pairing_channel(&mut connection, &local, pairing)?;
     let peer_key = *channel.remote_static();
-    let mut messenger = Messenger::new(connection, channel)?;
+    let mut messenger = Messenger::new(connection, channel, config)?;
 
-    let request = messenger.receive()?;
+    let request = messenger.receive(None)?;
     let mut joined = None;
     let grant = match admit(vault, &peer_key, &request, |request| {
         let approved = confirm(request);
@@ -244,7 +291,7 @@ pub fn pair_as_existing(
     messenger.send(&grant)?;
     let (device, name) = joined.ok_or(PairingError::Protocol)?;
 
-    if !is_ack(&messenger.receive()?) {
+    if !is_ack(&messenger.receive(None)?) {
         return Err(PairingError::Protocol.into());
     }
     let sync = run_session(&mut messenger, vault).map_err(|error| error.to_string());
@@ -283,10 +330,10 @@ pub fn pair_as_new(
 ) -> Result<Joined, DriveError> {
     let mut connection = Connection::open(link, config.idle_timeout)?;
     let channel = pairing_channel(&mut connection, joiner.channel_key(), pairing)?;
-    let mut messenger = Messenger::new(connection, channel)?;
+    let mut messenger = Messenger::new(connection, channel, config)?;
 
     messenger.send(&joiner.request())?;
-    let reply = messenger.receive()?;
+    let reply = messenger.receive(None)?;
     let mut vault = joiner.accept(
         &reply,
         new_vault.path,

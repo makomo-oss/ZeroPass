@@ -15,12 +15,18 @@
 //! `KeyUpdates` is the one message that is not prepared up front: a side sends it
 //! only after the peer's `Devices` showed that the peer is a member in good
 //! standing, because a key update is exactly what a revoked device must not get.
+//!
+//! `Progress` stands outside the sequence: it may arrive at any point after
+//! `Hello` and changes nothing. The driver sends it ([`Session::progress_message`])
+//! while the peer's data is still coming in ([`Session::is_receiving`]) but this
+//! side has had nothing to send for a while, so that a peer waiting for `Done`
+//! does not give up on a silent connection.
 
 use std::collections::VecDeque;
 
 use zp_crypto::DeviceId;
 
-use crate::wire::{self, Body, Envelope, Hello, Ops};
+use crate::wire::{self, Body, Envelope, Hello, Ops, Progress};
 use crate::{
     ApplyReport, ChannelPublicKey, KeyUpdate, MAX_KEY_UPDATES, Op, OpLog, SyncError, VersionVector,
 };
@@ -131,6 +137,22 @@ impl Session {
     /// Whether both sides have sent and received everything.
     pub fn is_complete(&self) -> bool {
         self.sent_done && self.expect == Expect::Nothing && self.outbox.is_empty()
+    }
+
+    /// Whether the peer's ops are still to come: its last batch has not arrived.
+    /// While this holds, the driver keeps the peer informed with
+    /// [`Self::progress_message`].
+    pub fn is_receiving(&self) -> bool {
+        !self.received_last_ops
+    }
+
+    /// A `Progress` message: "still receiving" (`docs/spec/sync.md` §7). Send it
+    /// while [`Self::is_receiving`] when data from the peer keeps arriving but this
+    /// side has sent nothing for a while (10 s by default).
+    pub fn progress_message() -> Vec<u8> {
+        prost::Message::encode_to_vec(&Envelope {
+            body: Some(Body::Progress(Progress {})),
+        })
     }
 
     /// What the session has done so far.
@@ -248,6 +270,8 @@ impl Session {
                 self.report.peer_vector = Some(VersionVector::try_from(vector)?);
                 self.expect = Expect::Nothing;
             }
+            // Only keeps the connection from looking silent.
+            (expect, Body::Progress(_)) if expect != Expect::Hello => {}
             _ => return Err(SyncError::ProtocolViolation("unexpected message").into()),
         }
         Ok(())
@@ -760,6 +784,62 @@ mod tests {
             session.receive(a, b"not protobuf \xFF"),
             Err(SyncError::MalformedMessage(_))
         ));
+    }
+
+    #[test]
+    fn progress_may_come_anywhere_after_hello_and_changes_nothing() {
+        let mut logs = devices(2);
+        for n in 0..300u32 {
+            logs[0]
+                .write(item(n as u8), DomainId::Password, payload(n as u8, 4000))
+                .unwrap();
+        }
+        logs[1]
+            .write(item(1), DomainId::Password, payload(1, 40))
+            .unwrap();
+        let (a, b) = two(&mut logs, 0, 1);
+        let progress = Session::progress_message();
+
+        // Before Hello it is out of sequence like anything else.
+        let mut session = Session::start(a, None).unwrap();
+        assert!(matches!(
+            session.receive(a, &progress),
+            Err(SyncError::ProtocolViolation(_))
+        ));
+
+        // After Hello, a Progress before every message, and after Done.
+        let mut session_a = Session::start(a, None).unwrap();
+        let mut session_b = Session::start(b, None).unwrap();
+        assert!(session_a.is_receiving() && session_b.is_receiving());
+        let (mut to_b, mut to_a) = (0, 0);
+        loop {
+            let mut progressed = false;
+            while let Some(message) = session_a.poll_send(a).unwrap() {
+                if to_b > 0 {
+                    session_b.receive(b, &progress).unwrap();
+                }
+                session_b.receive(b, &message).unwrap();
+                to_b += 1;
+                progressed = true;
+            }
+            while let Some(message) = session_b.poll_send(b).unwrap() {
+                if to_a > 0 {
+                    session_a.receive(a, &progress).unwrap();
+                }
+                session_a.receive(a, &message).unwrap();
+                to_a += 1;
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+        session_a.receive(a, &progress).unwrap();
+        assert!(session_a.is_complete() && session_b.is_complete());
+        assert!(!session_a.is_receiving() && !session_b.is_receiving());
+        assert_eq!(session_a.report().sent, 300);
+        assert_eq!(session_b.report().sent, 1);
+        assert_eq!(a.snapshot(), b.snapshot());
     }
 
     #[test]

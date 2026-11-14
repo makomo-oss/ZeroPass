@@ -1,15 +1,15 @@
 //! Fault injection for the sync drivers (plan task P2-18): what a connection
-//! that dies in the middle of a session leaves behind, and how the next one
-//! carries on.
+//! that dies in the middle of a session leaves behind, how the next one carries
+//! on, and a link much slower than the idle timeout.
 
 #![allow(clippy::unwrap_used, reason = "test helpers may panic")]
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zp_crypto::{InsecureSoftwareKeyStore, KdfParams, Password};
 use zp_sync::SessionReport;
@@ -32,9 +32,10 @@ fn options(name: &str) -> CreateOptions {
 
 fn config() -> DriveConfig {
     DriveConfig {
-        // Generous: the receiver is silent while it writes a batch to disk, and
-        // shared CI machines can be slow at that.
+        // Generous: the receiver sends nothing while it writes one batch to
+        // disk, and shared CI machines can be slow at that.
         idle_timeout: Duration::from_secs(120),
+        ..DriveConfig::default()
     }
 }
 
@@ -88,9 +89,13 @@ struct Pair {
     empty_vault: Vault,
 }
 
-/// Two devices of one vault: one holds [`ITEMS`] logins of about 1 kB each (most of a
+/// Two devices of one vault: one holds `items` logins of about 1 kB each ([`ITEMS`] is most of a
 /// megabyte, so several batches), the other has just joined and holds none.
 fn pair() -> Pair {
+    pair_with(ITEMS)
+}
+
+fn pair_with(items: usize) -> Pair {
     let dir = tempfile::tempdir().unwrap();
     let (full, empty) = (
         dir.path().join("full.zpvault"),
@@ -99,7 +104,7 @@ fn pair() -> Pair {
     let hardware = InsecureSoftwareKeyStore::generate().unwrap();
     let mut vault = Vault::create(&full, PASSWORD, Some(&hardware), options("full")).unwrap();
     vault
-        .insert_many((0..ITEMS).map(|n| {
+        .insert_many((0..items).map(|n| {
             let mut login = Login::new(format!("Login {n}"), "alice", "secret");
             login.notes = "n".repeat(1000);
             login
@@ -205,4 +210,99 @@ fn a_connection_lost_before_anything_arrived_changes_nothing() {
     let (full_side, empty_side) = sync(&devices.full, &devices.empty, usize::MAX);
     assert_eq!(full_side.unwrap().sent, ITEMS);
     assert_eq!(empty_side.unwrap().received.applied, ITEMS);
+}
+
+/// A link whose writes return at once but reach the peer slowly, like Bluetooth
+/// on Windows: the OS queues the packets and sends them over the radio at its
+/// own pace (`docs/spec/ble.md` §5.2).
+struct SlowLink {
+    inner: Box<dyn Link>,
+    bytes_per_second: usize,
+}
+
+struct QueueWriter {
+    queue: mpsc::Sender<Vec<u8>>,
+}
+
+impl Write for QueueWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.queue
+            .send(bytes.to_vec())
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Link for SlowLink {
+    fn split(self: Box<Self>) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        const PIECE: usize = 4096;
+        let (reader, mut writer) = self.inner.split()?;
+        let (queue, queued) = mpsc::channel::<Vec<u8>>();
+        let pause = Duration::from_secs_f64(PIECE as f64 / self.bytes_per_second as f64);
+        // Ends once the writer is dropped and the queue is drained.
+        thread::spawn(move || {
+            for bytes in queued {
+                for piece in bytes.chunks(PIECE) {
+                    thread::sleep(pause);
+                    if writer.write_all(piece).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        Ok((reader, Box::new(QueueWriter { queue })))
+    }
+
+    fn peer(&self) -> String {
+        self.inner.peer()
+    }
+}
+
+#[test]
+fn a_transfer_slower_than_the_idle_timeout_completes_on_both_sides() {
+    // The full device hands all its ops to the link at once and then waits for
+    // the other side's Done while they trickle through for more than twice the
+    // idle timeout. The receiving side's Progress messages keep it waiting.
+    const LOGINS: usize = 100;
+    let mut devices = pair_with(LOGINS);
+    let config = DriveConfig {
+        idle_timeout: Duration::from_secs(2),
+        progress_interval: Duration::from_millis(250),
+    };
+    let (to_empty, to_full) = MemoryLink::pair();
+    let slow = SlowLink {
+        inner: Box::new(to_empty),
+        bytes_per_second: 24 * 1024,
+    };
+    let mut full_store = Store::open(&devices.full).unwrap();
+    let mut empty_store = Store::open(&devices.empty).unwrap();
+    let full_key = full_store.channel_key().unwrap();
+    let empty_key = empty_store.channel_key().unwrap();
+    let remote = *full_key.public_bytes();
+
+    let started = Instant::now();
+    let (full_side, empty_side) = thread::scope(|scope| {
+        let responder =
+            scope.spawn(|| sync_as_responder(Box::new(slow), &mut full_store, &full_key, &config));
+        let initiator = sync_as_initiator(
+            Box::new(to_full),
+            &mut empty_store,
+            &empty_key,
+            &remote,
+            &config,
+        );
+        (responder.join().unwrap(), initiator)
+    });
+    let took = started.elapsed();
+    assert!(took > 2 * config.idle_timeout, "only took {took:?}");
+    assert_eq!(full_side.unwrap().sent, LOGINS);
+    assert_eq!(empty_side.unwrap().received.applied, LOGINS);
+    assert_eq!(
+        devices.empty_vault.list::<Password>().unwrap().len(),
+        LOGINS
+    );
 }

@@ -25,6 +25,7 @@ const WAIT: Duration = Duration::from_secs(5);
 fn config() -> DriveConfig {
     DriveConfig {
         idle_timeout: Duration::from_secs(10),
+        progress_interval: Duration::from_secs(2),
     }
 }
 
@@ -360,6 +361,7 @@ fn a_silent_or_vanishing_peer_does_not_hang_the_driver() {
     let address = other.discover(WAIT).unwrap()[0].address.clone();
     let quick = DriveConfig {
         idle_timeout: Duration::from_millis(300),
+        ..DriveConfig::default()
     };
 
     // Connects and says nothing.

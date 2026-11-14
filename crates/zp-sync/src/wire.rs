@@ -14,7 +14,7 @@ pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Envelope {
-    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub(crate) body: Option<Body>,
 }
 
@@ -32,7 +32,15 @@ pub(crate) enum Body {
     Done(Vector),
     #[prost(message, tag = "6")]
     KeyUpdates(KeyUpdates),
+    #[prost(message, tag = "7")]
+    Progress(Progress),
 }
+
+/// "Still receiving": sent by a side that is taking in the peer's data but has
+/// had nothing else to send for a while, so that the peer does not give up on
+/// the connection as silent. It has no content.
+#[derive(Clone, PartialEq, Message)]
+pub(crate) struct Progress {}
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Hello {

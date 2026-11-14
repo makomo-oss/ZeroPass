@@ -304,6 +304,7 @@ pub fn join_vault(
     };
     let config = DriveConfig {
         idle_timeout: PAIRING_IDLE,
+        ..DriveConfig::default()
     };
     let joined = pair_as_new(
         Box::new(AppLink(link)),

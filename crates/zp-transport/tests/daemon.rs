@@ -36,6 +36,7 @@ fn fast() -> DaemonConfig {
         retry_after: Duration::from_millis(200),
         drive: DriveConfig {
             idle_timeout: Duration::from_secs(5),
+            progress_interval: Duration::from_secs(1),
         },
     }
 }
