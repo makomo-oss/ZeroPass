@@ -156,7 +156,8 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P2-19** 端末失効: レジストリから削除 → VK-* ローテーション → 残存端末へ再配布 — 失効端末が以後の op を復号できないテスト（依存: P2-13）
 
 ### Gate G: Go/No-Go
-- [ ] **G-01** PoC レポートのレビュー、未達項目の対処方針決定、`crypto.md`/`sync.md`/`pairing.md`/`ble.md` をバージョン 1 として凍結 — ユーザー承認（依存: P1-12, P1-15, P2-18, P2-19）
+- [x] **G-01** PoC レポートのレビュー、未達項目の対処方針決定、`crypto.md`/`sync.md`/`pairing.md`/`ble.md` をバージョン 1 として凍結 — ユーザー承認（依存: P1-12, P1-15, P2-18, P2-19）
+  - 2026-11-14 承認: Go。同期セッションに Progress を加えたうえで、`crypto.md`/`sync.md`/`pairing.md`/`ble.md`/`lan.md` を 1.0 として凍結。最後の ACK の TTL は既知の限界として記録のみ。脅威モデルを 0.2 に改訂。持ち越し項目は `docs/poc-report.md` §8。
 
 ### Phase 3: Vault Core Daemon（第 1 層）
 - [x] **P3-01** `zp-ipc`: protobuf API 定義（解錠・CRUD・TOTP・同期 op 受け渡し・承認要求）と名前付きパイプ／UDS 実装、接続元プロセス検証（PID → 実行ファイル署名／パス） — 未許可プロセスが拒否される（依存: G-01）
