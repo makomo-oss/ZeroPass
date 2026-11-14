@@ -10,7 +10,7 @@ use zp_crypto::{
     Passkey, Password, RecoveryKey, Totp,
 };
 use zp_ipc::proto::{self, ErrorCode, Role, request, response};
-use zp_ipc::{Handler, Peer, PeerProcess};
+use zp_ipc::{Handler, Peer, PeerProcess, RelayEnd};
 use zp_vault::model::Content;
 use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError};
 
@@ -40,14 +40,16 @@ pub(crate) fn log(message: &str) {
 /// The one vault this daemon serves. `None` until the file exists and a request
 /// needed it.
 #[derive(Default)]
-struct State {
-    vault: Option<Vault>,
+pub(crate) struct State {
+    pub(crate) vault: Option<Vault>,
+    /// The pairing offer that waits for the other device, if any.
+    pub(crate) offer: Option<crate::pairing::PendingOffer>,
 }
 
 /// The vault daemon: owns the vault file and its keys.
 pub(crate) struct Service {
-    path: PathBuf,
-    key_store: KeyStoreChoice,
+    pub(crate) path: PathBuf,
+    pub(crate) key_store: KeyStoreChoice,
     state: Mutex<State>,
 }
 
@@ -60,7 +62,7 @@ impl Service {
         }
     }
 
-    fn state(&self) -> MutexGuard<'_, State> {
+    pub(crate) fn state(&self) -> MutexGuard<'_, State> {
         // A panic in a request must not take the daemon's other clients with it.
         self.state
             .lock()
@@ -70,7 +72,9 @@ impl Service {
     /// Locks the domains that have been idle for too long. Called periodically,
     /// so that keys do not stay in memory while nobody asks for anything.
     pub(crate) fn tick(&self) {
-        if let Some(vault) = self.state().vault.as_mut() {
+        let mut state = self.state();
+        Self::expire_offer(&mut state);
+        if let Some(vault) = state.vault.as_mut() {
             vault.enforce_auto_lock();
         }
     }
@@ -82,13 +86,16 @@ impl Service {
         }
     }
 
-    fn dev_key_path(&self) -> PathBuf {
+    pub(crate) fn dev_key_path(&self) -> PathBuf {
         self.path.with_extension("devkey")
     }
 
     /// The key store for the TOTP and passkey domains; `None` if this device
     /// has none. With `create`, the store's key is created if it is missing.
-    fn hardware(&self, create: bool) -> Result<Option<Box<dyn HardwareKeyStore>>, proto::Error> {
+    pub(crate) fn hardware(
+        &self,
+        create: bool,
+    ) -> Result<Option<Box<dyn HardwareKeyStore>>, proto::Error> {
         let internal = |message: String| proto::Error::new(ErrorCode::Internal, message);
         match self.key_store {
             KeyStoreChoice::None => Ok(None),
@@ -128,7 +135,7 @@ impl Service {
     }
 
     /// The open vault, opening the file on first use.
-    fn vault<'s>(&self, state: &'s mut State) -> Result<&'s mut Vault, proto::Error> {
+    pub(crate) fn vault<'s>(&self, state: &'s mut State) -> Result<&'s mut Vault, proto::Error> {
         let vault = match state.vault.take() {
             Some(vault) => vault,
             None => {
@@ -145,6 +152,7 @@ impl Service {
         if state.vault.is_none() && !self.path.exists() {
             return Ok(proto::StatusReply {
                 sandboxed: zp_sandbox::is_sandboxed(),
+                pid: std::process::id(),
                 ..proto::StatusReply::default()
             });
         }
@@ -164,6 +172,7 @@ impl Service {
             domains,
             has_recovery_kit: vault.has_recovery_kit().map_err(vault_error)?,
             sandboxed: zp_sandbox::is_sandboxed(),
+            pid: std::process::id(),
         })
     }
 
@@ -348,7 +357,7 @@ impl Service {
 
     /// Fails with `Locked` for the first domain of the vault that is not
     /// unlocked: some operations need all of them.
-    fn require_every_domain(vault: &mut Vault) -> Result<(), proto::Error> {
+    pub(crate) fn require_every_domain(vault: &mut Vault) -> Result<(), proto::Error> {
         for domain in DomainId::ALL {
             if vault.has_domain(domain).map_err(vault_error)? && !vault.is_unlocked(domain) {
                 return Err(locked(domain));
@@ -457,6 +466,15 @@ impl Service {
                 }
                 done()
             }
+            Body::PairOffer(request) => self.pair_offer(state, &request),
+            // These start a relay and do not arrive here.
+            Body::PairAdmit(_) | Body::PairJoin(_) => {
+                Err(bad_request("this request needs a relay"))
+            }
+            // These belong to a relay that is already running.
+            Body::RelayAttach(_) | Body::LinkData(_) | Body::PairConfirm(_) => {
+                Err(bad_request("there is no relay on this connection"))
+            }
             request => crate::sync::handle(self.vault(state)?, request),
         }
     }
@@ -490,6 +508,28 @@ impl Handler for Service {
             Ok(reply) => reply,
             Err(error) => response::Body::Error(error),
         }
+    }
+
+    fn starts_relay(&self, request: &request::Body) -> bool {
+        matches!(
+            request,
+            request::Body::PairAdmit(_) | request::Body::PairJoin(_)
+        )
+    }
+
+    fn relay(&self, peer: &Peer, request: request::Body, relay: RelayEnd) -> response::Body {
+        if !permitted(peer.role, &request) {
+            return response::Body::Error(proto::Error::new(
+                ErrorCode::Denied,
+                "this client is not allowed to make that request",
+            ));
+        }
+        let outcome = match &request {
+            request::Body::PairAdmit(_) => self.pair_admit(relay),
+            request::Body::PairJoin(join) => self.pair_join(join, relay),
+            _ => Err(bad_request("not a relay request")),
+        };
+        outcome.unwrap_or_else(response::Body::Error)
     }
 
     fn rejected(&self, process: &PeerProcess) {

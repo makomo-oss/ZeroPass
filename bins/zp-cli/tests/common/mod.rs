@@ -45,3 +45,48 @@ pub(crate) fn stop_daemon(vault: &Path) {
         .stderr(Stdio::null())
         .status();
 }
+
+/// What `zp-cli daemon status` prints for the vault at `vault`.
+fn daemon_status(vault: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
+        .arg("--vault")
+        .arg(vault)
+        .args(["daemon", "status"])
+        .env_remove("ZEROPASS_VAULT")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Ends the daemon of `vault` the hard way, as a crash or a power cut would:
+/// no chance to finish what it is writing. Waits until it is gone.
+#[allow(
+    dead_code,
+    reason = "not every test binary that includes this module uses it"
+)]
+pub(crate) fn kill_daemon(vault: &Path) {
+    let status = daemon_status(vault);
+    let pid: u32 = status
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("process: "))
+        .and_then(|pid| pid.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no process id in: {status}"));
+    let killed = if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .status()
+    } else {
+        Command::new("kill").args(["-9", &pid.to_string()]).status()
+    };
+    assert!(killed.unwrap().success(), "could not kill process {pid}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !daemon_status(vault).contains("not running") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon did not go away"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}

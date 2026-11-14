@@ -144,7 +144,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45"
     )]
     pub body: Option<request::Body>,
 }
@@ -231,6 +231,26 @@ pub mod request {
         /// Sync: hands in key updates received from a peer.
         #[prost(message, tag = "39")]
         SyncMergeKeyUpdates(super::SyncMergeKeyUpdates),
+        /// Pairing: creates a pairing offer to show to the other device.
+        #[prost(message, tag = "40")]
+        PairOffer(super::PairOffer),
+        /// Pairing: admits the device that connected with the offer. Starts a
+        /// relay (`docs/spec/ipc.md` §11).
+        #[prost(message, tag = "41")]
+        PairAdmit(super::PairAdmit),
+        /// Pairing: joins a vault with an offer shown by another device. Starts
+        /// a relay.
+        #[prost(message, tag = "42")]
+        PairJoin(super::PairJoin),
+        /// Relay: makes this connection the uplink of a relay.
+        #[prost(message, tag = "43")]
+        RelayAttach(super::RelayAttach),
+        /// Relay, uplink: bytes that arrived from the other device.
+        #[prost(message, tag = "44")]
+        LinkData(super::LinkData),
+        /// Relay, uplink: the user's answer to `PairConfirmRequest`.
+        #[prost(message, tag = "45")]
+        PairConfirm(super::PairConfirm),
     }
 }
 
@@ -484,6 +504,67 @@ pub struct NewTotp {
 }
 
 // ---------------------------------------------------------------------------
+// Pairing and relays (`docs/spec/ipc.md` §11)
+// ---------------------------------------------------------------------------
+
+/// Creates a pairing offer. Every domain of the vault must be unlocked, and
+/// stays unlocked until the offer has been used or has expired.
+#[derive(Clone, PartialEq, Message)]
+pub struct PairOffer {
+    /// Where the other device can reach this one on the local network
+    /// (`address:port`), to be put into the offer.
+    #[prost(string, repeated, tag = "1")]
+    pub hints: Vec<String>,
+}
+
+/// Admits the device at the other end of the link that the client relays,
+/// using the offer created with [`PairOffer`].
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct PairAdmit {}
+
+/// Joins a vault: creates this device's vault file from what the device at
+/// the other end of the relayed link grants.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct PairJoin {
+    /// The pairing offer shown by the other device, as text.
+    #[prost(string, tag = "1")]
+    pub offer: String,
+    /// The name of this device, shown to the user of the other device.
+    #[prost(string, tag = "2")]
+    pub device_name: String,
+    /// The master password of the new vault file.
+    #[prost(string, tag = "3")]
+    pub master_password: String,
+}
+
+/// Makes this connection the uplink of a relay: after the answer, the client
+/// only sends, and the daemon only reads, until the client closes it.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct RelayAttach {
+    /// The relay, as named in [`RelayOpened`].
+    #[prost(uint64, tag = "1")]
+    pub relay_id: u64,
+}
+
+/// Bytes of the relayed link. Ciphertext of the pairing channel: the relaying
+/// process cannot read it.
+#[derive(Clone, PartialEq, Message)]
+pub struct LinkData {
+    /// The bytes, in order.
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+}
+
+/// The user's answer to [`PairConfirmRequest`].
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct PairConfirm {
+    /// Whether the device may join.
+    #[prost(bool, tag = "1")]
+    pub approved: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Item content
 // ---------------------------------------------------------------------------
 
@@ -561,7 +642,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub body: Option<response::Body>,
 }
@@ -613,6 +694,21 @@ pub mod response {
         /// Answer to `SyncMergeRegistry`, `SyncApply` and `SyncMergeKeyUpdates`.
         #[prost(message, tag = "13")]
         SyncMerged(super::SyncMerged),
+        /// Answer to `PairOffer`.
+        #[prost(message, tag = "14")]
+        PairOffered(super::PairOffered),
+        /// Relay, downlink: the relay is open; attach the uplink.
+        #[prost(message, tag = "15")]
+        RelayOpened(super::RelayOpened),
+        /// Relay, downlink: bytes to send to the other device.
+        #[prost(message, tag = "16")]
+        LinkData(super::LinkData),
+        /// Relay, downlink: ask the user whether this device may join.
+        #[prost(message, tag = "17")]
+        PairConfirmRequest(super::PairConfirmRequest),
+        /// Relay, downlink: pairing is complete. The last message of the relay.
+        #[prost(message, tag = "18")]
+        PairDone(super::PairDone),
     }
 }
 
@@ -689,6 +785,9 @@ pub struct StatusReply {
     /// Whether the daemon runs in a sandbox without network access.
     #[prost(bool, tag = "6")]
     pub sandboxed: bool,
+    /// The process identifier of the daemon, for diagnostics.
+    #[prost(uint32, tag = "7")]
+    pub pid: u32,
 }
 
 /// The state of one key domain.
@@ -862,7 +961,66 @@ pub struct SyncMerged {
     pub became_current: u64,
 }
 
+/// Answer to [`PairOffer`].
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct PairOffered {
+    /// The offer as text, to show as it is and as a QR code. It contains a
+    /// one-time secret: whoever sees it within its lifetime can ask to join.
+    #[prost(string, tag = "1")]
+    pub offer: String,
+    /// How long the offer is valid, in seconds.
+    #[prost(uint32, tag = "2")]
+    pub lifetime_secs: u32,
+}
+
+/// The relay is open.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct RelayOpened {
+    /// The name of the relay, for [`RelayAttach`].
+    #[prost(uint64, tag = "1")]
+    pub relay_id: u64,
+}
+
+/// Asks the user whether the device that connected may join the vault.
+#[derive(Clone, PartialEq, Message)]
+pub struct PairConfirmRequest {
+    /// The identifier the device chose for itself.
+    #[prost(bytes = "vec", tag = "1")]
+    pub device_id: Vec<u8>,
+    /// The name it gave.
+    #[prost(string, tag = "2")]
+    pub name: String,
+}
+
+/// Pairing is complete.
+#[derive(Clone, PartialEq, Message)]
+pub struct PairDone {
+    /// The device that joined (for the existing device), or this device (for
+    /// the joining one).
+    #[prost(bytes = "vec", tag = "1")]
+    pub device_id: Vec<u8>,
+    /// The name of the device that joined.
+    #[prost(string, tag = "2")]
+    pub name: String,
+    /// The vault.
+    #[prost(bytes = "vec", tag = "3")]
+    pub vault_id: Vec<u8>,
+    /// Why the first sync did not complete; empty if it did. The device is a
+    /// member either way and catches up at the next sync.
+    #[prost(string, tag = "4")]
+    pub first_sync_error: String,
+    /// Changes sent in the first sync.
+    #[prost(uint64, tag = "5")]
+    pub sent: u64,
+    /// Changes received in the first sync.
+    #[prost(uint64, tag = "6")]
+    pub received: u64,
+}
+
 redacted_debug!(
+    PairJoin,
+    PairOffered,
     SyncIdentityReply,
     CreateVault,
     RecoverVault,
@@ -918,8 +1076,8 @@ mod tests {
 
     #[test]
     fn unknown_requests_decode_to_an_empty_body() {
-        // A request with only a field from a reserved range (tag 40).
-        let bytes = [0xC2, 0x02, 0x00];
+        // A request with only a field this version does not define (tag 100).
+        let bytes = [0xA2, 0x06, 0x00];
         assert_eq!(Request::decode(bytes.as_slice()).unwrap().body, None);
     }
 }

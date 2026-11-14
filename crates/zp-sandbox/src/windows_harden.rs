@@ -28,9 +28,9 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_MITIGATION_POLICY,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, PROCESS_VM_READ,
-    ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
-    SetProcessMitigationPolicy,
+    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, PROCESS_VM_READ, ProcessDynamicCodePolicy,
+    ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy, SetProcessMitigationPolicy,
 };
 use windows::core::{BOOL, HSTRING, PWSTR};
 
@@ -163,13 +163,18 @@ pub(crate) fn restrict_image_loads() -> io::Result<()> {
 /// Takes away, from the other processes of the same user, the rights to read
 /// and write this process's memory, to start threads in it, to copy its
 /// handles and to attach a debugger. What remains: ask which executable it
-/// runs (clients check that), wait for it, and end it.
+/// runs (clients check that), ask about it (times, priority: what tools such
+/// as `taskkill` and the Task Manager want before they end a process), wait
+/// for it, and end it.
 ///
 /// This stops other programs of the user from simply opening the process. It
 /// does not stop an administrator, and the user owns the process and could
 /// give the rights back: it raises the bar, it is not a wall.
 pub(crate) fn protect_memory() -> io::Result<()> {
-    let rights = PROCESS_QUERY_LIMITED_INFORMATION.0 | PROCESS_SYNCHRONIZE.0 | PROCESS_TERMINATE.0;
+    let rights = PROCESS_QUERY_LIMITED_INFORMATION.0
+        | PROCESS_QUERY_INFORMATION.0
+        | PROCESS_SYNCHRONIZE.0
+        | PROCESS_TERMINATE.0;
     // D:P — a protected DACL (nothing inherited): the user gets the rights
     // above, the system gets everything (GA).
     let sddl = HSTRING::from(format!("D:P(A;;{rights:#x};;;{})(A;;GA;;;SY)", user_sid()?));

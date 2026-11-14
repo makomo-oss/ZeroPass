@@ -1,0 +1,22 @@
+[package]
+name = "zp-drive"
+description = "Runs the ZeroPass sync and pairing protocols over a byte stream."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No networking here: a link is any byte stream. The transports that open
+# links to other devices live in zp-transport. This crate is part of the
+# offline dependency set (ADR-0004), because the vault daemon runs pairing.
+[dependencies]
+thiserror = "2.0.21"
+zp-crypto = { version = "0.0.0", path = "../zp-crypto" }
+zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
+zp-sync = { version = "0.0.0", path = "../zp-sync" }
+zp-vault = { version = "0.0.0", path = "../zp-vault" }

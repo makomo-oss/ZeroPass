@@ -9,6 +9,7 @@
 //! client connections until they are locked, time out, or the daemon stops.
 
 mod convert;
+mod pairing;
 mod service;
 mod sync;
 

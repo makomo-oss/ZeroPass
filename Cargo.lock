@@ -2219,7 +2219,6 @@ dependencies = [
  "zeroize",
  "zp-clipboard",
  "zp-crypto",
- "zp-hwkey",
  "zp-ipc",
  "zp-pairing",
  "zp-sandbox",
@@ -2253,6 +2252,17 @@ dependencies = [
  "unicode-normalization",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "zp-drive"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+ "zp-crypto",
+ "zp-pairing",
+ "zp-sync",
+ "zp-vault",
 ]
 
 [[package]]
@@ -2361,6 +2371,7 @@ dependencies = [
  "windows",
  "zeroize",
  "zp-crypto",
+ "zp-drive",
  "zp-ipc",
  "zp-pairing",
  "zp-sync",
@@ -2393,8 +2404,10 @@ dependencies = [
  "tempfile",
  "zeroize",
  "zp-crypto",
+ "zp-drive",
  "zp-hwkey",
  "zp-ipc",
+ "zp-pairing",
  "zp-sandbox",
  "zp-sync",
  "zp-vault",
