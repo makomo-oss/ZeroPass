@@ -3,14 +3,18 @@
 
 #![allow(clippy::unwrap_used, reason = "test helpers may panic")]
 
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use zp_crypto::{InsecureSoftwareKeyStore, ItemId, KdfParams, Password};
+use zp_crypto::{ChannelKey, InsecureSoftwareKeyStore, ItemId, KdfParams, Password};
+use zp_pairing::Handshake;
+use zp_pairing::noise::PSK_LEN;
 use zp_transport::daemon::{DaemonConfig, Event, SyncDaemon};
-use zp_transport::{DriveConfig, DriveError, LoopbackNetwork, LoopbackTransport};
+use zp_transport::{DriveConfig, DriveError, Link, LoopbackNetwork, LoopbackTransport, Transport};
 use zp_vault::model::Login;
 use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault};
 
@@ -264,4 +268,99 @@ fn a_device_alone_on_the_network_just_waits() {
         .unwrap();
     assert!(events.is_empty());
     assert_eq!(daemon.store().device_id(), all[0].vault.device_id());
+}
+
+/// While a pairing waits (P3-09), a link that opens with the pairing handshake
+/// goes to whoever waits for it, with nothing of it read away; links that open
+/// with the sync handshake are synced as usual.
+#[test]
+fn a_link_that_opens_a_pairing_goes_to_whoever_waits_for_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let network = LoopbackNetwork::new();
+    let mut all = devices(dir.path(), 1);
+    let (pc, phone) = all.split_at_mut(1);
+    let (pc, phone) = (&mut pc[0], &mut phone[0]);
+    let stop = AtomicBool::new(false);
+    let (sink, pairing_links) = mpsc::channel::<Box<dyn Link>>();
+
+    thread::scope(|scope| {
+        let _stop = StopOnDrop(&stop);
+        // The PC waits for a pairing; the phone, already a member, syncs.
+        let pc_loop = {
+            let (network, stop, path) = (&network, &stop, &pc.path);
+            scope.spawn(move || {
+                let mut daemon = daemon(path, network);
+                daemon.wait_for_pairing([7; 8], sink).unwrap();
+                let mut events = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    events.extend(daemon.step().unwrap());
+                }
+                events
+            })
+        };
+        let phone_loop = {
+            let (network, stop, path) = (&network, &stop, &phone.path);
+            scope.spawn(move || {
+                let mut daemon = daemon(path, network);
+                while !stop.load(Ordering::Relaxed) {
+                    daemon.step().unwrap();
+                }
+            })
+        };
+
+        // A device that wants to pair finds the PC and opens with the pairing
+        // handshake. (The phone may be announced too; the PC's announcement is
+        // the one that answers.)
+        let mut joiner = network.endpoint();
+        let first = Handshake::pairing(true, &ChannelKey::generate().unwrap(), &[3; PSK_LEN])
+            .unwrap()
+            .step(&[])
+            .unwrap();
+        let mut writers = Vec::new();
+        assert!(eventually(|| {
+            for found in joiner.discover(Duration::from_millis(20)).unwrap() {
+                let link = joiner.connect(&found.address).unwrap();
+                let (_reader, mut writer) = link.split().unwrap();
+                writer.write_all(&first).unwrap();
+                // Kept open: the receiving side must be able to read it.
+                writers.push((_reader, writer));
+            }
+            !writers.is_empty()
+        }));
+        let diverted = pairing_links
+            .recv_timeout(Duration::from_secs(5))
+            .expect("no pairing link was handed over");
+        let (mut reader, _writer) = diverted.split().unwrap();
+        let mut received = Vec::new();
+        let mut buffer = [0u8; 256];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while received.len() < first.len() && Instant::now() < deadline {
+            match reader.read(&mut buffer) {
+                Ok(count) => received.extend_from_slice(&buffer[..count]),
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
+        assert_eq!(received, first);
+
+        // Sync goes on beside it.
+        let id = phone.vault.insert(login("written on the phone")).unwrap();
+        assert!(eventually(|| has(
+            &mut pc.vault,
+            id,
+            "written on the phone"
+        )));
+
+        stop.store(true, Ordering::Relaxed);
+        phone_loop.join().unwrap();
+        let events = pc_loop.join().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Synced { .. })),
+            "{events:?}"
+        );
+    });
+    // One device per wait: nothing else was handed over.
+    assert!(pairing_links.try_recv().is_err());
 }
