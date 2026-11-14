@@ -13,6 +13,7 @@
 pub mod driver;
 mod error;
 pub mod link;
+mod opening;
 
 pub use driver::{
     Admitted, DriveConfig, Joined, NewVault, PairingLink, pair_as_existing, pair_as_new,
@@ -20,3 +21,5 @@ pub use driver::{
 };
 pub use error::DriveError;
 pub use link::{ChannelReader, Connection, Link, MemoryLink, READ_POLL};
+pub use opening::read_opening;
+pub use zp_pairing::Opening;

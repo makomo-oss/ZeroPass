@@ -5,10 +5,13 @@
 //! from the central, and `Tx` (notify) carries bytes to it. BLE pairing is not
 //! used; the Noise channel on top provides all security.
 
-use sha2::{Digest, Sha256};
-use zp_pairing::noise::PSK_LEN;
-
 use crate::discovery::{TAG_LEN, Tag};
+
+/// The tag shown while waiting for a pairing; defined with the pairing offer it
+/// is derived from.
+pub use zp_pairing::qr::pairing_tag;
+
+const _: () = assert!(TAG_LEN == zp_pairing::qr::PAIRING_TAG_LEN);
 
 /// UUID of the ZeroPass proximity sync service.
 pub const SERVICE_UUID: u128 = 0x5a50c0de_0001_4b1d_9c5e_7a65726f7061;
@@ -23,23 +26,6 @@ pub const TX_UUID: u128 = 0x5a50c0de_0004_4b1d_9c5e_7a65726f7061;
 pub const TAG_VALUE_LEN: usize = 2 * TAG_LEN;
 /// The payload of a packet when the central did not negotiate a larger MTU.
 pub const DEFAULT_PACKET_LEN: usize = 20;
-
-const LABEL_PAIRING: &[u8] = b"zeropass/v1/ble-pairing\0";
-
-/// The tag a peripheral shows while it waits for a pairing with the one-time
-/// secret `psk`: `SHA-256("zeropass/v1/ble-pairing" ‖ 0x00 ‖ psk)[..8]`.
-///
-/// A central that scanned the QR code computes the same value to pick the right
-/// peripheral. The secret cannot be derived from the tag.
-pub fn pairing_tag(psk: &[u8; PSK_LEN]) -> Tag {
-    let digest = Sha256::new()
-        .chain_update(LABEL_PAIRING)
-        .chain_update(psk)
-        .finalize();
-    let mut tag = [0u8; TAG_LEN];
-    tag.copy_from_slice(&digest[..TAG_LEN]);
-    tag
-}
 
 /// The value of the `Tag` characteristic: `sync_tag ‖ pairing_tag`, with zeros
 /// for a tag that is not being announced.
@@ -65,6 +51,8 @@ pub fn parse_tag_value(value: &[u8]) -> Option<(Option<Tag>, Option<Tag>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+    use zp_pairing::noise::PSK_LEN;
 
     #[test]
     fn uuids_share_a_base_and_differ_in_one_field() {
