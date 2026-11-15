@@ -178,6 +178,82 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 _ => Err(unexpected()),
             }
         }
+        Request::Totp { origin, top, item } => {
+            let item_id = parse_id(&item)?;
+            // Windows Hello asks the user for every code: the key agent shows
+            // the prompt for the daemon, which cannot from its sandbox.
+            let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
+                .map_err(|error| Failure::from_client(&error))?;
+            let totp = proto::BridgeTotp {
+                origin,
+                top_origin: top,
+                item_id,
+            };
+            match daemon.call(request::Body::BridgeTotp(totp))? {
+                response::Body::TotpCode(reply) => Ok(Answer::Code {
+                    code: Zeroizing::new(reply.code.clone()),
+                }),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::Compare {
+            origin,
+            top,
+            username,
+            password,
+        } => {
+            let compare = proto::BridgeCompare {
+                origin,
+                top_origin: top,
+                username,
+                password: password.as_str().to_owned(),
+            };
+            match daemon.call(request::Body::BridgeCompare(compare))? {
+                response::Body::BridgeComparison(comparison) => Ok(Answer::Comparison {
+                    item: hex(&comparison.item_id),
+                    same: comparison.same,
+                }),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::Save {
+            origin,
+            top,
+            title,
+            username,
+            password,
+        } => {
+            let save = proto::BridgeSave {
+                origin,
+                top_origin: top,
+                title,
+                username,
+                password: password.as_str().to_owned(),
+            };
+            match daemon.call(request::Body::BridgeSave(save))? {
+                response::Body::ItemAdded(added) => Ok(Answer::Saved {
+                    item: hex(&added.item_id),
+                }),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::Update {
+            origin,
+            top,
+            item,
+            password,
+        } => {
+            let update = proto::BridgeUpdate {
+                origin,
+                top_origin: top,
+                item_id: parse_id(&item)?,
+                password: password.as_str().to_owned(),
+            };
+            match daemon.call(request::Body::BridgeUpdate(update))? {
+                response::Body::Done(_) => Ok(Answer::Done {}),
+                _ => Err(unexpected()),
+            }
+        }
         Request::OpenApp => {
             open_app().map_err(|error| Failure::new("Internal", &error.to_string()))?;
             Ok(Answer::Done {})
@@ -220,6 +296,9 @@ fn spawn_app(app: &Path) -> io::Result<()> {
 
 fn run() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // What this program starts must not open console windows: the browser
+    // runs it without one.
+    zp_client::set_windowed();
     if !started_for_our_extension(&args) {
         log("not started for the ZeroPass extension; ending");
         return Ok(());

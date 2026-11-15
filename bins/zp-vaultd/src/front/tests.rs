@@ -641,3 +641,162 @@ fn idle_domains_are_locked_by_the_tick() {
     let state = fixture.front.engine.state();
     assert!(format!("{:?}", state.vault).contains("unlocked: []"));
 }
+
+#[test]
+fn every_one_time_code_through_the_bridge_asks_the_user_again() {
+    use std::sync::atomic::Ordering;
+
+    use crate::port::testing::FakeAgent;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::new(5));
+    let port: Arc<dyn crate::port::KeyAgentPort> = agent.clone();
+    let fixture = Fixture {
+        front: Front::local(
+            dir.path().join("test.zpvault"),
+            KeyStoreChoice::Platform,
+            Some(port),
+        ),
+        _dir: dir,
+    };
+    fixture.create();
+    let bank = fixture.add(login("Bank", "hunter2-hunter2"));
+    let other = fixture.add(new_item::Content::Login(proto::Login {
+        title: "Other".into(),
+        username: "bob".into(),
+        password: "other password".into(),
+        urls: vec!["https://example.com/other".into()],
+        notes: String::new(),
+    }));
+    fixture.add(new_item::Content::Totp(proto::NewTotp {
+        otpauth_uri: "otpauth://totp/Bank:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into(),
+        login_id: Some(bank.clone()),
+    }));
+    let totp = |id: &[u8], origin: &str| {
+        request::Body::BridgeTotp(proto::BridgeTotp {
+            origin: origin.into(),
+            top_origin: String::new(),
+            item_id: id.to_vec(),
+        })
+    };
+    let code = |reply: Reply| ErrorCode::try_from(reply.err().unwrap().code).unwrap();
+
+    // The TOTP domain is open (the vault was just made), yet each code asks.
+    assert!(fixture.unlocked(D::Totp));
+    let before = agent.prompts.load(Ordering::SeqCst);
+    for round in 1..=2 {
+        let response::Body::TotpCode(reply) = fixture
+            .call_as(Role::Bridge, totp(&bank, "https://example.com"))
+            .unwrap()
+        else {
+            panic!("not a code");
+        };
+        assert_eq!(reply.code.len(), 6);
+        assert_eq!(agent.prompts.load(Ordering::SeqCst), before + round);
+    }
+    // A cancelled prompt gives no code.
+    agent.user_present.store(false, Ordering::SeqCst);
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, totp(&bank, "https://example.com"))),
+        ErrorCode::UserCancelled
+    );
+    agent.user_present.store(true, Ordering::SeqCst);
+    // Not for another site's page, and not without a code tied to the login.
+    let prompts = agent.prompts.load(Ordering::SeqCst);
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, totp(&bank, "https://evil.test"))),
+        ErrorCode::Denied
+    );
+    assert_eq!(
+        agent.prompts.load(Ordering::SeqCst),
+        prompts,
+        "asked for nothing"
+    );
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, totp(&other, "https://example.com"))),
+        ErrorCode::ItemNotFound
+    );
+}
+
+#[test]
+fn the_bridge_saves_compares_and_updates_logins_of_the_page() {
+    let fixture = fixture(KeyStoreChoice::None);
+    fixture.create();
+    let compare = |username: &str, password: &str| {
+        let request = request::Body::BridgeCompare(proto::BridgeCompare {
+            origin: "https://login.example.com".into(),
+            top_origin: String::new(),
+            username: username.into(),
+            password: password.into(),
+        });
+        match fixture.call_as(Role::Bridge, request).unwrap() {
+            response::Body::BridgeComparison(comparison) => comparison,
+            _ => panic!("not a comparison"),
+        }
+    };
+    // Nothing yet: a new login.
+    assert!(compare("alice", "first password").item_id.is_empty());
+    let saved = fixture
+        .call_as(
+            Role::Bridge,
+            request::Body::BridgeSave(proto::BridgeSave {
+                origin: "https://login.example.com".into(),
+                top_origin: String::new(),
+                title: String::new(),
+                username: "alice".into(),
+                password: "first password".into(),
+            }),
+        )
+        .unwrap();
+    let response::Body::ItemAdded(added) = saved else {
+        panic!("not added");
+    };
+    // Saved with the page's origin and a title from its host.
+    let response::Body::Item(item) = fixture.call(get(&added.item_id)).unwrap() else {
+        panic!("not an item");
+    };
+    let Some(proto::item::Content::Login(login)) = item.content else {
+        panic!("not a login");
+    };
+    assert_eq!(login.title, "login.example.com");
+    assert_eq!(login.urls, ["https://login.example.com"]);
+
+    let same = compare("alice", "first password");
+    assert_eq!(
+        (same.item_id.as_slice(), same.same),
+        (added.item_id.as_slice(), true)
+    );
+    let changed = compare("alice", "second password");
+    assert_eq!(
+        (changed.item_id.as_slice(), changed.same),
+        (added.item_id.as_slice(), false)
+    );
+    assert!(compare("bob", "first password").item_id.is_empty());
+
+    let update = |origin: &str| {
+        request::Body::BridgeUpdate(proto::BridgeUpdate {
+            origin: origin.into(),
+            top_origin: String::new(),
+            item_id: added.item_id.clone(),
+            password: "second password".into(),
+        })
+    };
+    let refused = fixture.call_as(Role::Bridge, update("https://evil.test"));
+    assert_eq!(refused.err().unwrap().code, ErrorCode::Denied as i32);
+    fixture
+        .call_as(Role::Bridge, update("https://login.example.com"))
+        .unwrap();
+    assert!(compare("alice", "second password").same);
+    // A frame of another site may do none of it.
+    let framed = request::Body::BridgeSave(proto::BridgeSave {
+        origin: "https://login.example.com".into(),
+        top_origin: "https://evil.test".into(),
+        title: String::new(),
+        username: "mallory".into(),
+        password: "x".into(),
+    });
+    assert_eq!(
+        fixture.call_as(Role::Bridge, framed).err().unwrap().code,
+        ErrorCode::Denied as i32
+    );
+}

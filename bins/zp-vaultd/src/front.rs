@@ -340,6 +340,57 @@ impl Front {
         self.status(backs)
     }
 
+    /// The one-time code for a login of the page (`docs/spec/extension.md`
+    /// §9). The user is verified anew for every code: the TOTP domain is
+    /// locked and unlocked through the hardware key store, even if it was
+    /// open, so that the extension cannot take codes without the user.
+    fn bridge_totp(&self, backs: &mut Backs, request: &proto::BridgeTotp) -> Reply {
+        self.engine
+            .bridge_check(&request.origin, &request.top_origin, &request.item_id)?;
+        if !self.engine.has_domain(DomainId::Totp)? {
+            return Err(proto::Error::new(
+                ErrorCode::DomainUnavailable,
+                "this vault keeps no one-time codes",
+            ));
+        }
+        let Some(worker) = backs.worker(DomainId::Totp) else {
+            return Err(bad_request("no TOTP worker"));
+        };
+        if worker.unlocked(DomainId::Totp) {
+            as_result(worker.call(request::Body::Lock(proto::Lock { domain: None })))?;
+        }
+        as_result(worker.call(request::Body::Unlock(proto::Unlock {
+            domain: proto::Domain::Totp as i32,
+            master_password: String::new(),
+        })))?;
+        let list = request::Body::ListItems(proto::ListItems {
+            domain: proto::Domain::Totp as i32,
+            query: String::new(),
+        });
+        let response::Body::Items(items) = as_result(worker.call(list))? else {
+            return Err(bad_request("the TOTP worker gave an unexpected answer"));
+        };
+        for summary in items.items {
+            let get = request::Body::GetItem(proto::GetItem {
+                item_id: summary.item_id.clone(),
+            });
+            if let response::Body::Item(proto::Item {
+                content: Some(proto::item::Content::Totp(info)),
+                ..
+            }) = as_result(worker.call(get))?
+                && info.login_id.as_deref() == Some(request.item_id.as_slice())
+            {
+                return as_result(worker.call(request::Body::TotpCode(proto::TotpCode {
+                    item_id: summary.item_id,
+                })));
+            }
+        }
+        Err(proto::Error::new(
+            ErrorCode::ItemNotFound,
+            "no one-time code is tied to that login",
+        ))
+    }
+
     fn dispatch(&self, backs: &mut Backs, request: request::Body) -> Reply {
         use request::Body;
         match request {
@@ -383,6 +434,7 @@ impl Front {
                 self.route(backs, domain, Body::UpdateItem(update))
             }
             Body::TotpCode(code) => self.route(backs, DomainId::Totp, Body::TotpCode(code)),
+            Body::BridgeTotp(totp) => self.bridge_totp(backs, &totp),
             Body::CreateRecoveryKit(kit) => {
                 if self.engine.has_recovery_kit()? && !kit.replace {
                     return Err(proto::Error::new(
@@ -474,7 +526,13 @@ fn permitted(role: Role, request: &request::Body) -> bool {
         // time (`docs/spec/extension.md` §4).
         Role::Bridge => matches!(
             request,
-            request::Body::Status(_) | request::Body::BridgeFind(_) | request::Body::BridgeFill(_)
+            request::Body::Status(_)
+                | request::Body::BridgeFind(_)
+                | request::Body::BridgeFill(_)
+                | request::Body::BridgeTotp(_)
+                | request::Body::BridgeSave(_)
+                | request::Body::BridgeUpdate(_)
+                | request::Body::BridgeCompare(_)
         ),
         // What this role may ask beyond the state of the vault is defined
         // together with the agent broker (P7-01).

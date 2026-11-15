@@ -147,7 +147,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -276,6 +276,20 @@ pub mod request {
         /// page it matches.
         #[prost(message, tag = "101")]
         BridgeFill(super::BridgeFill),
+        /// Extension bridge: the current one-time code of the TOTP entry tied
+        /// to a login of the page, after the user is verified anew.
+        #[prost(message, tag = "102")]
+        BridgeTotp(super::BridgeTotp),
+        /// Extension bridge: saves a new login for the page.
+        #[prost(message, tag = "103")]
+        BridgeSave(super::BridgeSave),
+        /// Extension bridge: replaces the password of a login of the page.
+        #[prost(message, tag = "104")]
+        BridgeUpdate(super::BridgeUpdate),
+        /// Extension bridge: whether what the user typed into the page is
+        /// already in the vault.
+        #[prost(message, tag = "105")]
+        BridgeCompare(super::BridgeCompare),
         /// Key agent: offers the platform's hardware key store to the vault
         /// daemon. Starts a relay.
         #[prost(message, tag = "96")]
@@ -846,7 +860,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
     )]
     pub body: Option<response::Body>,
 }
@@ -933,6 +947,9 @@ pub mod response {
         /// Answer to `BridgeFill`.
         #[prost(message, tag = "25")]
         BridgeCredential(super::BridgeCredential),
+        /// Answer to `BridgeCompare`.
+        #[prost(message, tag = "26")]
+        BridgeComparison(super::BridgeComparison),
         /// Relay of the key agent, downlink: something to ask the platform's
         /// hardware key store.
         #[prost(message, tag = "23")]
@@ -1381,6 +1398,89 @@ pub struct BridgeCredential {
     pub password: String,
 }
 
+/// The one-time code for a login of the page (`docs/spec/extension.md` §9).
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeTotp {
+    /// The page's origin.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// The login (16 bytes) the TOTP entry is tied to.
+    #[prost(bytes = "vec", tag = "3")]
+    pub item_id: Vec<u8>,
+}
+
+/// A new login for the page (`docs/spec/extension.md` §8).
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct BridgeSave {
+    /// The page's origin; the login is saved with it.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// The login's title.
+    #[prost(string, tag = "3")]
+    pub title: String,
+    /// The user name typed into the page.
+    #[prost(string, tag = "4")]
+    pub username: String,
+    /// The password typed into the page.
+    #[prost(string, tag = "5")]
+    pub password: String,
+}
+
+/// A new password for a login of the page.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct BridgeUpdate {
+    /// The page's origin.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// The login (16 bytes); it must belong to the page.
+    #[prost(bytes = "vec", tag = "3")]
+    pub item_id: Vec<u8>,
+    /// The new password.
+    #[prost(string, tag = "4")]
+    pub password: String,
+}
+
+/// What the user typed into the page, to compare with the vault.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct BridgeCompare {
+    /// The page's origin.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// The user name typed.
+    #[prost(string, tag = "3")]
+    pub username: String,
+    /// The password typed.
+    #[prost(string, tag = "4")]
+    pub password: String,
+}
+
+/// Answer to [`BridgeCompare`].
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeComparison {
+    /// The login of the page with that user name (16 bytes); empty if there
+    /// is none.
+    #[prost(bytes = "vec", tag = "1")]
+    pub item_id: Vec<u8>,
+    /// Whether that login already has that password.
+    #[prost(bool, tag = "2")]
+    pub same: bool,
+}
+
 redacted_debug!(
     PairJoin,
     PairOffered,
@@ -1394,6 +1494,9 @@ redacted_debug!(
     Note,
     TotpCodeReply,
     BridgeCredential,
+    BridgeSave,
+    BridgeUpdate,
+    BridgeCompare,
     RecoveryKit,
 );
 

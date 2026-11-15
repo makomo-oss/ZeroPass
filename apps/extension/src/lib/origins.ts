@@ -8,7 +8,7 @@ export interface Sender {
   /** The URL of the sending frame. */
   url?: string;
   /** The tab: its URL is the top frame's. */
-  tab?: { url?: string };
+  tab?: { url?: string; id?: number };
 }
 
 /** The origin of a web page, if the URL is one ZeroPass fills (http, https). */
