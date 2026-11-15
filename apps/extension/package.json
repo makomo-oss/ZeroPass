@@ -1,0 +1,23 @@
+{
+  "name": "zeropass-extension",
+  "private": true,
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "postinstall": "wxt prepare"
+  },
+  "devDependencies": {
+    "happy-dom": "21.0.4",
+    "playwright": "1.64.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5",
+    "wxt": "0.21.5"
+  }
+}

@@ -409,11 +409,13 @@ fn the_extension_bridge_gets_one_login_of_the_page_at_a_time() {
     let find = |origin: &str| {
         request::Body::BridgeFind(proto::BridgeFind {
             origin: origin.into(),
+            top_origin: String::new(),
         })
     };
     let fill = |origin: &str, id: &[u8]| {
         request::Body::BridgeFill(proto::BridgeFill {
             origin: origin.into(),
+            top_origin: String::new(),
             item_id: id.to_vec(),
         })
     };
@@ -449,6 +451,30 @@ fn the_extension_bridge_gets_one_login_of_the_page_at_a_time() {
         code(fixture.call_as(Role::Bridge, find("example.com"))),
         ErrorCode::BadRequest
     );
+    // In a frame of another site: nothing is offered or handed out; in a
+    // frame of the same site, as on the page itself.
+    let framed = request::Body::BridgeFind(proto::BridgeFind {
+        origin: "https://example.com".into(),
+        top_origin: "https://evil.test".into(),
+    });
+    let response::Body::BridgeLogins(none) = fixture.call_as(Role::Bridge, framed).unwrap() else {
+        panic!("not logins");
+    };
+    assert!(none.logins.is_empty());
+    let framed_fill = |top: &str| {
+        request::Body::BridgeFill(proto::BridgeFill {
+            origin: "https://example.com".into(),
+            item_id: bank.clone(),
+            top_origin: top.into(),
+        })
+    };
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, framed_fill("https://evil.test"))),
+        ErrorCode::Denied
+    );
+    fixture
+        .call_as(Role::Bridge, framed_fill("https://www.example.com"))
+        .unwrap();
     // The bridge cannot unlock; once locked it is told so.
     assert_eq!(
         code(fixture.call_as(

@@ -63,8 +63,8 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 | `type` | 引数 | 応答 | 金庫デーモンへの要求 |
 |---|---|---|---|
 | `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか） | `Status` |
-| `find` | `origin` | `logins`: `id`、`title`、`username`、`match`（`exact` / `site`）。**パスワードは含まない** | `BridgeFind` |
-| `fill` | `origin`、`item`（ログインの ID） | `username`、`password` | `BridgeFill` |
+| `find` | `origin`、`top`（タブの最上位のフレームのオリジン） | `logins`: `id`、`title`、`username`、`match`（`exact` / `site`）。**パスワードは含まない** | `BridgeFind` |
+| `fill` | `origin`、`top`、`item`（ログインの ID） | `username`、`password` | `BridgeFill` |
 | `totp` | `origin`、`item`（ログインの ID） | `code` | `BridgeTotp`（P4-06） |
 | `save` | `origin`、`title`、`username`、`password` | `id` | `BridgeSave`（P4-06） |
 | `update` | `origin`、`item`、`username`、`password` | — | `BridgeUpdate`（P4-06） |
@@ -80,8 +80,8 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 
 | 番号 | 要求 | 応答 | 内容 |
 |---|---|---|---|
-| 100 | `BridgeFind { origin }` | `BridgeLogins`（応答 24） | `origin` に一致するログイン（§5）。ID、題名、利用者名、一致の度合い。パスワードの要らない場面でも、**秘密は含まない** |
-| 101 | `BridgeFill { origin, item_id }` | `BridgeCredential`（応答 25） | ログイン 1 件の利用者名とパスワード。そのログインが `origin` に一致しなければ `DENIED` |
+| 100 | `BridgeFind { origin, top_origin }` | `BridgeLogins`（応答 24） | `origin` に一致するログイン（§5）。ID、題名、利用者名、一致の度合い。パスワードの要らない場面でも、**秘密は含まない** |
+| 101 | `BridgeFill { origin, item_id, top_origin }` | `BridgeCredential`（応答 25） | ログイン 1 件の利用者名とパスワード。そのログインが `origin` に一致しなければ `DENIED` |
 | 102 | `BridgeTotp { origin, item_id }` | `TotpCodeReply` | P4-06 |
 | 103 | `BridgeSave { origin, title, username, password }` | `ItemAdded` | P4-06 |
 | 104 | `BridgeUpdate { origin, item_id, username, password }` | `Done` | P4-06 |
@@ -123,7 +123,7 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 ## 6. 拡張（P4-05）
 
 - WXT + TypeScript、Manifest V3。Chrome・Edge・Firefox。
-- 権限: `nativeMessaging`、`storage` は使わない、`activeTab`・`scripting` は使わない。content script はすべてのサイトの全フレームに入る（`<all_urls>`、`all_frames`）。
+- 権限: `nativeMessaging` と `activeTab`（ツールバーのポップアップを開いたときに、今のタブのアドレスを知るため）。`storage`・`tabs`・`scripting` は使わない。content script はすべてのサイトの全フレームに入る（`<all_urls>`、`all_frames`）。Chrome・Edge は Manifest V3、Firefox は Manifest V2（WXT の既定。Firefox の V3 ではサイトへの権限が利用者の許可制になるため）。
 - background（service worker）がブリッジとの接続を持ち、content script の要求に、`sender` から得たオリジンを付けて中継する。
 
 ## 7. フォームの検出と入力（P4-05）
@@ -132,7 +132,7 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 - 候補の表示: 欄にフォーカスすると、ページから切り離した表示（閉じた Shadow DOM）に、一致したログインの題名と利用者名を出す。パスワードは出さない。
 - **入力の条件**（すべて満たすときだけ）:
   1. 利用者が候補を選んだ（`isTrusted` のクリックまたはキー操作）。
-  2. 入力するフレームのオリジンが、タブの最上位のフレームと同じサイト（登録可能ドメイン）である。別のサイトの `iframe` の中には入力しない（クリックジャッキングの対策）。
+  2. 入力するフレームのオリジンが、タブの最上位のフレームと同じサイト（登録可能ドメイン）である。別のサイトの `iframe` の中には入力しない（クリックジャッキングの対策）。background は両方のオリジンをブラウザから得てブリッジに渡し（`find`・`fill` の `top`）、金庫デーモンが確かめる（`BridgeFind`・`BridgeFill` の `top_origin`。違えば候補なし・`DENIED`）。
   3. 欄が見えている（表示され、大きさがあり、透明でない、画面の外でない）、有効で、読み取り専用でない。
   4. パスワードは `type=password` の欄にだけ入れる。
 - 入力は、ページの枠組み（React など）が気付くように、値の設定と `input`・`change` イベントで行う。フォームは送信しない。

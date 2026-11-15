@@ -22,9 +22,19 @@ pub(crate) enum Request {
     /// Whether there is a vault, whether it runs, whether it is unlocked.
     Status,
     /// The logins that match a page.
-    Find { origin: String },
+    Find {
+        origin: String,
+        /// The tab's top frame, if the page is a frame.
+        #[serde(default)]
+        top: String,
+    },
     /// The user name and password of one login, for a page it matches.
-    Fill { origin: String, item: String },
+    Fill {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        item: String,
+    },
     /// Start the desktop application.
     OpenApp,
 }
@@ -166,7 +176,8 @@ mod tests {
         assert_eq!(
             find.request,
             Request::Find {
-                origin: "https://example.com".to_owned()
+                origin: "https://example.com".to_owned(),
+                top: String::new(),
             }
         );
         assert_eq!(
