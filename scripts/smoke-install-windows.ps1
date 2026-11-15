@@ -62,7 +62,7 @@ $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Unins
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
 $acl = Get-Acl $destination
 Assert (-not ($acl.Access | Where-Object {
-    $_.IdentityReference -match '\Users$|Authenticated Users|Everyone' -and
+    $_.IdentityReference -match '(^|[\\])Users$|Authenticated Users|Everyone' -and
     $_.FileSystemRights.ToString() -match 'Write|Modify|FullControl'
 })) 'users cannot change the installed programs'
 
