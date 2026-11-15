@@ -56,7 +56,7 @@ export async function shot(page, name) {
 export async function launch(vault, dataDir) {
   const port = 9300 + Math.floor(Math.random() * 600);
   mkdirSync(dataDir, { recursive: true });
-  const app = spawn(bin("zeropass"), ["--vault", vault, "--insecure-software-keystore"], {
+  const start = () => spawn(bin("zeropass"), ["--vault", vault, "--insecure-software-keystore"], {
     env: {
       ...process.env,
       ZEROPASS_VAULT: "",
@@ -68,6 +68,19 @@ export async function launch(vault, dataDir) {
     },
     stdio: "ignore",
   });
+  // A program just built may not start at once (a virus scanner still
+  // reading it): try again for a while, rather than fail.
+  let app;
+  for (let attempt = 0; ; attempt += 1) {
+    app = start();
+    const started = await new Promise((resolve) => {
+      app.once("spawn", () => resolve(null));
+      app.once("error", (error) => resolve(error));
+    });
+    if (started === null) break;
+    if (attempt >= 10) throw started;
+    await sleep(1000);
+  }
   let exited = null;
   app.on("exit", (code) => (exited = code));
   let browser;
