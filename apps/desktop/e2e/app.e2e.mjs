@@ -65,6 +65,8 @@ const app = spawn(
       ...process.env,
       ZEROPASS_VAULT: "",
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      // Development builds also pass it themselves (main.rs).
+      ZEROPASS_E2E_CDP_PORT: String(port),
     },
     stdio: "ignore",
   },
@@ -89,7 +91,7 @@ try {
         const report = spawnSync("powershell.exe", [
           "-NoProfile",
           "-Command",
-          "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe' or name='zeropass.exe'\" | Where-Object { $_.CommandLine -like '*zeropass*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.CommandLine.Substring(0, [Math]::Min(400, $_.CommandLine.Length)) }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -ge 9000 -and $_.LocalPort -lt 10000 } | ForEach-Object { 'listen ' + $_.LocalAddress + ':' + $_.LocalPort + ' pid ' + $_.OwningProcess }; (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv",
+          "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe' or name='zeropass.exe'\" | Where-Object { $_.CommandLine -like '*zeropass*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.CommandLine }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -ge 9000 -and $_.LocalPort -lt 10000 } | ForEach-Object { 'listen ' + $_.LocalAddress + ':' + $_.LocalPort + ' pid ' + $_.OwningProcess }; (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv",
         ], { encoding: "utf8" });
         console.log(`  webview processes and ports (port ${port}):
 ${report.stdout}${report.stderr}`);
