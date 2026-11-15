@@ -2221,8 +2221,20 @@ dependencies = [
  "rpassword",
  "tempfile",
  "zeroize",
+ "zp-client",
  "zp-clipboard",
  "zp-crypto",
+ "zp-ipc",
+ "zp-sandbox",
+ "zp-vault",
+]
+
+[[package]]
+name = "zp-client"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
  "zp-drive",
  "zp-ipc",
  "zp-pairing",

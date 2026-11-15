@@ -16,12 +16,10 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 qrcode = { version = "0.14.1", default-features = false }
 rpassword = "7.5.5"
 zeroize = "1.9.1"
+zp-client = { version = "0.0.0", path = "../../crates/zp-client" }
 zp-clipboard = { version = "0.0.0", path = "../../crates/zp-clipboard" }
 zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
-zp-drive = { version = "0.0.0", path = "../../crates/zp-drive" }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
-zp-pairing = { version = "0.0.0", path = "../../crates/zp-pairing" }
-zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }
 zp-vault = { version = "0.0.0", path = "../../crates/zp-vault" }
 
 [dev-dependencies]

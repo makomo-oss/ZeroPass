@@ -5,15 +5,15 @@
 //! unlocks stays unlocked in the daemon until it is locked or times out, so the
 //! next command does not ask again.
 //!
-//! This program never opens the vault file. For pairing and sync (`pair`,
-//! `join`, `sync`) it opens the connection to the other device and carries
-//! what the daemon sends and receives over it: ciphertext only.
+//! This program never opens the vault file, and has no network connection.
+//! For pairing and sync (`pair`, `join`, `sync`) the sync daemon holds the
+//! connection to the other device; for pairing this program carries what the
+//! two daemons send each other: ciphertext only. How it reaches the daemons
+//! is shared with the other clients (`zp-client`).
 
 mod clipboard;
-mod keyagent;
 mod nearby;
 mod remote;
-mod syncd;
 
 use std::error::Error;
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -22,15 +22,14 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use zeroize::Zeroizing;
+use zp_client::vaultd::{self, Start};
+use zp_client::{KeyStoreChoice, dev_key_path, syncd};
 use zp_crypto::{DomainId, ItemId};
 use zp_vault::VaultError;
 
-use remote::{Remote, Start};
+use remote::Remote;
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
-
-/// How long `daemon stop` waits for a daemon to let go of its endpoint.
-const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(name = "zp-cli", version, about = "ZeroPass command-line client")]
@@ -59,26 +58,14 @@ struct Cli {
     command: TopCommand,
 }
 
-/// Which key store protects the TOTP and passkey domains.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KeyStoreChoice {
-    /// The platform's hardware key store, if this device has one.
-    Platform,
-    /// None: password domain only.
-    None,
-    /// The development-only software key store.
-    InsecureSoftware,
-}
-
-impl KeyStoreChoice {
-    fn from_flags(cli: &Cli) -> Self {
-        if cli.insecure_software_keystore {
-            KeyStoreChoice::InsecureSoftware
-        } else if cli.no_hardware_keystore {
-            KeyStoreChoice::None
-        } else {
-            KeyStoreChoice::Platform
-        }
+/// Which key store protects the TOTP and passkey domains, as the flags say.
+fn key_store_choice(cli: &Cli) -> KeyStoreChoice {
+    if cli.insecure_software_keystore {
+        KeyStoreChoice::InsecureSoftware
+    } else if cli.no_hardware_keystore {
+        KeyStoreChoice::None
+    } else {
+        KeyStoreChoice::Platform
     }
 }
 
@@ -309,35 +296,6 @@ impl Input {
     }
 }
 
-fn dev_key_path(vault: &Path) -> PathBuf {
-    vault.with_extension("devkey")
-}
-
-/// Where this user's vault is kept when no other is named (ADR-0008): a
-/// directory of its own, because the vault daemon's sandbox is given access to
-/// the whole directory (`docs/spec/ipc.md` §9.1). The directory is created.
-fn default_vault_path() -> CliResult<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("ZeroPass"))
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join("Library/Application Support/ZeroPass"))
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
-            })
-            .map(|data| data.join("zeropass"))
-    };
-    let directory = base
-        .ok_or("cannot tell where this user's files go: pass --vault <PATH> or set ZEROPASS_VAULT")?
-        .join("Vault");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
-    Ok(directory.join("vault.zpvault"))
-}
-
 fn parse_id(text: &str) -> CliResult<ItemId> {
     let invalid = || "an item identifier is 32 hexadecimal digits";
     if text.len() != 32 || !text.is_ascii() {
@@ -481,19 +439,17 @@ fn daemon(
         if !vault_path.exists() {
             return Ok(());
         }
-        remote::connect(vault_path, choice, Start::Always)?;
+        vaultd::connect(vault_path, choice, Start::Always)?;
         syncd::connect(vault_path, true)?;
         return Ok(());
     }
     if matches!(action, DaemonAction::Stop) {
         // The sync daemon first: it works through the vault daemon.
         let sync_stopped = syncd::stop(vault_path)?;
-        let vault_stopped = match remote::connect(vault_path, choice, Start::Never)? {
+        let vault_stopped = match vaultd::connect(vault_path, choice, Start::Never)? {
             Some(client) => {
                 Remote::with(client).stop()?;
-                // It answers before it lets go of its endpoint: wait, so
-                // that the next command does not meet it on its way out.
-                zp_ipc::wait_until_closed(&zp_ipc::Endpoint::for_vault(vault_path)?, STOP_TIMEOUT);
+                vaultd::wait_until_stopped(vault_path)?;
                 true
             }
             None => false,
@@ -512,7 +468,7 @@ fn daemon(
         DaemonAction::Start => Start::Always,
         _ => Start::Never,
     };
-    match remote::connect(vault_path, choice, start)? {
+    match vaultd::connect(vault_path, choice, start)? {
         Some(client) => Remote::with(client).describe(out)?,
         None => writeln!(out, "the vault daemon is not running")?,
     }
@@ -542,12 +498,12 @@ fn run(cli: Cli) -> CliResult<()> {
     }
     let vault_path = match cli.vault.clone() {
         Some(path) => path,
-        None => default_vault_path()?,
+        None => zp_client::default_vault_path()?,
     };
     let mut out = io::stdout().lock();
-    let choice = KeyStoreChoice::from_flags(&cli);
+    let choice = key_store_choice(&cli);
     if cli.no_sandbox {
-        remote::disable_sandbox();
+        vaultd::disable_sandbox();
     }
     match cli.command {
         TopCommand::Init => init(choice, &vault_path, &mut out),
