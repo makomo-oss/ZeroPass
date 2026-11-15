@@ -95,7 +95,11 @@ foreach ($key in $nativeHostKeys) {
     $manifestPath = (Get-Item -Path $key).GetValue('')
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     Assert ($manifest.path -eq (Join-Path $destination 'zp-nmh.exe') -and $manifest.type -eq 'stdio') "the extension bridge is registered ($key)"
-    $allowed = if ($key -like '*Mozilla*') { @($manifest.allowed_extensions) } else { @($manifest.allowed_origins) }
+    # The browsers want a list, even of one: read it as one, whatever
+    # PowerShell makes of a single element.
+    $raw = Get-Content -LiteralPath $manifestPath -Raw
+    Assert ($raw -match '"allowed_(origins|extensions)":\s*\[') "the manifest lists the allowed extensions ($key)"
+    $allowed = @(if ($key -like '*Mozilla*') { $manifest.allowed_extensions } else { $manifest.allowed_origins })
     Assert ($allowed.Count -eq 1 -and ($allowed[0] -eq 'chrome-extension://gehobienihkbhglhnibeobdkgeinamdn/' -or $allowed[0] -eq 'zeropass@makomo-oss.github.io')) 'it serves the ZeroPass extension only'
 }
 $shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
