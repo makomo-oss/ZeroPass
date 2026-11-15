@@ -67,6 +67,17 @@ $page = Get-Content -LiteralPath (Join-Path $ui 'dist\index.html') -Raw
 if ($page -match 'zeropass-ui-not-built') {
     throw 'apps\desktop\dist holds the placeholder page, not the user interface'
 }
+# The browser extension, for the user to add to the browser from the
+# installation (it is not distributed through the browsers' stores yet).
+$extension = Join-Path $root 'apps\extension'
+Push-Location -LiteralPath $extension
+try {
+    Invoke-Checked 'npm' @('ci', '--no-audit', '--no-fund')
+    Invoke-Checked 'npm' @('run', 'build')
+    Invoke-Checked 'npm' @('run', 'build:firefox')
+} finally {
+    Pop-Location
+}
 $packages = @($Programs.Values | ForEach-Object { '-p', $_ })
 Invoke-Checked 'cargo' (@('build', '--release', '--locked') + $packages)
 
@@ -92,6 +103,10 @@ foreach ($file in 'install.ps1', 'uninstall.ps1', 'README.txt') {
     Copy-Item -LiteralPath (Join-Path 'packaging\windows' $file) -Destination $stage
 }
 Copy-Item -LiteralPath 'LICENSE' -Destination $stage
+$extensionStage = Join-Path $stage 'browser-extension'
+New-Item -ItemType Directory -Force -Path $extensionStage | Out-Null
+Copy-Item -LiteralPath (Join-Path $extension '.output\chrome-mv3') -Destination (Join-Path $extensionStage 'chrome') -Recurse
+Copy-Item -LiteralPath (Join-Path $extension '.output\firefox-mv2') -Destination (Join-Path $extensionStage 'firefox') -Recurse
 Set-Content -LiteralPath (Join-Path $stage 'VERSION') -Value $version -Encoding ascii
 
 # 3. Sign, if a certificate was given.

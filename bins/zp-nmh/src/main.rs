@@ -142,8 +142,12 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 totp: state(proto::Domain::Totp).available,
             })
         }
-        Request::Find { origin } => {
-            match daemon.call(request::Body::BridgeFind(proto::BridgeFind { origin }))? {
+        Request::Find { origin, top } => {
+            let find = proto::BridgeFind {
+                origin,
+                top_origin: top,
+            };
+            match daemon.call(request::Body::BridgeFind(find))? {
                 response::Body::BridgeLogins(found) => Ok(Answer::Logins {
                     logins: found
                         .logins
@@ -160,11 +164,12 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 _ => Err(unexpected()),
             }
         }
-        Request::Fill { origin, item } => {
+        Request::Fill { origin, top, item } => {
             let item_id = parse_id(&item)?;
             match daemon.call(request::Body::BridgeFill(proto::BridgeFill {
                 origin,
                 item_id,
+                top_origin: top,
             }))? {
                 response::Body::BridgeCredential(credential) => Ok(Answer::Credential {
                     username: Zeroizing::new(credential.username.clone()),
