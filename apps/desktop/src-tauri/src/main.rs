@@ -12,6 +12,7 @@
 mod clipboard;
 mod commands;
 mod daemon;
+mod devices;
 mod error;
 mod generator;
 mod items;
@@ -62,6 +63,10 @@ pub(crate) struct AppState {
     pub(crate) started: Instant,
     /// Where to report the start-up time, if it is being measured.
     pub(crate) startup_report: Option<PathBuf>,
+    /// Whether this application has made sure the sync daemon runs.
+    pub(crate) sync_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The pairing this device offers, if any.
+    pub(crate) pairing: devices::Pairing,
 }
 
 /// Whether the page may navigate to `url`: only to the application's own
@@ -131,6 +136,8 @@ fn main() {
         daemon: Daemon::new(vault, choice),
         started,
         startup_report: args.startup_time,
+        sync_started: std::sync::Arc::default(),
+        pairing: devices::Pairing::default(),
     };
 
     let built = tauri::Builder::default()
@@ -157,6 +164,16 @@ fn main() {
             items::generate_password,
             items::create_recovery_kit,
             items::change_master_password,
+            devices::list_devices,
+            devices::revoke_device,
+            devices::sync_status,
+            devices::sync_now,
+            devices::pair_start,
+            devices::pair_progress,
+            devices::pair_answer,
+            devices::pair_cancel,
+            devices::join_vault,
+            devices::default_device_name,
         ])
         .setup(|app| {
             let config = app

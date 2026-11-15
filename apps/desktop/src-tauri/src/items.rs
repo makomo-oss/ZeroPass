@@ -45,7 +45,7 @@ impl AppState {
     /// domain is unlocked with Windows Hello (through the key agent), and the
     /// request made again — for each such domain the request needs. A locked
     /// password domain is the page's to handle.
-    fn call_unlocking(&self, request: request::Body) -> CommandResult<response::Body> {
+    pub(crate) fn call_unlocking(&self, request: request::Body) -> CommandResult<response::Body> {
         // The TOTP and the passkey domain may each need unlocking once.
         for _ in 0..2 {
             match self.daemon.call(request.clone()) {
@@ -71,6 +71,27 @@ impl AppState {
             }
         }
         Ok(self.daemon.call(request)?)
+    }
+
+    /// The state of the vault, from the daemon.
+    pub(crate) fn status(&self) -> CommandResult<proto::StatusReply> {
+        match self.daemon.call(request::Body::Status(proto::Status {}))? {
+            response::Body::Status(status) => Ok(status),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Unlocks a hardware-bound domain: Windows Hello asks, through the key
+    /// agent.
+    pub(crate) fn unlock_hardware(&self, domain: proto::Domain) -> CommandResult<()> {
+        self.daemon.call_with_key_agent(
+            Start::IfVaultExists,
+            request::Body::Unlock(proto::Unlock {
+                domain: domain as i32,
+                master_password: String::new(),
+            }),
+        )?;
+        Ok(())
     }
 
     fn get(&self, id: Vec<u8>) -> CommandResult<proto::Item> {

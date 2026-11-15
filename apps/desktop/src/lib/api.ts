@@ -165,3 +165,68 @@ export const items = {
   changeMasterPassword: (current: string, next: string) =>
     invoke<void>("change_master_password", { current, new: next }),
 };
+
+export interface Device {
+  id: string;
+  name: string;
+  state: "this" | "active" | "revoked";
+  changes_held: number;
+}
+
+export interface SyncStatus {
+  running: boolean;
+  syncing: boolean;
+  not_syncing_because: string;
+  transports: string[];
+  problems: string[];
+  lan_endpoints: string[];
+}
+
+export interface SyncReport {
+  other_devices: number;
+  results: { name: string; sent: number; received: number; error: string }[];
+}
+
+export type PairProgress =
+  | { stage: "idle" }
+  | { stage: "starting" }
+  | {
+      stage: "waiting";
+      code: string;
+      qr: string;
+      lifetime_secs: number;
+      transports: string[];
+      problems: string[];
+    }
+  | { stage: "confirm"; device_id: string; name: string }
+  | {
+      stage: "done";
+      device_id: string;
+      name: string;
+      first_sync_error: string;
+      sent: number;
+      received: number;
+    }
+  | { stage: "failed"; message: string }
+  | { stage: "cancelled" };
+
+export interface Joined {
+  vault_id: string;
+  first_sync_error: string;
+  sent: number;
+  received: number;
+}
+
+export const devices = {
+  list: () => invoke<Device[]>("list_devices"),
+  revoke: (id: string) => invoke<void>("revoke_device", { id }),
+  syncStatus: (start: boolean) => invoke<SyncStatus>("sync_status", { start }),
+  syncNow: (seconds: number) => invoke<SyncReport>("sync_now", { seconds }),
+  pairStart: () => invoke<void>("pair_start"),
+  pairProgress: () => invoke<PairProgress>("pair_progress"),
+  pairAnswer: (approved: boolean) => invoke<void>("pair_answer", { approved }),
+  pairCancel: () => invoke<void>("pair_cancel"),
+  join: (code: string, name: string, password: string) =>
+    invoke<Joined>("join_vault", { code, name, password }),
+  defaultName: () => invoke<string>("default_device_name"),
+};

@@ -64,7 +64,11 @@ cargo build -p zeropass-desktop -p zp-vaultd -p zp-keyagent -p zp-syncd -p zp-cl
 node e2e/app.e2e.mjs              # E2E_SCREENSHOTS=<dir> keeps pictures
 ```
 
-It uses a new vault in a temporary directory with the development-only
+`node e2e/pairing.e2e.mjs` runs two copies of the program, each with its own
+vault and daemons, pairs them, syncs a change and revokes one. It needs a
+local network interface with multicast, so it is run by hand, not in CI.
+
+The tests use new vaults in a temporary directory with the development-only
 software key store, so Windows Hello does not ask. Copying to the clipboard is
 checked only with `ZEROPASS_TEST_CLIPBOARD=1` (as in CI). The debugging port is
 opened through `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, which WebView2 reads

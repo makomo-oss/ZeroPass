@@ -84,7 +84,11 @@
     </div>
   </main>
 {:else if screen === "welcome"}
-  <Welcome vaultPath={info?.vault_path ?? ""} oncreated={(created) => (status = created)} />
+  <Welcome
+    vaultPath={info?.vault_path ?? ""}
+    oncreated={(created) => (status = created)}
+    onjoined={() => void refresh()}
+  />
 {:else if screen === "unlock"}
   <Unlock onunlocked={() => void refresh()} />
 {:else if screen === "vault" && status}

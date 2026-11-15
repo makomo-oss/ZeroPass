@@ -50,6 +50,10 @@ impl Daemon {
         }
     }
 
+    pub(crate) fn choice(&self) -> KeyStoreChoice {
+        self.choice
+    }
+
     pub(crate) fn vault(&self) -> &Path {
         &self.vault
     }

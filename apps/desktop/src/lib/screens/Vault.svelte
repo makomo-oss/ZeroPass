@@ -13,6 +13,7 @@
     type Summary,
   } from "../api";
   import Codes from "../components/Codes.svelte";
+  import Devices from "../components/Devices.svelte";
   import Generator from "../components/Generator.svelte";
   import LoginForm from "../components/LoginForm.svelte";
   import LoginView from "../components/LoginView.svelte";
@@ -34,7 +35,7 @@
     onchanged: () => void;
   } = $props();
 
-  type Section = "logins" | "notes" | "codes" | "generator" | "settings";
+  type Section = "logins" | "notes" | "codes" | "generator" | "devices" | "settings";
   let section = $state<Section>("logins");
   let all: Summary[] = $state([]);
   let query = $state("");
@@ -89,6 +90,8 @@
     details = null;
     mode = "view";
     query = "";
+    // What other devices changed shows when the user looks.
+    if (next === "logins" || next === "notes") void load();
   }
 
   async function saved(id: string) {
@@ -108,6 +111,9 @@
     }
   }
 
+  /** How often the list is read again: other devices change the vault too. */
+  const RELOAD_MS = 10_000;
+
   onMount(() => {
     void load();
     const keys = (event: KeyboardEvent) => {
@@ -116,8 +122,19 @@
         search?.focus();
       }
     };
+    const onFocus = () => void load();
+    const timer = setInterval(() => {
+      // Not while a form is open: nothing the user types is disturbed, but
+      // there is no need either.
+      if (document.visibilityState === "visible" && mode === "view") void load();
+    }, RELOAD_MS);
     window.addEventListener("keydown", keys);
-    return () => window.removeEventListener("keydown", keys);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("keydown", keys);
+      window.removeEventListener("focus", onFocus);
+    };
   });
 
   const sections: { id: Section; label: string }[] = [
@@ -125,6 +142,7 @@
     { id: "notes", label: "Secure notes" },
     { id: "codes", label: "One-time codes" },
     { id: "generator", label: "Password generator" },
+    { id: "devices", label: "Devices" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -225,6 +243,8 @@
         <h2>Password generator</h2>
         <Generator />
       </div>
+    {:else if section === "devices"}
+      <Devices {onchanged} />
     {:else if section === "settings"}
       <Settings {status} {info} {onchanged} />
     {:else if mode === "new"}

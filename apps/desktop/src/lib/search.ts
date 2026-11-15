@@ -37,3 +37,11 @@ export function filterItems(items: Summary[], query: string): Summary[] {
 export function byTitle(a: Summary, b: Summary): number {
   return a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true });
 }
+
+/** The sync daemon's names for its transports, in words. */
+export function transportNames(transports: string[]): string {
+  const names = transports.map((transport) =>
+    transport === "lan" ? "the local network" : transport === "ble" ? "Bluetooth" : transport,
+  );
+  return names.length === 0 ? "—" : names.join(" and ");
+}
