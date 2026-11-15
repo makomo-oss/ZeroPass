@@ -7,7 +7,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Once;
 
-/// Makes sure the daemon executables are beside `zp-cli` and up to date.
+/// Makes sure the daemon executables (and the key agent) are beside `zp-cli`
+/// and up to date.
 ///
 /// Cargo builds the binaries of the package under test, but `zp-vaultd` and
 /// `zp-syncd` are other packages: `cargo test -p zp-cli` alone would not build
@@ -18,7 +19,16 @@ pub(crate) fn daemon_is_built() {
         let cli = Path::new(env!("CARGO_BIN_EXE_zp-cli"));
         let dir = cli.parent().unwrap();
         let mut cargo = Command::new(env!("CARGO"));
-        cargo.args(["build", "--locked", "-p", "zp-vaultd", "-p", "zp-syncd"]);
+        cargo.args([
+            "build",
+            "--locked",
+            "-p",
+            "zp-vaultd",
+            "-p",
+            "zp-syncd",
+            "-p",
+            "zp-keyagent",
+        ]);
         if dir.file_name().is_some_and(|name| name == "release") {
             cargo.arg("--release");
         }
@@ -28,7 +38,7 @@ pub(crate) fn daemon_is_built() {
             "building the daemons failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        for name in ["zp-vaultd", "zp-syncd"] {
+        for name in ["zp-vaultd", "zp-syncd", "zp-keyagent"] {
             let daemon = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
             assert!(daemon.exists(), "{} was not built", daemon.display());
         }

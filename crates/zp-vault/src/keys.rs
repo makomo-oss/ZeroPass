@@ -442,6 +442,38 @@ impl Vault {
         Ok(Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?.epoch())
     }
 
+    /// The key this device's slot of domain `D` holds, and its generation, for
+    /// handing the unlocked domain to another process of the vault daemon
+    /// ([`Self::adopt_slot_key`]). The domain must be unlocked.
+    ///
+    /// The bytes are the raw vault key: seal them to the receiving process and
+    /// never store or log them.
+    pub fn export_slot_key<D: Domain>(
+        &mut self,
+    ) -> Result<(u32, Zeroizing<[u8; KEY_LEN]>), VaultError> {
+        let ring = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
+        let (epoch, key) = ring.base();
+        Ok((epoch, key.to_transfer_bytes()))
+    }
+
+    /// Unlocks domain `D` with the slot key another process of the vault
+    /// daemon unlocked ([`Self::export_slot_key`]), instead of asking the user
+    /// again. The ring is rebuilt from the vault file, as after any unlock.
+    pub fn adopt_slot_key<D: Domain>(
+        &mut self,
+        epoch: u32,
+        key: &[u8; KEY_LEN],
+    ) -> Result<(), VaultError> {
+        if !self.has_domain(D::ID)? {
+            return Err(VaultError::DomainUnavailable(D::ID));
+        }
+        let ring = self
+            .store
+            .key_ring(VaultKey::<D>::from_transfer_bytes(key), epoch)?;
+        self.keys.insert(ring, self.store.now_ms());
+        self.after_unlock::<D>()
+    }
+
     /// Replaces the vault key of domain `D`, which must be unlocked. Versions
     /// written from now on cannot be read with the previous keys; the other
     /// devices receive the new key with their next sync. Returns the new

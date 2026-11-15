@@ -170,6 +170,7 @@ impl Service {
         state: &mut State,
         request: &proto::PairOffer,
     ) -> Result<response::Body, proto::Error> {
+        self.whole()?;
         let mut hints = Vec::with_capacity(request.hints.len());
         for hint in &request.hints {
             let address: SocketAddr = hint
@@ -206,6 +207,7 @@ impl Service {
 
     /// `PairAdmit`: admits the device at the other end of the relayed link.
     pub(crate) fn pair_admit(&self, relay: RelayEnd) -> Result<response::Body, proto::Error> {
+        self.whole()?;
         let mut state = self.state();
         let state = &mut *state;
         Self::expire_offer(state);
@@ -268,6 +270,7 @@ impl Service {
         request: &proto::PairJoin,
         relay: RelayEnd,
     ) -> Result<response::Body, proto::Error> {
+        self.whole()?;
         let mut state = self.state();
         if state.vault.is_some() || self.path.exists() {
             return Err(vault_error(VaultError::AlreadyExists));
@@ -336,6 +339,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::front::Front;
 
     const PASSWORD: &str = "correct horse battery staple";
     const OTHER_PASSWORD: &str = "an entirely different passphrase";
@@ -343,7 +347,7 @@ mod tests {
     /// A daemon serving a vault path over the real IPC; this test binary is
     /// its user interface.
     struct Daemon {
-        service: Arc<Service>,
+        service: Arc<Front>,
         endpoint: Endpoint,
         shutdown: ShutdownHandle,
         serving: Option<JoinHandle<()>>,
@@ -352,9 +356,10 @@ mod tests {
     impl Daemon {
         fn start(path: &Path) -> Self {
             let this = zp_ipc::current_executable().unwrap();
-            let service = Arc::new(Service::new(
+            let service = Arc::new(Front::local(
                 path.to_path_buf(),
                 KeyStoreChoice::InsecureSoftware,
+                None,
             ));
             let endpoint = Endpoint::for_vault(path).unwrap();
             let policy = ClientPolicy::deny_all().allow(&this, proto::Role::Ui);
@@ -628,26 +633,31 @@ mod tests {
         .unwrap();
         ask().unwrap();
 
-        // While the offer waits, idle domains do not lock themselves ...
-        {
-            let mut state = pc.service.state();
-            let vault = state.vault.as_mut().unwrap();
-            assert_eq!(vault.auto_lock().password, None);
-            assert_eq!(vault.auto_lock().hardware, None);
-        }
-        // ... and when it has expired, they do again.
-        {
-            let mut state = pc.service.state();
-            state.offer.as_mut().unwrap().expires = Instant::now();
-        }
+        // While the offer waits, a process of its own holds the keys to hand
+        // over; when it has expired, that process is gone, with the keys.
+        assert!(pc.service.offer_waits());
+        pc.service.expire_offer();
         pc.service.tick();
-        let mut state = pc.service.state();
-        assert!(state.offer.is_none());
-        let vault = state.vault.as_mut().unwrap();
-        assert_eq!(vault.auto_lock(), AutoLock::default());
+        assert!(!pc.service.offer_waits());
+        let admit = pc
+            .connect()
+            .start_relay(request::Body::PairAdmit(proto::PairAdmit {}));
+        let (_, mut downlink) = admit.unwrap();
+        assert_eq!(
+            downlink.receive().unwrap_err().code(),
+            Some(ErrorCode::InvalidInput)
+        );
+
+        // Locking any domain withdraws an offer.
+        ask().unwrap();
+        assert!(pc.service.offer_waits());
+        pc.call(request::Body::Lock(proto::Lock {
+            domain: Some(Domain::Passkey as i32),
+        }))
+        .unwrap();
+        assert!(!pc.service.offer_waits());
 
         // A hint that is not an address is refused.
-        drop(state);
         let bad = pc.call(request::Body::PairOffer(proto::PairOffer {
             hints: vec!["not an address".into()],
         }));

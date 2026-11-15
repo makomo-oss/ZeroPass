@@ -1,0 +1,23 @@
+[package]
+name = "zp-keyagent"
+description = "ZeroPass key agent: asks the platform's hardware key store on behalf of the vault daemon."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# This binary must stay offline: scripts/check-offline-deps.sh fails the build
+# if a networking crate appears in its dependency tree (ADR-0004). It sees
+# the signatures that unwrap the TOTP and passkey vault keys.
+[dependencies]
+clap = { version = "4.6.7", features = ["derive", "env"] }
+zeroize = "1.9.1"
+zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
+zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
+zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
+zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }

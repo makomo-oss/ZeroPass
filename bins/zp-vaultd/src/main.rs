@@ -8,10 +8,16 @@
 //! One daemon serves one vault file. Unlocked domains stay unlocked across
 //! client connections until they are locked, time out, or the daemon stops.
 
+mod agent;
+mod back;
 mod convert;
+mod front;
 mod pairing;
+mod port;
 mod service;
 mod sync;
+mod wire;
+mod worker;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,9 +26,11 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
+use zp_crypto::DomainId;
 use zp_ipc::{ClientPolicy, Endpoint, IpcError, Server};
 
-use service::{KeyStoreChoice, Service, log};
+use front::Front;
+use service::{KeyStoreChoice, Scope, log};
 
 #[derive(Parser)]
 #[command(name = "zp-vaultd", version, about = "ZeroPass vault daemon")]
@@ -40,6 +48,11 @@ struct Args {
     /// created this way has no TOTP and passkey domains.
     #[arg(long, conflicts_with = "insecure_software_keystore")]
     no_hardware_keystore: bool,
+
+    /// Used by the daemon itself: run as one of its other processes (ADR-0007),
+    /// taking orders from standard input.
+    #[arg(long, hide = true, value_parser = ["totp", "passkey", "whole"])]
+    worker: Option<String>,
 }
 
 /// How often idle domains are checked for their timeout.
@@ -51,6 +64,22 @@ const EXIT_PANIC: i32 = 101;
 /// Exit code when another daemon already serves the vault.
 const EXIT_ALREADY_RUNNING: u8 = 2;
 
+/// Dies with the process.
+fn every_tick(tick: impl Fn() + Send + 'static) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(TICK);
+            tick();
+        }
+    });
+}
+
+/// One of the processes behind the one the clients talk to.
+fn run_worker(vault: PathBuf, key_store: KeyStoreChoice, scope: Scope) -> Result<(), IpcError> {
+    worker::run(vault, key_store, scope, std::io::stdin(), std::io::stdout())
+        .map_err(|error| IpcError::Io(std::io::Error::other(error.message)))
+}
+
 fn run(args: Args) -> Result<(), IpcError> {
     let vault = std::path::absolute(&args.vault)?;
     let key_store = if args.insecure_software_keystore {
@@ -60,6 +89,12 @@ fn run(args: Args) -> Result<(), IpcError> {
     } else {
         KeyStoreChoice::Platform
     };
+    match args.worker.as_deref() {
+        None => {}
+        Some("totp") => return run_worker(vault, key_store, Scope::Domain(DomainId::Totp)),
+        Some("passkey") => return run_worker(vault, key_store, Scope::Domain(DomainId::Passkey)),
+        Some(_) => return run_worker(vault, key_store, Scope::Whole),
+    }
     let endpoint = Endpoint::for_vault(&vault)?;
     let policy = ClientPolicy::beside_current_exe()?;
     let server = Server::bind(&endpoint, policy, env!("CARGO_PKG_VERSION"))?;
@@ -80,19 +115,16 @@ fn run(args: Args) -> Result<(), IpcError> {
         }
     ));
 
-    let service = Arc::new(Service::new(vault, key_store));
+    let front = Front::new(vault, key_store, std::env::current_exe()?)
+        .map_err(|error| IpcError::Io(std::io::Error::other(error.message)))?;
+    let front = Arc::new(front);
     {
-        // Dies with the process.
-        let service = Arc::clone(&service);
-        thread::spawn(move || {
-            loop {
-                thread::sleep(TICK);
-                service.tick();
-            }
-        });
+        let front = Arc::clone(&front);
+        every_tick(move || front.tick());
     }
-    server.serve(Arc::clone(&service));
-    service.lock_all();
+    server.serve(Arc::clone(&front));
+    // Ends the other processes, with their keys, before this one ends.
+    front.stop();
     log("stopped");
     Ok(())
 }

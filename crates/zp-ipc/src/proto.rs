@@ -71,6 +71,9 @@ pub enum Role {
     Broker = 3,
     /// The proximity sync daemon.
     Sync = 4,
+    /// The key agent: asks the platform's hardware key store on behalf of
+    /// the vault daemon (`docs/spec/ipc.md` §13).
+    KeyAgent = 5,
 }
 
 /// The state of a device of the vault.
@@ -144,7 +147,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97"
     )]
     pub body: Option<request::Body>,
 }
@@ -265,6 +268,13 @@ pub mod request {
         /// link. Starts a relay.
         #[prost(message, tag = "83")]
         PairConnect(super::PairConnect),
+        /// Key agent: offers the platform's hardware key store to the vault
+        /// daemon. Starts a relay.
+        #[prost(message, tag = "96")]
+        KeyAgentAttach(super::KeyAgentAttach),
+        /// Relay of the key agent, uplink: the answer to a `KeyAgentRequest`.
+        #[prost(message, tag = "97")]
+        KeyAgentReply(super::KeyAgentReply),
     }
 }
 
@@ -618,6 +628,139 @@ pub struct PairConnect {
 }
 
 // ---------------------------------------------------------------------------
+// Key agent (`docs/spec/ipc.md` §13)
+// ---------------------------------------------------------------------------
+
+/// Offers the platform's hardware key store to the vault daemon, for as long
+/// as the relay lasts. The daemon answers `Listening` once it will use it.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct KeyAgentAttach {}
+
+/// Something the vault daemon asks the platform's hardware key store.
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyAgentRequest {
+    /// Repeated in the reply.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// What is asked.
+    #[prost(oneof = "key_agent_request::Ask", tags = "2, 3")]
+    pub ask: Option<key_agent_request::Ask>,
+}
+
+/// The oneof of [`KeyAgentRequest`].
+pub mod key_agent_request {
+    use prost::Oneof;
+
+    /// What the vault daemon asks.
+    #[derive(Clone, PartialEq, Oneof)]
+    pub enum Ask {
+        /// Whether this device has a hardware key store.
+        #[prost(message, tag = "2")]
+        Probe(super::KeyAgentProbe),
+        /// A signature, which verifies the user.
+        #[prost(message, tag = "3")]
+        Sign(super::KeyAgentSign),
+    }
+}
+
+/// Asks whether this device has a hardware key store.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct KeyAgentProbe {
+    /// Create the store's key if it does not exist yet, which may ask the user.
+    #[prost(bool, tag = "1")]
+    pub create: bool,
+}
+
+/// Asks the hardware key store to sign after verifying the user.
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyAgentSign {
+    /// What to sign. Not a secret: it is stored beside the wrapped key.
+    #[prost(bytes = "vec", tag = "1")]
+    pub challenge: Vec<u8>,
+    /// The public key to seal the signature to (`zp_crypto::seal_to`, with the
+    /// challenge as the context): only the process that asked can open it.
+    #[prost(bytes = "vec", tag = "2")]
+    pub reply_key: Vec<u8>,
+}
+
+/// The key agent's answer to a [`KeyAgentRequest`].
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyAgentReply {
+    /// The `id` of the request.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// The answer.
+    #[prost(oneof = "key_agent_reply::Outcome", tags = "2, 3, 4")]
+    pub outcome: Option<key_agent_reply::Outcome>,
+}
+
+/// The oneof of [`KeyAgentReply`].
+pub mod key_agent_reply {
+    use prost::Oneof;
+
+    /// What the hardware key store answered.
+    #[derive(Clone, PartialEq, Oneof)]
+    pub enum Outcome {
+        /// Answer to `Probe`: there is a hardware key store.
+        #[prost(message, tag = "2")]
+        Available(super::KeyStoreAvailable),
+        /// Answer to `Sign`: the signature, sealed to `reply_key`.
+        #[prost(bytes = "vec", tag = "3")]
+        Signature(Vec<u8>),
+        /// It did not work.
+        #[prost(message, tag = "4")]
+        Failed(super::KeyStoreFailure),
+    }
+}
+
+/// This device has a hardware key store.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct KeyStoreAvailable {
+    /// Which implementation it is: the first byte of the key slots it wraps
+    /// (`docs/spec/crypto.md` §7).
+    #[prost(uint32, tag = "1")]
+    pub implementation_id: u32,
+}
+
+/// Why the hardware key store did not answer as asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Enumeration)]
+#[repr(i32)]
+pub enum KeyStoreProblem {
+    /// Not set.
+    Unspecified = 0,
+    /// This device has no hardware key store, or the user has not set it up.
+    Unavailable = 1,
+    /// The user dismissed the prompt or was not recognised.
+    UserCancelled = 2,
+    /// The store reported an error.
+    Platform = 3,
+}
+
+/// The hardware key store did not answer as asked.
+#[derive(Clone, PartialEq, Message)]
+pub struct KeyStoreFailure {
+    /// What went wrong.
+    #[prost(enumeration = "KeyStoreProblem", tag = "1")]
+    pub problem: i32,
+    /// A sentence for people.
+    #[prost(string, tag = "2")]
+    pub message: String,
+}
+
+impl KeyAgentReply {
+    /// A reply that says the store did not answer as asked.
+    pub fn failed(id: u64, problem: KeyStoreProblem, message: impl Into<String>) -> Self {
+        Self {
+            id,
+            outcome: Some(key_agent_reply::Outcome::Failed(KeyStoreFailure {
+                problem: problem as i32,
+                message: message.into(),
+            })),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Item content
 // ---------------------------------------------------------------------------
 
@@ -695,7 +838,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
     )]
     pub body: Option<response::Body>,
 }
@@ -776,6 +919,10 @@ pub mod response {
         /// pairing code can be shown from here on.
         #[prost(message, tag = "22")]
         Listening(super::Listening),
+        /// Relay of the key agent, downlink: something to ask the platform's
+        /// hardware key store.
+        #[prost(message, tag = "23")]
+        KeyAgentRequest(super::KeyAgentRequest),
     }
 }
 

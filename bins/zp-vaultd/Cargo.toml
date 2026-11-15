@@ -15,10 +15,10 @@ workspace = true
 # if a networking crate appears in its dependency tree (ADR-0004).
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
+prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 zeroize = "1.9.1"
 zp-crypto = { version = "0.0.0", path = "../../crates/zp-crypto" }
 zp-drive = { version = "0.0.0", path = "../../crates/zp-drive" }
-zp-hwkey = { version = "0.0.0", path = "../../crates/zp-hwkey" }
 zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
 zp-pairing = { version = "0.0.0", path = "../../crates/zp-pairing" }
 zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox" }

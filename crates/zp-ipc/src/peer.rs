@@ -11,14 +11,18 @@ pub const DAEMON_NAME: &str = "zp-vaultd";
 /// The file name of the sync daemon executable, without the platform's suffix.
 pub const SYNC_DAEMON_NAME: &str = "zp-syncd";
 
+/// The file name of the key agent executable, without the platform's suffix.
+pub const KEY_AGENT_NAME: &str = "zp-keyagent";
+
 /// The executables that may connect when installed beside the daemon, and the
 /// role each one gets.
-const CLIENTS: [(&str, Role); 5] = [
+const CLIENTS: [(&str, Role); 6] = [
     ("zp-cli", Role::Ui),
     ("zeropass", Role::Ui),
     ("zp-nmh", Role::Bridge),
     ("zp-broker", Role::Broker),
     ("zp-syncd", Role::Sync),
+    (KEY_AGENT_NAME, Role::KeyAgent),
 ];
 
 /// What the operating system reports about the process at the other end.

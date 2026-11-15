@@ -394,7 +394,7 @@ impl Vault {
     /// written by an earlier format lacks: the device identity, the device
     /// signing key for every unlocked domain, and signatures on this device's
     /// earlier versions in `D`. A no-op for up-to-date vaults.
-    fn after_unlock<D: Domain>(&mut self) -> Result<(), VaultError> {
+    pub(crate) fn after_unlock<D: Domain>(&mut self) -> Result<(), VaultError> {
         if !self.store.is_provisioned()? {
             let signer = self.store.provision_device(&default_device_name())?;
             self.give_device_key::<D>(&signer)?;
