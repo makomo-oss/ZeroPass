@@ -12,7 +12,7 @@ P4-01 で、デスクトップアプリ（ADR-0001 の Tauri 2 + Svelte + TypeSc
 
 - `tauri` 2.12 は、**Android と iOS 向けにだけ** HTTP クライアント（`reqwest`、その下の `hyper`・`mio`・`socket2`）に依存する。Windows・macOS・Linux 向けの依存ツリーにネットワーク系クレートはない。Linux 向けには `soup3`（WebKitGTK の HTTP ライブラリの束縛。wry が独自のスキームを登録するのに使う）が入る。
 - Tauri は、`custom-protocol` 機能がなく `devUrl` が設定されていれば、開発用サーバー（`http://localhost:…`）からページを読む。`frontendDist` のディレクトリは、コンパイル時に存在しなければならない。
-- Linux では GTK 3 の束縛が、保守されていない手続きマクロ `proc-macro-error`（RUSTSEC-2024-0370）をコンパイル時に使う。
+- Linux では GTK 3 の束縛が、保守されていない手続きマクロ `proc-macro-error`（RUSTSEC-2024-0370）をコンパイル時に使い、`glib` 0.18（RUSTSEC-2024-0429）に依存する。
 
 ## 決定
 
@@ -27,7 +27,7 @@ P4-01 で、デスクトップアプリ（ADR-0001 の Tauri 2 + Svelte + TypeSc
 4. **金庫との接続**: アプリは `zp-cli` と同じく `zp-client` を通じて金庫デーモンと同期デーモンに接続し、デーモンが動いていなければ起動する（金庫デーモンはサンドボックスの中で）。IPC の要求はすべてワーカースレッドで行う（Windows Hello の確認やペアリングの待ちで、ウィンドウを止めない）。Hello の要る操作では、鍵エージェントをコンソールの窓なしで起動する（`zp_client::set_windowed`）。
 5. **秘密の扱い**: ページに平文を渡すのは、利用者が見ると決めたときだけにする（パスワードの表示は項目ごと・その都度）。クリップボードへのコピーは Rust 側で項目 ID から行い（`zp-clipboard`、履歴とクラウド同期に載せず、30 秒で消す）、パスワードをページに渡さない。
 6. **依存の検査**: `zeropass-desktop` を、デスクトップの対象（Windows・macOS・Linux の x86_64 / aarch64）ごとに依存の検査にかける。Android・iOS 向けにはビルドしないので、その対象は検査しない。
-7. **`proc-macro-error` の勧告は記録して無視する**（`deny.toml`、`.cargo/audit.toml`）。コンパイル時だけ動く手続きマクロで、出荷するプログラムには含まれない。
+7. **Linux の GTK 3 の束縛に関する勧告は記録して無視する**（`deny.toml`、`.cargo/audit.toml`）。`proc-macro-error`（RUSTSEC-2024-0370、保守されていない）はコンパイル時だけ動く手続きマクロで、出荷するプログラムには含まれない。`glib` 0.18 の GVariant の文字列の反復子の不健全さ（RUSTSEC-2024-0429）は、ZeroPass が GVariant を扱わないので影響しない。どちらも、Tauri が GTK 3 を使う限り直せない。
 
 ## 検討した代替案
 

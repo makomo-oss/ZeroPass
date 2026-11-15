@@ -16,6 +16,11 @@ ignore = [
     # that Tauri uses on Linux; nothing of it is in a shipped program
     # (ADR-0009).
     { id = "RUSTSEC-2024-0370", reason = "compile-time only, via Tauri's GTK 3 bindings on Linux" },
+    # `glib` 0.18 has an unsound string iterator over GVariant values
+    # (VariantStrIter). Linux only, through the GTK 3 stack that Tauri uses;
+    # ZeroPass does not handle GVariant values, and the fix exists only in
+    # glib versions the GTK 3 bindings do not use (ADR-0009).
+    { id = "RUSTSEC-2024-0429", reason = "Linux only, via Tauri's GTK 3 bindings; the affected iterator is not used" },
 ]
 
 [licenses]
