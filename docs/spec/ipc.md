@@ -133,6 +133,8 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | `ListDevices` | `Devices` | 金庫の端末の一覧 |
 | `RevokeDevice` | `Done` | 端末を失効させ、金庫鍵を入れ替える |
 | `Shutdown` | `Done` | すべて施錠し、デーモンを終了する |
+| `ExportVault` | `Exported` | 暗号化エクスポートを作る（`export.md`。要求 18・応答 27） |
+| `ImportExport` | `ImportedItems` | 暗号化エクスポートを取り込む（`export.md`。要求 19・応答 28） |
 
 失敗したときは、どの要求にも `Error`（`code`、`message`、該当すれば `domain`）を返す。
 
@@ -149,7 +151,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | 64〜79 | パスキー（`makeCredential` / `getAssertion`） | P5-02 |
 | 106〜111 | 拡張ブリッジの今後の要求 | — |
 
-使用中の番号: 要求 1〜17（§4.2）、32〜39（§10）、40〜45（§11）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）。
+使用中の番号: 要求 1〜19（§4.2）、32〜39（§10）、40〜45（§11）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）、27〜28（`export.md`）。
 
 ## 5. 役割
 
@@ -356,7 +358,7 @@ UI は `KeyAgentAttach` を出せない。鍵エージェントの役割は、�
 
 - フロント以外は、フロントが同じ実行ファイルを `--worker <totp|passkey|whole>` で起動した子プロセスである。サンドボックスはフロントから引き継ぐ。フロントとは標準入出力（無名パイプ）でつながり、その上のメッセージ（`bins/zp-vaultd/src/wire.rs`）はデーモンの内部のもので、版の互換を約束しない。
 - 子プロセスは、標準入力が閉じたら（フロントが手放したか、終了したら）、すべてを施錠して終了する。フロントは終了の前に子プロセスを終わらせる。
-- 全体プロセスを使う要求: `CreateVault`、`RecoverVault`、`PairJoin`、`PairOffer`・`PairAdmit`、`CreateRecoveryKit`、`RevokeDevice`。`PairOffer` の全体プロセスは、オファーが使われるか、期限が切れるか、どれかのドメインが施錠されるか、新しいオファーが出るまで残る。
+- 全体プロセスを使う要求: `CreateVault`、`RecoverVault`、`PairJoin`、`PairOffer`・`PairAdmit`、`CreateRecoveryKit`、`RevokeDevice`、`ExportVault`、`ImportExport`。`PairOffer` の全体プロセスは、オファーが使われるか、期限が切れるか、どれかのドメインが施錠されるか、新しいオファーが出るまで残る。
 - 金庫を作った・復旧した・参加したあと、全体プロセスは TOTP・パスキーの鍵を各ワーカーへ渡してから終わる（利用者に確認を 2 度求めないため）。応答の `StatusReply` は、そのときの各プロセスの状態を合わせたものである。
 
 ### 13.2 鍵エージェント

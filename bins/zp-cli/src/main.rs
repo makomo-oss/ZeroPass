@@ -195,6 +195,17 @@ enum Command {
         /// The device identifier as shown by `devices`, or the start of it.
         device: String,
     },
+    /// Write an encrypted export of the whole vault to FILE: every item, TOTP
+    /// seeds included, protected by a passphrase asked for here.
+    Export {
+        file: PathBuf,
+        /// Replace FILE if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Add the items of FILE: an export of ZeroPass, or of Chrome, Edge,
+    /// Firefox, Bitwarden (JSON or CSV) or 1Password (CSV).
+    Import { file: PathBuf },
     /// Change the master password.
     Passwd,
 }

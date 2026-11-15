@@ -230,3 +230,40 @@ export const devices = {
     invoke<Joined>("join_vault", { code, name, password }),
   defaultName: () => invoke<string>("default_device_name"),
 };
+
+export type ImportPreview =
+  | { kind: "cancelled" }
+  | { kind: "zeropass"; file: string }
+  | {
+      kind: "other";
+      file: string;
+      format: string;
+      logins: number;
+      notes: number;
+      totp: number;
+      skipped: number;
+    };
+
+export interface ImportResult {
+  logins: number;
+  notes: number;
+  totp: number;
+  passkeys: number;
+  failures: string[];
+}
+
+export interface ExportResult {
+  path: string | null;
+  logins: number;
+  notes: number;
+  totp: number;
+  passkeys: number;
+}
+
+export const transfer = {
+  choose: () => invoke<ImportPreview>("import_choose"),
+  confirm: (passphrase?: string) =>
+    invoke<ImportResult>("import_confirm", { passphrase: passphrase ?? null }),
+  cancel: () => invoke<void>("import_cancel"),
+  export: (passphrase: string) => invoke<ExportResult>("export_vault", { passphrase }),
+};

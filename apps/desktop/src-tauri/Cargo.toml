@@ -25,6 +25,10 @@ tauri-build = "2.7.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 getrandom = "0.4.3"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# File dialogs, in this process: the page never handles the files. GTK on
+# Linux, as Tauri itself, rather than the desktop portal (D-Bus).
+# 0.17: the last that binds the GTK 3 version Tauri uses (gtk-sys 0.18).
+rfd = { version = "0.17.2", default-features = false, features = ["gtk3", "common-controls-v6"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # Always the production build: assets embedded from `../dist`, no development
 # server, no devtools in release (docs/adr/0009-desktop-application.md).
@@ -41,4 +45,6 @@ tauri = { version = "2.12.5", default-features = false, features = [
 zeroize = "1.9.1"
 zp-client = { version = "0.0.0", path = "../../../crates/zp-client" }
 zp-clipboard = { version = "0.0.0", path = "../../../crates/zp-clipboard" }
+zp-import = { version = "0.0.0", path = "../../../crates/zp-import" }
 zp-ipc = { version = "0.0.0", path = "../../../crates/zp-ipc" }
+zp-vault = { version = "0.0.0", path = "../../../crates/zp-vault" }

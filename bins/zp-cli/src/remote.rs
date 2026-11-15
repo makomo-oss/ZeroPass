@@ -410,6 +410,8 @@ impl Remote {
                 writeln!(out, "{} device(s)", devices.len())?;
             }
             Command::Revoke { device } => self.revoke(&device, out)?,
+            Command::Export { file, force } => self.export(&file, force, out)?,
+            Command::Import { file } => self.import(&file, out)?,
             Command::Passwd => {
                 let current = self.input.secret("Current master password: ")?;
                 let new = self.input.new_master_password()?;
@@ -474,6 +476,93 @@ impl Remote {
             response::Body::ItemAdded(added) => Ok(added.item_id),
             _ => Err(unexpected()),
         }
+    }
+
+    /// `export`: an encrypted export of the whole vault (`docs/spec/export.md`).
+    fn export(&mut self, file: &Path, force: bool, out: &mut impl Write) -> CliResult<()> {
+        if file.exists() && !force {
+            return Err(format!("{} exists; pass --force to replace it", file.display()).into());
+        }
+        // Every item of every domain: each must be open.
+        self.unlock_every_domain()?;
+        let passphrase = self.input.secret("Passphrase for the export file: ")?;
+        let again = self.input.secret("Repeat the passphrase: ")?;
+        if *passphrase != *again {
+            return Err("the passphrases do not match".into());
+        }
+        let request = request::Body::ExportVault(proto::ExportVault {
+            passphrase: passphrase.as_str().to_owned(),
+        });
+        let response::Body::Exported(exported) = self.call_unlocking(&request)? else {
+            return Err(unexpected());
+        };
+        std::fs::write(file, &exported.data)
+            .map_err(|error| format!("cannot write {}: {error}", file.display()))?;
+        let counts = exported.counts.unwrap_or_default();
+        writeln!(
+            out,
+            "exported {} login(s), {} note(s), {} one-time code(s), {} passkey(s) to {}",
+            counts.logins,
+            counts.notes,
+            counts.totp,
+            counts.passkeys,
+            file.display()
+        )?;
+        writeln!(
+            out,
+            "Keep the passphrase apart from the file: anyone with both can read every item."
+        )?;
+        Ok(())
+    }
+
+    /// `import`: adds the items of an export of ZeroPass or of another
+    /// password manager.
+    fn import(&mut self, file: &Path, out: &mut impl Write) -> CliResult<()> {
+        let data = zeroize::Zeroizing::new(
+            std::fs::read(file)
+                .map_err(|error| format!("cannot read {}: {error}", file.display()))?,
+        );
+        if data.starts_with(zp_vault::export::MAGIC) {
+            self.unlock_every_domain()?;
+            let passphrase = self.input.secret("Passphrase of the export file: ")?;
+            let request = request::Body::ImportExport(proto::ImportExport {
+                data: data.to_vec(),
+                passphrase: passphrase.as_str().to_owned(),
+            });
+            let response::Body::ImportedItems(imported) = self.call_unlocking(&request)? else {
+                return Err(unexpected());
+            };
+            let counts = imported.counts.unwrap_or_default();
+            writeln!(
+                out,
+                "imported {} login(s), {} note(s), {} one-time code(s), {} passkey(s)",
+                counts.logins, counts.notes, counts.totp, counts.passkeys
+            )?;
+            return Ok(());
+        }
+        let imported = zp_import::read(&data)?;
+        writeln!(
+            out,
+            "{}: {} login(s), {} note(s), {} skipped",
+            imported.format.name(),
+            imported.logins.len(),
+            imported.notes.len(),
+            imported.skipped
+        )?;
+        self.ensure_unlocked(DomainId::Password)?;
+        let added = zp_client::import::add_imported(&imported, |body| {
+            self.call_unlocking(&body)
+                .map_err(|error| zp_client::Error::message(error.to_string()))
+        })?;
+        writeln!(
+            out,
+            "added {} login(s), {} note(s), {} one-time code(s)",
+            added.logins, added.notes, added.totp
+        )?;
+        for failure in &added.failures {
+            writeln!(out, "  not added: {failure}")?;
+        }
+        Ok(())
     }
 
     fn recovery_kit(&mut self, replace: bool, out: &mut impl Write) -> CliResult<()> {

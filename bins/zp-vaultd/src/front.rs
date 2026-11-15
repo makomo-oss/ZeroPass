@@ -445,6 +445,11 @@ impl Front {
                 let mut whole = self.whole_with_keys(backs)?;
                 as_result(whole.call(Body::CreateRecoveryKit(kit)))
             }
+            // Every vault key at once: in the process for the whole vault.
+            body @ (Body::ExportVault(_) | Body::ImportExport(_)) => {
+                let mut whole = self.whole_with_keys(backs)?;
+                as_result(whole.call(body))
+            }
             Body::RevokeDevice(revoke) => {
                 self.engine.check_revocable(&revoke.device_id)?;
                 let mut whole = self.whole_with_keys(backs)?;

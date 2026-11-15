@@ -19,6 +19,7 @@
 //! gain a networking dependency.
 
 mod error;
+pub mod import;
 mod keyagent;
 pub mod pairing;
 pub mod syncd;
