@@ -109,6 +109,8 @@ pub(crate) fn stop(vault: &Path) -> CliResult<bool> {
         return Ok(false);
     };
     client.call(request::Body::Shutdown(proto::Shutdown {}))?;
+    // It answers before it lets go of its endpoint.
+    zp_ipc::wait_until_closed(&Endpoint::for_sync_daemon(vault)?, super::STOP_TIMEOUT);
     Ok(true)
 }
 

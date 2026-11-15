@@ -402,3 +402,25 @@ fn a_relay_ends_when_the_client_goes_away() {
     }
     stop(daemon);
 }
+
+/// A daemon answers `Shutdown` before it closes its endpoint. Whoever stopped
+/// it can wait until the endpoint is closed, after which nobody is cut off by
+/// a daemon on its way out: the next client learns that it is not running.
+#[test]
+fn after_a_shutdown_the_client_can_wait_until_the_daemon_is_gone() {
+    let daemon = start(ClientPolicy::deny_all().allow(this_executable(), Role::Ui));
+    let endpoint = daemon.endpoint.clone();
+    // Still there: the wait gives up.
+    assert!(!zp_ipc::wait_until_closed(
+        &endpoint,
+        std::time::Duration::from_millis(100)
+    ));
+    let mut client = connect(&daemon).unwrap();
+    client.call(request::Body::Shutdown(Shutdown {})).unwrap();
+    assert!(zp_ipc::wait_until_closed(
+        &endpoint,
+        std::time::Duration::from_secs(5)
+    ));
+    assert!(matches!(connect_to(&endpoint), Err(IpcError::NotRunning)));
+    daemon.thread.join().unwrap();
+}

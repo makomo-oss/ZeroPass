@@ -43,6 +43,27 @@ pub fn current_executable() -> std::io::Result<std::path::PathBuf> {
     sys::current_exe()
 }
 
+/// Waits until nothing listens on `endpoint` any more, for at most `timeout`.
+/// Returns whether that happened.
+///
+/// A daemon answers `Shutdown` before it closes its endpoint; a client that
+/// connects in between is cut off without an answer. Whoever stopped the
+/// daemon waits here, so that what it does next finds the daemon gone.
+pub fn wait_until_closed(endpoint: &Endpoint, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match sys::connect(endpoint) {
+            Err(IpcError::NotRunning) => return true,
+            // Still there, or going: connecting and closing at once is
+            // harmless to a daemon (the conversation ends before Hello).
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Starts `command` as a background process that outlives this one: no console,
 /// no standard streams, and none of this process's open handles.
 ///
