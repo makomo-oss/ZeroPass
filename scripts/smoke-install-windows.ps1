@@ -57,6 +57,16 @@ function Get-RawPath {
     }
 }
 $pathBefore = Get-RawPath
+$syncdPath = Join-Path $destination 'zp-syncd.exe'
+function Get-SyncDaemonRules {
+    return @(Get-NetFirewallApplicationFilter |
+        Where-Object { $_.Program -and [Environment]::ExpandEnvironmentVariables($_.Program) -ieq $syncdPath } |
+        Get-NetFirewallRule)
+}
+# What Windows leaves when it asked whether the program may listen and an
+# administrator said yes: public networks, connections from anywhere.
+New-NetFirewallRule -DisplayName 'zp-syncd' -Direction Inbound -Action Allow -Profile Public `
+    -Protocol TCP -Program $syncdPath | Out-Null
 
 # 1. Install.
 & (Join-Path $Package 'install.ps1')
@@ -70,9 +80,10 @@ Assert ($machinePath -split ';' -contains $destination) 'the PATH holds the inst
 $pathInstalled = Get-RawPath
 Assert ($pathInstalled.Kind -eq $pathBefore.Kind) "the PATH is still of kind $($pathBefore.Kind)"
 Assert ($pathInstalled.Value -eq ($pathBefore.Value + ';' + $destination)) 'the rest of the PATH is as it was, unexpanded'
-$rule = @(Get-NetFirewallRule -Group 'ZeroPass')
-Assert ($rule.Count -eq 1 -and $rule[0].Direction -eq 'Inbound' -and $rule[0].Profile -eq 'Private') 'the sync daemon may accept connections on private networks'
-Assert ((($rule[0] | Get-NetFirewallApplicationFilter).Program) -eq (Join-Path $destination 'zp-syncd.exe')) 'the firewall rule is for the sync daemon only'
+$rule = Get-SyncDaemonRules
+Assert ($rule.Count -eq 1 -and $rule[0].Group -eq 'ZeroPass') 'the sync daemon has exactly one firewall rule, the installer''s'
+Assert ($rule[0].Direction -eq 'Inbound' -and $rule[0].Action -eq 'Allow' -and $rule[0].Profile -eq 'Any') 'it may accept connections on any kind of network'
+Assert ((($rule[0] | Get-NetFirewallAddressFilter).RemoteAddress) -eq 'LocalSubnet') 'but only from the local subnet'
 $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
 $acl = Get-Acl $destination
@@ -167,6 +178,6 @@ $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 Assert (-not ($machinePath -split ';' -contains $destination)) 'the PATH no longer holds the installation'
 $pathAfter = Get-RawPath
 Assert ($pathAfter.Kind -eq $pathBefore.Kind -and $pathAfter.Value -ceq $pathBefore.Value) 'the PATH is exactly as before the installation'
-Assert (@(Get-NetFirewallRule -Group 'ZeroPass' -ErrorAction SilentlyContinue).Count -eq 0) 'the firewall rule is gone'
+Assert ((Get-SyncDaemonRules).Count -eq 0) 'no firewall rule for the sync daemon is left'
 Assert (Test-Path $vault) 'the vault was kept'
 Write-Host 'smoke test passed'
