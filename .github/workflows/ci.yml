@@ -72,6 +72,31 @@ jobs:
       # tools are listed in apps/desktop/README.md.
       - run: npm audit --audit-level=moderate
 
+  desktop-e2e:
+    name: desktop application end to end (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the page
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+      - name: Build the programs
+        run: cargo build --locked -p zeropass-desktop -p zp-vaultd -p zp-keyagent -p zp-syncd -p zp-cli
+      # Drives the real application (and the real vault daemon, in its
+      # sandbox) through the webview's debugging protocol.
+      - name: Drive the application
+        working-directory: apps/desktop
+        run: node e2e/app.e2e.mjs
+
   install-windows:
     name: package + install on a clean machine (windows)
     runs-on: windows-latest

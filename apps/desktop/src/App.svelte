@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { api, domainState, errorMessage, type Status } from "./lib/api";
+  import { api, domainState, errorMessage, type AppInfo, type Status } from "./lib/api";
   import Splash from "./lib/screens/Splash.svelte";
   import Unlock from "./lib/screens/Unlock.svelte";
   import Vault from "./lib/screens/Vault.svelte";
@@ -11,7 +11,7 @@
   const POLL_MS = 5000;
 
   let status: Status | null = $state(null);
-  let vaultPath = $state("");
+  let info: AppInfo | null = $state(null);
   let failure = $state("");
   let reportedReady = false;
   let polling = false;
@@ -48,7 +48,7 @@
   onMount(() => {
     api
       .appInfo()
-      .then((info) => (vaultPath = info.vault_path))
+      .then((found) => (info = found))
       .catch(() => {});
     void refresh();
     const timer = setInterval(() => {
@@ -84,11 +84,11 @@
     </div>
   </main>
 {:else if screen === "welcome"}
-  <Welcome {vaultPath} oncreated={(created) => (status = created)} />
+  <Welcome vaultPath={info?.vault_path ?? ""} oncreated={(created) => (status = created)} />
 {:else if screen === "unlock"}
   <Unlock onunlocked={() => void refresh()} />
 {:else if screen === "vault" && status}
-  <Vault {status} onlock={() => void lockAll()} />
+  <Vault {status} {info} onlock={() => void lockAll()} onchanged={() => void refresh()} />
 {/if}
 
 <style>
