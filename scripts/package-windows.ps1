@@ -41,6 +41,7 @@ $Programs = [ordered]@{
     'zp-syncd'     = 'zp-syncd'
     'zp-keyagent'  = 'zp-keyagent'
     'zp-autostart' = 'zp-autostart'
+    'zp-nmh'       = 'zp-nmh'
     'zeropass'     = 'zeropass-desktop'
 }
 

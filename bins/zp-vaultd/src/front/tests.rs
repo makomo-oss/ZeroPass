@@ -394,6 +394,87 @@ fn only_a_user_interface_may_do_more_than_ask_for_the_status() {
     );
 }
 
+#[test]
+fn the_extension_bridge_gets_one_login_of_the_page_at_a_time() {
+    let fixture = fixture(KeyStoreChoice::None);
+    fixture.create();
+    let bank = fixture.add(login("Bank", "hunter2-hunter2"));
+    let other = fixture.add(new_item::Content::Login(proto::Login {
+        title: "Other".into(),
+        username: "bob".into(),
+        password: "other password".into(),
+        urls: vec!["https://other.test".into()],
+        notes: String::new(),
+    }));
+    let find = |origin: &str| {
+        request::Body::BridgeFind(proto::BridgeFind {
+            origin: origin.into(),
+        })
+    };
+    let fill = |origin: &str, id: &[u8]| {
+        request::Body::BridgeFill(proto::BridgeFill {
+            origin: origin.into(),
+            item_id: id.to_vec(),
+        })
+    };
+
+    let response::Body::BridgeLogins(found) = fixture
+        .call_as(Role::Bridge, find("https://www.example.com"))
+        .unwrap()
+    else {
+        panic!("not logins");
+    };
+    assert_eq!(found.logins.len(), 1);
+    assert_eq!(found.logins[0].item_id, bank);
+    assert!(!found.logins[0].exact);
+
+    let response::Body::BridgeCredential(credential) = fixture
+        .call_as(Role::Bridge, fill("https://example.com", &bank))
+        .unwrap()
+    else {
+        panic!("not a credential");
+    };
+    assert_eq!(credential.password, "hunter2-hunter2");
+    // Another site's login, a downgrade to http, a malformed origin.
+    let code = |reply: Reply| ErrorCode::try_from(reply.err().unwrap().code).unwrap();
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, fill("https://example.com", &other))),
+        ErrorCode::Denied
+    );
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, fill("http://example.com", &bank))),
+        ErrorCode::Denied
+    );
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, find("example.com"))),
+        ErrorCode::BadRequest
+    );
+    // The bridge cannot unlock; once locked it is told so.
+    assert_eq!(
+        code(fixture.call_as(
+            Role::Bridge,
+            request::Body::Unlock(proto::Unlock {
+                domain: D::Password as i32,
+                master_password: PASSWORD.into(),
+            })
+        )),
+        ErrorCode::Denied
+    );
+    fixture.lock();
+    assert_eq!(
+        code(fixture.call_as(Role::Bridge, find("https://example.com"))),
+        ErrorCode::Locked
+    );
+    // No other role may ask what the bridge asks.
+    for role in [Role::Broker, Role::Sync, Role::KeyAgent] {
+        assert_eq!(
+            code(fixture.call_as(role, find("https://example.com"))),
+            ErrorCode::Denied,
+            "{role:?}"
+        );
+    }
+}
+
 /// The sync daemon's view of the vault, over the real IPC, shows what the
 /// vault file holds, and what it hands in is checked like any peer's data.
 #[test]

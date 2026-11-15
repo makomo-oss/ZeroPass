@@ -10,6 +10,7 @@
 
 mod agent;
 mod back;
+mod bridge;
 mod convert;
 mod front;
 mod pairing;

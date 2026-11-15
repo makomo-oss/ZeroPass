@@ -60,7 +60,7 @@ trap {
     exit 1
 }
 
-$Programs = @('zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe')
+$Programs = @('zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe', 'zp-nmh.exe')
 $Documents = @('uninstall.ps1', 'LICENSE', 'README.txt', 'VERSION')
 $RunKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
@@ -68,6 +68,17 @@ $EnvironmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Enviro
 $FirewallGroup = 'ZeroPass'
 # The Start menu entry of the desktop application, for every user.
 $Shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
+# The browser extension's bridge (docs/spec/extension.md §2, §3): its name,
+# and the extensions it serves. Keep in step with bins/zp-nmh/src/main.rs.
+$NativeHost = 'io.github.makomo_oss.zeropass'
+$ChromeExtensions = @('gehobienihkbhglhnibeobdkgeinamdn')
+$FirefoxExtensions = @('zeropass@makomo-oss.github.io')
+$NativeHostKeys = @{
+    'HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts' = 'zp-nmh-chrome.json'
+    'HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts' = 'zp-nmh-chrome.json'
+    'HKLM:\SOFTWARE\Chromium\NativeMessagingHosts' = 'zp-nmh-chrome.json'
+    'HKLM:\SOFTWARE\Mozilla\NativeMessagingHosts' = 'zp-nmh-firefox.json'
+}
 
 # Removes ZeroPass's own firewall rules, and every other rule for the sync
 # daemon at `$program`: those Windows created when it asked whether the
@@ -191,6 +202,34 @@ $link.WorkingDirectory = $Destination
 $link.IconLocation = (Join-Path $Destination 'zeropass.exe') + ',0'
 $link.Description = 'ZeroPass password manager'
 $link.Save()
+
+# 5c. The browser extension's bridge, for Chrome, Edge, Chromium and Firefox:
+#     a manifest beside the programs (only administrators can change it) and
+#     the registry key each browser looks for.
+$nmh = Join-Path $Destination 'zp-nmh.exe'
+$chromeManifest = [ordered]@{
+    name            = $NativeHost
+    description     = 'ZeroPass'
+    path            = $nmh
+    type            = 'stdio'
+    allowed_origins = @($ChromeExtensions | ForEach-Object { "chrome-extension://$_/" })
+}
+$firefoxManifest = [ordered]@{
+    name               = $NativeHost
+    description        = 'ZeroPass'
+    path               = $nmh
+    type               = 'stdio'
+    allowed_extensions = @($FirefoxExtensions)
+}
+# Without a byte order mark: browsers read the manifests as plain UTF-8.
+$utf8 = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText((Join-Path $Destination 'zp-nmh-chrome.json'), ($chromeManifest | ConvertTo-Json), $utf8)
+[System.IO.File]::WriteAllText((Join-Path $Destination 'zp-nmh-firefox.json'), ($firefoxManifest | ConvertTo-Json), $utf8)
+foreach ($parent in $NativeHostKeys.Keys) {
+    $key = Join-Path $parent $NativeHost
+    New-Item -Path $key -Force | Out-Null
+    Set-Item -Path $key -Value (Join-Path $Destination $NativeHostKeys[$parent])
+}
 
 # 6. "Installed apps".
 $size = [int]((Get-ChildItem -LiteralPath $Destination -File | Measure-Object -Property Length -Sum).Sum / 1KB)

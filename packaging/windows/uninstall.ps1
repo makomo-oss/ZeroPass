@@ -97,6 +97,18 @@ $entry = Get-ItemProperty -Path $UninstallKey -ErrorAction SilentlyContinue
 if ($entry -and $entry.InstallLocation -ieq $Destination) {
     Remove-Item -Path $UninstallKey -Recurse
 }
+# The browser extension's bridge, where it is this installation's.
+$nativeHost = 'io.github.makomo_oss.zeropass'
+foreach ($parent in 'HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts',
+    'HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts',
+    'HKLM:\SOFTWARE\Chromium\NativeMessagingHosts',
+    'HKLM:\SOFTWARE\Mozilla\NativeMessagingHosts') {
+    $key = Join-Path $parent $nativeHost
+    $manifest = (Get-Item -Path $key -ErrorAction SilentlyContinue)
+    if ($manifest -and ([string]$manifest.GetValue('')) -like ($Destination + '\*')) {
+        Remove-Item -Path $key -Recurse
+    }
+}
 # The Start menu entry, if it points into this installation.
 $shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
 if (Test-Path -LiteralPath $shortcut) {

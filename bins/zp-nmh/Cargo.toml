@@ -12,3 +12,11 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+zeroize = "1.9.1"
+zp-client = { version = "0.0.0", path = "../../crates/zp-client" }
+zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
