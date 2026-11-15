@@ -68,7 +68,7 @@ export type FillAnswer =
   | { ok: false; state: PageState; message: string };
 
 /** Sent by the background to a page's top frame. */
-export type Order = { kind: "fill_now"; item: string };
+export type Order = { kind: "fill_now"; item: string } | { kind: "find_now" };
 
 /** An error the bridge reports: the daemon's code, or the bridge's own. */
 export interface BridgeError {

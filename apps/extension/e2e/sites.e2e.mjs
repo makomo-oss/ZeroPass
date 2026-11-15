@@ -137,14 +137,31 @@ async function trySite(context, [name, url]) {
     const password = await frame
       .evaluate((secret) => [...document.querySelectorAll("input[type=password]")].some((input) => input.value === secret), SECRET)
       .catch(() => false);
-    const passwordShown = await firstVisible(frame, "input[type='password']");
+    // As the extension judges it (docs/spec/extension.md §7): shown, sized,
+    // not transparent.
+    const passwordShown = await frame
+      .evaluate(() =>
+        [...document.querySelectorAll("input[type=password]")].some((input) => {
+          const rect = input.getBoundingClientRect();
+          return (
+            rect.width >= 4 &&
+            rect.height >= 4 &&
+            input.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+            !input.disabled &&
+            !input.readOnly
+          );
+        }),
+      )
+      .catch(() => false);
     if (!filled) {
       row.filled = "no";
     } else if (isPassword || password) {
       row.filled = isPassword ? "password" : "user name + password";
     } else {
       row.filled = "user name";
-      if (!passwordShown) row.note = "two-step: the password comes on the next page";
+      row.note = passwordShown
+        ? "a password field is shown but was not filled"
+        : "two-step: the password comes on the next page";
     }
     if (frame !== page.mainFrame()) row.note = [row.note, `in a frame (${new URL(frame.url()).host})`].filter(Boolean).join("; ");
   } catch (error) {
