@@ -215,6 +215,18 @@ impl Service {
         Self::domain_of(self.vault(&mut state)?, id)
     }
 
+    /// Checks that a login belongs to the page the extension names
+    /// (`docs/spec/extension.md` §4), for a request another process answers.
+    pub(crate) fn bridge_check(
+        &self,
+        origin: &str,
+        top: &str,
+        item_id: &[u8],
+    ) -> Result<(), proto::Error> {
+        let mut state = self.state();
+        crate::bridge::check(self.vault(&mut state)?, origin, top, item_id)
+    }
+
     /// Whether the vault has `domain`. `false` if there is no vault yet.
     pub(crate) fn has_domain(&self, domain: DomainId) -> Result<bool, proto::Error> {
         if !self.exists() {
@@ -653,6 +665,9 @@ impl Service {
             Body::PairOffer(request) => self.pair_offer(state, &request),
             Body::BridgeFind(request) => crate::bridge::find(self.vault(state)?, &request),
             Body::BridgeFill(request) => crate::bridge::fill(self.vault(state)?, &request),
+            Body::BridgeCompare(request) => crate::bridge::compare(self.vault(state)?, &request),
+            Body::BridgeSave(request) => crate::bridge::save(self.vault(state)?, &request),
+            Body::BridgeUpdate(request) => crate::bridge::update(self.vault(state)?, &request),
             // These start a relay and do not arrive here.
             Body::PairAdmit(_) | Body::PairJoin(_) => {
                 Err(bad_request("this request needs a relay"))

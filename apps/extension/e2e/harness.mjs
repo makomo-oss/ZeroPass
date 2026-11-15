@@ -72,7 +72,8 @@ function withoutVault() {
 
 /** Runs zp-cli on the test vault; each of `input` answers one prompt. */
 export function cli(vault, args, input = []) {
-  const result = spawnSync(bin("zp-cli"), ["--vault", vault, "--no-hardware-keystore", ...args], {
+  // The development key store stands in for Windows Hello: no prompt.
+  const result = spawnSync(bin("zp-cli"), ["--vault", vault, "--insecure-software-keystore", ...args], {
     input: input.map((line) => `${line}\n`).join(""),
     encoding: "utf8",
     env: withoutVault(),
@@ -153,11 +154,60 @@ export function suggestionsShown(frame) {
 }
 
 /**
+ * Clicks, as a user would, the first element inside the closed shadow root
+ * of the `hostTag` element that `matches` (a DevTools node: nodeName and a
+ * flat attribute list). The page cannot reach into a closed shadow root;
+ * the DevTools protocol can, to find where it is drawn. Returns whether
+ * there was one (in the page's own document; not in out-of-process frames).
+ */
+export async function clickClosed(page, hostTag, matches) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+    const search = (node, test) => {
+      if (test(node)) return node;
+      for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? []), ...(node.contentDocument ? [node.contentDocument] : [])]) {
+        const found = search(child, test);
+        if (found) return found;
+      }
+      return null;
+    };
+    const host = search(root, (node) => node.nodeName === hostTag.toUpperCase());
+    if (!host) return false;
+    const target = search({ children: host.shadowRoots ?? [] }, (node) => node.nodeId !== undefined && matches(node));
+    if (!target) return false;
+    const { model } = await cdp.send("DOM.getBoxModel", { nodeId: target.nodeId });
+    const [x1, y1, , , x3, y3] = model.content;
+    await page.mouse.click((x1 + x3) / 2, (y1 + y3) / 2);
+    return true;
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+}
+
+/** A DevTools node's attribute. */
+export function attribute(node, name) {
+  const attributes = node.attributes ?? [];
+  for (let index = 0; index < attributes.length; index += 2) {
+    if (attributes[index] === name) return attributes[index + 1];
+  }
+  return undefined;
+}
+
+/**
  * Clicks the first login of the suggestion list under `field`. The list is
  * in a closed shadow root, so it is clicked where it is drawn: a real
  * (trusted) click, as a user's.
  */
 export async function pickFirst(page, field) {
+  const clicked = await clickClosed(
+    page,
+    "zeropass-suggestions",
+    (node) => node.nodeName === "BUTTON" && (attribute(node, "class") ?? "").split(" ").includes("item"),
+  ).catch(() => false);
+  if (clicked) return;
+  // In a frame of another process the list cannot be found: click where
+  // it is drawn.
   const box = await field.boundingBox();
   expect(box, "the field has no box");
   // 4 px gap, a 27 px heading, then the first item (about 48 px high).

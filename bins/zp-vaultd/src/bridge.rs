@@ -86,3 +86,103 @@ pub(crate) fn fill(vault: &mut Vault, request: &proto::BridgeFill) -> Reply {
         password: login.password.clone(),
     }))
 }
+
+/// A login of the page: it must exist and match the page.
+fn page_login(
+    vault: &mut Vault,
+    page: &Origin,
+    item_id: &[u8],
+) -> Result<(zp_crypto::ItemId, Login), proto::Error> {
+    let id = convert::item_id(item_id)?;
+    let login: Login = vault.get(id).map_err(vault_error)?;
+    if page
+        .best_match(login.urls.iter().map(String::as_str))
+        .is_none()
+    {
+        return Err(proto::Error::new(
+            ErrorCode::Denied,
+            "that login does not belong to this page",
+        ));
+    }
+    Ok((id, login))
+}
+
+fn framed() -> proto::Error {
+    proto::Error::new(ErrorCode::Denied, "the page is a frame of another site")
+}
+
+/// Checks that a login belongs to the page, for a request answered by another
+/// process of the daemon (the TOTP worker).
+pub(crate) fn check(
+    vault: &mut Vault,
+    origin: &str,
+    top: &str,
+    item_id: &[u8],
+) -> Result<(), proto::Error> {
+    let page = page(origin, top)?.ok_or_else(framed)?;
+    page_login(vault, &page, item_id).map(drop)
+}
+
+/// Whether the user name and password typed into the page are already in the
+/// vault (`docs/spec/extension.md` §8).
+pub(crate) fn compare(vault: &mut Vault, request: &proto::BridgeCompare) -> Reply {
+    let page = page(&request.origin, &request.top_origin)?.ok_or_else(framed)?;
+    let username = request.username.trim();
+    let mut found: Option<(Vec<u8>, bool)> = None;
+    for (id, content) in vault.list::<Password>().map_err(vault_error)? {
+        let Content::Login(login) = content else {
+            continue;
+        };
+        if login.username.trim() != username
+            || page
+                .best_match(login.urls.iter().map(String::as_str))
+                .is_none()
+        {
+            continue;
+        }
+        let same = login.password == request.password;
+        // One with the same password settles it.
+        if same || found.is_none() {
+            found = Some((id.as_bytes().to_vec(), same));
+        }
+        if same {
+            break;
+        }
+    }
+    let (item_id, same) = found.unwrap_or_default();
+    Ok(response::Body::BridgeComparison(proto::BridgeComparison {
+        item_id,
+        same,
+    }))
+}
+
+/// Saves a new login for the page, with the page's origin as its URL.
+pub(crate) fn save(vault: &mut Vault, request: &proto::BridgeSave) -> Reply {
+    let page = page(&request.origin, &request.top_origin)?.ok_or_else(framed)?;
+    if request.password.is_empty() {
+        return Err(bad_request("a login to save needs a password"));
+    }
+    let title = if request.title.trim().is_empty() {
+        page.host().trim_start_matches("www.").to_owned()
+    } else {
+        request.title.trim().to_owned()
+    };
+    let login = Login::new(title, request.username.trim(), request.password.as_str())
+        .with_url(page.to_string());
+    let id = vault.insert(login).map_err(vault_error)?;
+    Ok(response::Body::ItemAdded(proto::ItemAdded {
+        item_id: id.as_bytes().to_vec(),
+    }))
+}
+
+/// Replaces the password of a login of the page. The rest stays.
+pub(crate) fn update(vault: &mut Vault, request: &proto::BridgeUpdate) -> Reply {
+    let page = page(&request.origin, &request.top_origin)?.ok_or_else(framed)?;
+    if request.password.is_empty() {
+        return Err(bad_request("the new password is empty"));
+    }
+    let (id, mut login) = page_login(vault, &page, &request.item_id)?;
+    login.password = request.password.clone();
+    vault.update(id, login).map_err(vault_error)?;
+    Ok(response::Body::Done(proto::Done {}))
+}

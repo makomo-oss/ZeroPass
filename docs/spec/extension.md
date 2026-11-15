@@ -65,9 +65,10 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 | `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか） | `Status` |
 | `find` | `origin`、`top`（タブの最上位のフレームのオリジン） | `logins`: `id`、`title`、`username`、`match`（`exact` / `site`）。**パスワードは含まない** | `BridgeFind` |
 | `fill` | `origin`、`top`、`item`（ログインの ID） | `username`、`password` | `BridgeFill` |
-| `totp` | `origin`、`item`（ログインの ID） | `code` | `BridgeTotp`（P4-06） |
-| `save` | `origin`、`title`、`username`、`password` | `id` | `BridgeSave`（P4-06） |
-| `update` | `origin`、`item`、`username`、`password` | — | `BridgeUpdate`（P4-06） |
+| `totp` | `origin`、`top`、`item`（ログインの ID） | `code`（Windows Hello が尋ねる） | `BridgeTotp` |
+| `compare` | `origin`、`top`、`username`、`password` | `item`（そのページの、その利用者名のログイン。なければ空）、`same`（パスワードも同じか） | `BridgeCompare` |
+| `save` | `origin`、`top`、`title`、`username`、`password` | `item`（新しいログインの ID） | `BridgeSave` |
+| `update` | `origin`、`top`、`item`、`password` | — | `BridgeUpdate` |
 | `open_app` | — | — | （なし。デスクトップアプリを起動する） |
 
 - エラーの `code` は IPC のエラーコード（`ipc.md` §4.2。`Locked`、`NoVault` など）か、ブリッジのもの（`NotRunning`: 金庫デーモンが動いていない、`BadRequest`）。
@@ -82,9 +83,10 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 |---|---|---|---|
 | 100 | `BridgeFind { origin, top_origin }` | `BridgeLogins`（応答 24） | `origin` に一致するログイン（§5）。ID、題名、利用者名、一致の度合い。パスワードの要らない場面でも、**秘密は含まない** |
 | 101 | `BridgeFill { origin, item_id, top_origin }` | `BridgeCredential`（応答 25） | ログイン 1 件の利用者名とパスワード。そのログインが `origin` に一致しなければ `DENIED` |
-| 102 | `BridgeTotp { origin, item_id }` | `TotpCodeReply` | P4-06 |
-| 103 | `BridgeSave { origin, title, username, password }` | `ItemAdded` | P4-06 |
-| 104 | `BridgeUpdate { origin, item_id, username, password }` | `Done` | P4-06 |
+| 102 | `BridgeTotp { origin, top_origin, item_id }` | `TotpCodeReply` | ログインがページに一致すれば、TOTP のドメインを**施錠してから鍵エージェントで解錠し直し**（毎回 Windows Hello）、そのログインに結び付いた TOTP のコードを返す。結び付いたものがなければ `ITEM_NOT_FOUND` |
+| 103 | `BridgeSave { origin, top_origin, title, username, password }` | `ItemAdded` | ページのオリジンを URL とするログインを加える |
+| 104 | `BridgeUpdate { origin, top_origin, item_id, password }` | `Done` | ページに一致するログインのパスワードを置き換える |
+| 105 | `BridgeCompare { origin, top_origin, username, password }` | `BridgeComparison`（応答 26） | ページに一致し、利用者名が同じログインと、そのパスワードが同じか |
 
 拡張ブリッジの役割が呼べるのは、`Hello`、`Status`、この表の要求だけである。パスワードのドメインが施錠されていれば `LOCKED`。
 
@@ -140,11 +142,14 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 ## 8. 保存・更新の提案（P4-06）
 
 - 利用者がフォームを送信したとき、入力されたパスワードが金庫のものと違えば（または一致するログインがなければ）、保存か更新を提案する。提案は、利用者が「保存」を選んだときだけブリッジに送る。
-- 提案のために覚えておく値は、そのタブの content script のメモリにだけ置き、提案を閉じるか、ページを離れたら捨てる。拡張の `storage` には書かない。
+- 送信を検出する（`submit`、送信のボタンのクリック、パスワード欄での Enter。いずれも `isTrusted`）と、content script は入力された利用者名とパスワードを background に渡し、background がブリッジで金庫と比べる（`compare`）。同じなら何もしない。利用者名が同じで違うパスワードなら更新、なければ保存を提案する。2 段階のログインでは、前の画面で入力された利用者名を background がそのタブについて 5 分覚えておく（秘密ではない）。
+- 提案のために覚えておく値（パスワードを含む）は、**background のメモリにだけ**、そのタブについて、利用者が答えるか、2 分たつか、タブを閉じるまで置く。拡張の `storage` には書かない。送信の後にページが移っても、移った先の最上位のフレームが提案を受け取って表示する。MV3 の service worker が止まれば、提案は失われる。
+- 保存するログインの URL は入力したページのオリジン、題名はそのホスト。更新はパスワードだけを置き換える。どちらもページに一致するログイン・同じサイトのフレームに限る（金庫デーモンが確かめる）。
 
 ## 9. TOTP の入力（P4-06）
 
-- ワンタイムコードの欄（`autocomplete="one-time-code"` など）に、ログインに結び付いた TOTP のコードを入力する。
+- ワンタイムコードの欄（`autocomplete="one-time-code"`、名前や ID に otp・2fa・verification code などを含む短い欄）にフォーカスすると、そのページのログインを示し、利用者が選んだログインに結び付いた TOTP のコードを入力する。1 文字ずつの欄に分かれた入力は、まだ扱わない。
+- ブリッジは、`totp` のたびに鍵エージェントを起動する（`ipc.md` §13.2）。
 - **金庫デーモンは、`BridgeTotp` のたびに Windows Hello で利用者を確かめる**（TOTP のドメインがすでに解錠されていても）。拡張やブリッジが乗っ取られても、利用者の操作なしにコードを取り出せないようにするためである。
 
 ## 10. 限界

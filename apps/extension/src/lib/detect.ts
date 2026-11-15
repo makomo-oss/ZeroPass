@@ -149,3 +149,22 @@ export function fieldsOf(
     ) ?? null
   );
 }
+
+/** Words that say a field takes a one-time code. */
+const OTP_WORDS =
+  /one-?time|otp|totp|2fa|mfa|two-?factor|verification.?code|verify.?code|auth.?code|security.?code|passcode|token|確認コード|認証コード|ワンタイム/i;
+
+/** Whether a field takes a one-time code (docs/spec/extension.md §9). */
+export function isOtpField(input: HTMLInputElement): boolean {
+  if (!["", "text", "tel", "number", "password"].includes(input.type)) return false;
+  if (autocomplete(input).includes("one-time-code")) return true;
+  if (!OTP_WORDS.test(attributes(input))) return false;
+  // A code is short: six to eight digits, if the page says how long.
+  const length = input.maxLength;
+  return length <= 0 || (length >= 6 && length <= 10);
+}
+
+/** The one-time-code field `field` is, if it is one the user can type into. */
+export function otpField(field: HTMLInputElement, visible: Visible): HTMLInputElement | null {
+  return isOtpField(field) && usable(field, visible) ? field : null;
+}

@@ -4,7 +4,7 @@
 
 import { isPasswordField, type LoginFields } from "./detect";
 
-function setValue(input: HTMLInputElement, value: string): void {
+export function setValue(input: HTMLInputElement, value: string): void {
   input.focus();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (setter) {
