@@ -125,7 +125,7 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 ## 6. 拡張（P4-05）
 
 - WXT + TypeScript、Manifest V3。Chrome・Edge・Firefox。
-- 権限: `nativeMessaging` と `activeTab`（ツールバーのポップアップを開いたときに、今のタブのアドレスを知るため）。`storage`・`tabs`・`scripting` は使わない。content script はすべてのサイトの全フレームに入る（`<all_urls>`、`all_frames`）。Chrome・Edge は Manifest V3、Firefox は Manifest V2（WXT の既定。Firefox の V3 ではサイトへの権限が利用者の許可制になるため）。
+- 権限: `nativeMessaging` だけ。`storage`・`tabs`・`activeTab`・`scripting` は使わない。ツールバーのポップアップは、今のタブの最上位のフレームの content script に、ログインを探させて（`find_now`）入力させる（`fill_now`）。タブのアドレスを読む権限は要らず、オリジンは常にブラウザの `sender` から得る。content script はすべてのサイトの全フレームに入る（`<all_urls>`、`all_frames`）。Chrome・Edge は Manifest V3、Firefox は Manifest V2（WXT の既定。Firefox の V3 ではサイトへの権限が利用者の許可制になるため）。
 - background（service worker）がブリッジとの接続を持ち、content script の要求に、`sender` から得たオリジンを付けて中継する。
 
 ## 7. フォームの検出と入力（P4-05）
@@ -156,3 +156,5 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 
 - 拡張とブリッジが乗っ取られれば、オリジンを偽って、施錠されていないパスワードのドメインのログインを 1 件ずつ取り出せる。照合はデーモンが行うが、オリジンは拡張が名乗るので、乗っ取られた拡張には効かない。防げるのは、ページ（B3）からの攻撃と、拡張の不具合による誤入力である。
 - 開発版の拡張 ID は公開鍵から導かれるので、同じ公開鍵を持つ展開した拡張は同じ ID になる。ストアの ID（P8-03）では、ストアが ID を管理する。
+- 乗っ取られたブリッジは、`BridgeTotp` で TOTP のドメインを何度でも施錠させ、Windows Hello の確認画面を出させることができる。コードを得るには利用者の承認が要るが、承認を繰り返し求められる（利用者が慣れて承認してしまう）おそれはある。
+- 送信の検出は推測である。パスワードの欄に値があるときに押されたボタンを送信とみなす（表示の切り替えらしいボタンは除く）ので、送信の前に提案が出たり、送信を見逃したりすることがある。提案は利用者が選んだときだけ保存・更新する。

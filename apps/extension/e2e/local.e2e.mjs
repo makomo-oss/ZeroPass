@@ -115,6 +115,28 @@ try {
     expect((await page.title()) === "Login", "the form was submitted");
   }, () => shot("fill"));
 
+  await step("the popup's way works: the tab finds its own logins and fills the chosen one", async () => {
+    await page.goto(`${site}/login`);
+    const worker = context.serviceWorkers()[0];
+    // What the background does for the popup (find_for_tab, fill_tab), done
+    // from the background itself: the toolbar button cannot be pressed here.
+    const outcome = await worker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (!tab?.id) return { error: "no active tab" };
+      // `find_for_tab`: the tab's top frame finds its own logins.
+      const found = await chrome.tabs.sendMessage(tab.id, { kind: "find_now" }, { frameId: 0 });
+      const item = found?.logins?.[0]?.id;
+      if (!item) return { found };
+      // `fill_tab`: the top frame fills the login the user chose.
+      const filled = await chrome.tabs.sendMessage(tab.id, { kind: "fill_now", item }, { frameId: 0 });
+      return { found, filled };
+    });
+    expect(outcome.filled === true, `the popup's way failed: ${JSON.stringify(outcome)}`);
+    await page.waitForFunction((user) => document.getElementById("email").value === user, USER, {
+      timeout: 10_000,
+    });
+  }, () => shot("popup"));
+
   await step("the first step of a two-step login gets the user name", async () => {
     await page.goto(`${site}/two-step`);
     const field = page.locator("#identifier");

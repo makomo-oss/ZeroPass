@@ -6,7 +6,7 @@ import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
 
 import { Bridge } from "../lib/bridge";
-import { originsOf, webOrigin, type Sender } from "../lib/origins";
+import { originsOf, type Sender } from "../lib/origins";
 import {
   stateOf,
   type Ask,
@@ -197,10 +197,15 @@ async function handle(ask: Ask, sender: Sender & { id?: string }): Promise<unkno
       return bridge.ask({ type: "status" }).catch(failed);
     case "find_for_tab": {
       if (!fromExtension(sender)) return null;
-      const tab = await browser.tabs.get(ask.tab);
-      const origin = webOrigin(tab.url);
-      if (!origin) return { state: "unsupported", logins: [] } satisfies FindAnswer;
-      return find(origin, origin);
+      // The tab's top frame asks for itself, so that the origin is the
+      // browser's, and no permission to read the tab's address is needed.
+      const order: Order = { kind: "find_now" };
+      try {
+        return (await browser.tabs.sendMessage(ask.tab, order, { frameId: 0 })) as FindAnswer;
+      } catch {
+        // No content script there: not a web page.
+        return { state: "unsupported", logins: [] } satisfies FindAnswer;
+      }
     }
     case "fill_tab": {
       if (!fromExtension(sender)) return null;

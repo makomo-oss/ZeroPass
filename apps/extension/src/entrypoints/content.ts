@@ -19,6 +19,20 @@ const CACHE_MS = 15_000;
 /** One sign-in is reported once, however many events it causes. */
 const SUBMIT_DEBOUNCE_MS = 2000;
 
+/** Words of buttons that show or hide the password, rather than sign in. */
+const TOGGLE_WORDS = /show|hide|reveal|unmask|display|toggle|表示|非表示|見る/i;
+
+/** Whether a button only shows or hides what was typed. */
+function isToggle(button: Element): boolean {
+  const words = [
+    button.textContent ?? "",
+    button.getAttribute("aria-label") ?? "",
+    button.getAttribute("title") ?? "",
+    button.getAttribute("data-testid") ?? "",
+  ].join(" ");
+  return TOGGLE_WORDS.test(words) && !/sign|log ?in|ログイン|次へ|next|continue/i.test(words);
+}
+
 function ask<T>(message: Ask): Promise<T> {
   return browser.runtime.sendMessage(message) as Promise<T>;
 }
@@ -155,7 +169,8 @@ export default defineContentScript({
           return;
         }
         const target = event.composedPath()[0];
-        if (target instanceof Element && target.closest("button, [type=submit], [role=button]")) signingIn();
+        const button = target instanceof Element ? target.closest("button, [type=submit], [role=button]") : null;
+        if (button && !isToggle(button)) signingIn();
       },
       true,
     );
@@ -190,6 +205,7 @@ export default defineContentScript({
       // From the popup, through the background, to the top frame only.
       browser.runtime.onMessage.addListener((message: unknown) => {
         const order = message as Order;
+        if (order?.kind === "find_now") return found();
         if (order?.kind !== "fill_now") return undefined;
         const fields = findLoginFields(document, isVisible)[0];
         if (!fields) return Promise.resolve(false);
