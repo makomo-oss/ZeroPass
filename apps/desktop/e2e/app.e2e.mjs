@@ -70,6 +70,9 @@ const app = spawn(
   },
 );
 
+let exited = null;
+app.on("exit", (code) => (exited = code));
+
 let browser;
 const consoleProblems = [];
 try {
@@ -79,7 +82,9 @@ try {
       browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
       break;
     } catch (error) {
-      if (attempt > 100) throw error;
+      if (exited !== null) throw new Error(`the application ended (exit code ${exited})`);
+      // A first start creates the webview's profile: slow on a fresh machine.
+      if (attempt > 300) throw error;
       await sleep(200);
     }
   }
@@ -270,8 +275,9 @@ try {
   await step("the page reported no errors (CSP or otherwise)", async () => {
     expect(consoleProblems.length === 0, consoleProblems.join("\n"));
   });
-} catch {
-  // Reported by step().
+} catch (error) {
+  // A failed step was reported; anything else is said here.
+  if (failures === 0) console.log(`FAILED: ${error}`);
   failures = Math.max(failures, 1);
 } finally {
   await browser?.close().catch(() => {});
