@@ -98,16 +98,21 @@ fn the_daemon_runs_from_a_directory_whose_rights_the_user_cannot_change() {
     std::fs::create_dir(&programs).unwrap();
     install(&programs);
     let daemon = programs.join("zp-vaultd.exe");
-    // The imitation holds: the user cannot give the container access.
-    let granted = zp_sandbox::allow(
-        zp_ipc::DAEMON_SANDBOX,
-        &daemon,
-        zp_sandbox::Access::ReadExecute,
-    );
-    assert_eq!(
-        granted.unwrap_err().kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
+    // The imitation holds for a standard user: the container cannot be given
+    // access. An administrator (as CI runs) can still change the rights; the
+    // rest of the test runs all the same, and the CI install test runs the
+    // client as a standard user under Program Files.
+    if !zp_sandbox::runs_as_administrator() {
+        let granted = zp_sandbox::allow(
+            zp_ipc::DAEMON_SANDBOX,
+            &daemon,
+            zp_sandbox::Access::ReadExecute,
+        );
+        assert_eq!(
+            granted.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     let program = programs.join("zp-cli.exe");
     let vault_dir = dir.path().join("Vault");

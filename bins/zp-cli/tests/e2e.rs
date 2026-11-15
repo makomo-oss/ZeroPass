@@ -410,12 +410,17 @@ fn bad_invocations_fail_cleanly() {
     let default_directory = if cfg!(windows) {
         home.path().join("ZeroPass").join("Vault")
     } else if cfg!(target_os = "macos") {
-        home.path().join("Library/Application Support/ZeroPass/Vault")
+        home.path()
+            .join("Library/Application Support/ZeroPass/Vault")
     } else {
         home.path().join("zeropass").join("Vault")
     };
     // Its directory is there, ready for `init`.
-    assert!(default_directory.is_dir(), "{}", default_directory.display());
+    assert!(
+        default_directory.is_dir(),
+        "{}",
+        default_directory.display()
+    );
 }
 
 #[test]

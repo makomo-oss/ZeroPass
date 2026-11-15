@@ -97,8 +97,41 @@ Assert ($unlocked -match 'unlocked') 'the vault opens'
 # 5. Installing again over the running programs replaces them.
 & (Join-Path $Package 'install.ps1')
 Assert ((Invoke-Cli @('daemon', 'status')) -match 'the vault daemon is not running') 'reinstalling ended the running daemons'
+Assert (-not (Get-Process -Name 'zp-vaultd', 'zp-syncd' -ErrorAction SilentlyContinue)) 'no ZeroPass process is left'
 
-# 6. Uninstall.
+# 6. A standard user (not an administrator) uses the installation: the
+#    client cannot change the access rights of the programs under Program
+#    Files and must start the sandboxed daemon all the same.
+$user = 'zpsmoke'
+$secret = ConvertTo-SecureString ('Zp!' + [guid]::NewGuid().ToString('N')) -AsPlainText -Force
+New-LocalUser -Name $user -Password $secret -AccountNeverExpires | Out-Null
+Add-LocalGroupMember -Group 'Users' -Member $user -ErrorAction SilentlyContinue
+$credential = [pscredential]::new("$env:COMPUTERNAME\$user", $secret)
+$work = Join-Path $env:PUBLIC 'zp-smoke'
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+function Invoke-AsUser([string[]]$Arguments, [string[]]$Answers = @()) {
+    Set-Content -LiteralPath "$work\in.txt" -Value $Answers
+    $process = Start-Process -FilePath $cli -ArgumentList $Arguments -Credential $credential `
+        -LoadUserProfile -WorkingDirectory $work -Wait -PassThru `
+        -RedirectStandardInput "$work\in.txt" -RedirectStandardOutput "$work\out.txt" `
+        -RedirectStandardError "$work\err.txt"
+    $output = (Get-Content -LiteralPath "$work\out.txt" -Raw) + (Get-Content -LiteralPath "$work\err.txt" -Raw)
+    if ($process.ExitCode -ne 0) { throw "as ${user}: zp-cli $($Arguments -join ' ') failed: $output" }
+    return $output
+}
+try {
+    $created = Invoke-AsUser @('--insecure-software-keystore', 'init') @($password, $password)
+    Assert ($created -match 'totp:\s+available') 'a standard user created a vault'
+    $status = Invoke-AsUser @('daemon', 'status')
+    Assert ($status -match 'sandbox: yes') "the standard user's daemon runs in its sandbox"
+    $added = Invoke-AsUser @('--insecure-software-keystore', 'add', 'totp') @($totpUri)
+    Assert ($added -match 'added ([0-9a-f]{32})') "the standard user's TOTP worker runs"
+    Invoke-AsUser @('daemon', 'stop') | Out-Null
+} finally {
+    Remove-LocalUser -Name $user -ErrorAction SilentlyContinue
+}
+
+# 7. Uninstall.
 & (Join-Path $destination 'uninstall.ps1')
 Assert (-not (Test-Path $destination)) 'the programs are gone'
 Assert ($null -eq (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run').PSObject.Properties['ZeroPass']) 'nothing starts at logon any more'
