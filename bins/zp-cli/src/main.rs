@@ -29,6 +29,9 @@ use remote::{Remote, Start};
 
 type CliResult<T> = Result<T, Box<dyn Error>>;
 
+/// How long `daemon stop` waits for a daemon to let go of its endpoint.
+const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Parser)]
 #[command(name = "zp-cli", version, about = "ZeroPass command-line client")]
 struct Cli {
@@ -488,6 +491,9 @@ fn daemon(
         let vault_stopped = match remote::connect(vault_path, choice, Start::Never)? {
             Some(client) => {
                 Remote::with(client).stop()?;
+                // It answers before it lets go of its endpoint: wait, so
+                // that the next command does not meet it on its way out.
+                zp_ipc::wait_until_closed(&zp_ipc::Endpoint::for_vault(vault_path)?, STOP_TIMEOUT);
                 true
             }
             None => false,

@@ -66,6 +66,17 @@ $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroP
 $EnvironmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
 $FirewallGroup = 'ZeroPass'
 
+# Removes ZeroPass's own firewall rules, and every other rule for the sync
+# daemon at `$program`: those Windows created when it asked whether the
+# program may listen ("public" networks, connections from anywhere).
+function Remove-SyncDaemonRules([string]$program) {
+    Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Program -and [Environment]::ExpandEnvironmentVariables($_.Program) -ieq $program } |
+        Get-NetFirewallRule -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule
+}
+
 # Tells running programs (Explorer, new terminals) that the environment changed.
 function Send-EnvironmentChange {
     $signature = '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);'
@@ -148,14 +159,19 @@ if ($present.Count -eq 0) {
     Send-EnvironmentChange
 }
 
-# 4b. The sync daemon listens for the user's other devices: allow that, from
-#     the local subnet, on private networks only (not on public Wi-Fi).
-#     Without a rule, Windows would ask each user, and a standard user cannot
-#     say yes.
-Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+# 4b. The sync daemon listens for the user's other devices: allow that from
+#     the local subnet only, on any kind of network. Windows files many home
+#     networks as "public", and the connections are authenticated and
+#     encrypted, and never leave the link, wherever they are (ADR-0008).
+#     Without a rule, Windows asks when the daemon first listens, a standard
+#     user cannot say yes, and an administrator's "yes" allows connections
+#     from anywhere. So every rule for this program is replaced by this one,
+#     including those such a question left behind.
+$syncd = Join-Path $Destination 'zp-syncd.exe'
+Remove-SyncDaemonRules $syncd
 New-NetFirewallRule -DisplayName 'ZeroPass sync (local network)' -Group $FirewallGroup `
-    -Direction Inbound -Action Allow -Profile Private -RemoteAddress LocalSubnet `
-    -Program (Join-Path $Destination 'zp-syncd.exe') | Out-Null
+    -Direction Inbound -Action Allow -Profile Any -RemoteAddress LocalSubnet `
+    -Program $syncd | Out-Null
 
 # 5. Start at logon, for every user.
 if ($NoAutostart) {

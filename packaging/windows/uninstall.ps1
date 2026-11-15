@@ -46,6 +46,17 @@ $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroP
 $EnvironmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
 $FirewallGroup = 'ZeroPass'
 
+# Removes ZeroPass's own firewall rules, and every other rule for the sync
+# daemon at `$program`: those Windows created when it asked whether the
+# program may listen ("public" networks, connections from anywhere).
+function Remove-SyncDaemonRules([string]$program) {
+    Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Program -and [Environment]::ExpandEnvironmentVariables($_.Program) -ieq $program } |
+        Get-NetFirewallRule -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule
+}
+
 # Tells running programs (Explorer, new terminals) that the environment changed.
 function Send-EnvironmentChange {
     $signature = '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);'
@@ -76,8 +87,8 @@ foreach ($process in $running) {
     try { $process.WaitForExit(10000) | Out-Null } catch { }
 }
 
-# 2. The logon start, the firewall rule and "Installed apps".
-Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+# 2. The logon start, the firewall rules and "Installed apps".
+Remove-SyncDaemonRules (Join-Path $Destination 'zp-syncd.exe')
 $run = Get-ItemProperty -Path $RunKey -Name 'ZeroPass' -ErrorAction SilentlyContinue
 if ($run -and $run.ZeroPass -like ('*' + $Destination + '*')) {
     Remove-ItemProperty -Path $RunKey -Name 'ZeroPass'

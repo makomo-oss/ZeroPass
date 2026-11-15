@@ -11,8 +11,9 @@ Install (needs administrator rights once; Windows asks for them):
 
     The programs go to C:\Program Files\ZeroPass, where only administrators
     can change them. ZeroPass trusts its own programs by that location.
-    Windows Firewall lets the sync daemon accept connections from your other
-    devices on private networks (not on public ones).
+    Windows Firewall lets the sync daemon accept connections from devices on
+    your local network (the same subnet) only. Those connections are
+    authenticated and encrypted, and never leave the local network.
 
 Create your vault (as yourself, in a new terminal):
 
