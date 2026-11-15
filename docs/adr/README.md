@@ -12,6 +12,7 @@
 | [0006](0006-windows-sandbox.md) | Windows では vaultd を AppContainer で動かす | 採用 |
 | [0007](0007-domain-processes-and-key-agent.md) | 金庫デーモンをドメインごとのプロセスに分け、Windows Hello は鍵エージェントが外から使う | 採用 |
 | [0008](0008-windows-installation.md) | Windows ではマシン全体に（Program Files へ）インストールし、ログオン時は Run キーから起動する | 採用 |
+| [0009](0009-desktop-application.md) | デスクトップアプリは Tauri の埋め込みページだけを表示し、金庫には IPC の UI として接続する | 採用 |
 
 ## テンプレート
 

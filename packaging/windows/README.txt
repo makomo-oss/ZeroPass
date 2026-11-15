@@ -15,15 +15,15 @@ Install (needs administrator rights once; Windows asks for them):
     your local network (the same subnet) only. Those connections are
     authenticated and encrypted, and never leave the local network.
 
-Create your vault (as yourself, in a new terminal):
+Create your vault (as yourself):
 
-    zp-cli init
+    Open ZeroPass from the Start menu, or in a new terminal:  zp-cli init
 
     The vault is kept in %LOCALAPPDATA%\ZeroPass\Vault\vault.zpvault.
     Windows Hello protects the TOTP and passkey parts; set it up first in
     Settings > Accounts > Sign-in options.
 
-    Then make a recovery kit and keep it offline:  zp-cli recovery-kit
+    Then make a recovery kit and keep it offline.
 
 Uninstall: "Installed apps" > ZeroPass > Uninstall, or:
 

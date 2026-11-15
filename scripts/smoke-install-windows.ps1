@@ -70,7 +70,7 @@ New-NetFirewallRule -DisplayName 'zp-syncd' -Direction Inbound -Action Allow -Pr
 
 # 1. Install.
 & (Join-Path $Package 'install.ps1')
-foreach ($name in 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe', 'uninstall.ps1') {
+foreach ($name in 'zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe', 'uninstall.ps1') {
     Assert (Test-Path (Join-Path $destination $name)) "$name is installed"
 }
 $run = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run').ZeroPass
@@ -86,6 +86,8 @@ Assert ($rule[0].Direction -eq 'Inbound' -and $rule[0].Action -eq 'Allow' -and $
 Assert ((($rule[0] | Get-NetFirewallAddressFilter).RemoteAddress) -eq 'LocalSubnet') 'but only from the local subnet'
 $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
+$shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
+Assert ((New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath -eq (Join-Path $destination 'zeropass.exe')) 'the desktop application is in the Start menu'
 $acl = Get-Acl $destination
 Assert (-not ($acl.Access | Where-Object {
     $_.IdentityReference -match '(^|[\\])Users$|Authenticated Users|Everyone' -and
@@ -119,6 +121,18 @@ $status = Invoke-Cli @('daemon', 'status')
 Assert ($status -match 'sandbox: yes') 'the daemon started at logon runs in its sandbox'
 $unlocked = Invoke-Cli @('unlock', 'password') @($password)
 Assert ($unlocked -match 'unlocked') 'the vault opens'
+
+# 4b. The installed desktop application starts, reaches the daemon and draws
+#     its first screen (P4-01). It reports how long that took, and ends.
+$startup = Join-Path $env:TEMP 'zeropass-startup.txt'
+Remove-Item -LiteralPath $startup -ErrorAction SilentlyContinue
+$app = Start-Process -FilePath (Join-Path $destination 'zeropass.exe') -PassThru `
+    -ArgumentList @('--startup-time', "`"$startup`"")
+if (-not $app.WaitForExit(60000)) {
+    $app.Kill()
+    throw 'FAILED: the desktop application did not draw its first screen within 60 s'
+}
+Assert ((Test-Path $startup) -and ((Get-Content -LiteralPath $startup -Raw) -match '^\d+')) "the desktop application started and drew its first screen ($((Get-Content -LiteralPath $startup -Raw).Trim()) ms on this runner)"
 
 # 5. Installing again over the running programs replaces them.
 & (Join-Path $Package 'install.ps1')
@@ -179,5 +193,6 @@ Assert (-not ($machinePath -split ';' -contains $destination)) 'the PATH no long
 $pathAfter = Get-RawPath
 Assert ($pathAfter.Kind -eq $pathBefore.Kind -and $pathAfter.Value -ceq $pathBefore.Value) 'the PATH is exactly as before the installation'
 Assert (@(Get-SyncDaemonRules).Count -eq 0) 'no firewall rule for the sync daemon is left'
+Assert (-not (Test-Path $shortcut)) 'the Start menu entry is gone'
 Assert (Test-Path $vault) 'the vault was kept'
 Write-Host 'smoke test passed'

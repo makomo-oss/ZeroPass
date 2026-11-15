@@ -87,7 +87,7 @@ foreach ($process in $running) {
     try { $process.WaitForExit(10000) | Out-Null } catch { }
 }
 
-# 2. The logon start, the firewall rules and "Installed apps".
+# 2. The logon start, the firewall rules, "Installed apps" and the Start menu.
 Remove-SyncDaemonRules (Join-Path $Destination 'zp-syncd.exe')
 $run = Get-ItemProperty -Path $RunKey -Name 'ZeroPass' -ErrorAction SilentlyContinue
 if ($run -and $run.ZeroPass -like ('*' + $Destination + '*')) {
@@ -96,6 +96,14 @@ if ($run -and $run.ZeroPass -like ('*' + $Destination + '*')) {
 $entry = Get-ItemProperty -Path $UninstallKey -ErrorAction SilentlyContinue
 if ($entry -and $entry.InstallLocation -ieq $Destination) {
     Remove-Item -Path $UninstallKey -Recurse
+}
+# The Start menu entry, if it points into this installation.
+$shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
+if (Test-Path -LiteralPath $shortcut) {
+    $target = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath
+    if ($target -like ($Destination + '\*')) {
+        Remove-Item -LiteralPath $shortcut -Force
+    }
 }
 
 # 3. The PATH: only the entry for this installation goes, the rest stays as

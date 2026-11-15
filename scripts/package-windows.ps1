@@ -34,7 +34,15 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
-$Programs = @('zp-cli', 'zp-vaultd', 'zp-syncd', 'zp-keyagent', 'zp-autostart')
+# The programs that ship, by executable name, and the Cargo package of each.
+$Programs = [ordered]@{
+    'zp-cli'       = 'zp-cli'
+    'zp-vaultd'    = 'zp-vaultd'
+    'zp-syncd'     = 'zp-syncd'
+    'zp-keyagent'  = 'zp-keyagent'
+    'zp-autostart' = 'zp-autostart'
+    'zeropass'     = 'zeropass-desktop'
+}
 
 function Invoke-Checked([string]$program, [string[]]$arguments) {
     & $program @arguments
@@ -43,8 +51,22 @@ function Invoke-Checked([string]$program, [string[]]$arguments) {
     }
 }
 
-# 1. Build what ships.
-$packages = @($Programs | ForEach-Object { '-p', $_ })
+# 1. Build what ships. First the desktop application's user interface, which
+#    the application embeds when it is compiled: without it, the build would
+#    embed the placeholder page that says it was not built.
+$ui = Join-Path $root 'apps\desktop'
+Push-Location -LiteralPath $ui
+try {
+    Invoke-Checked 'npm' @('ci', '--no-audit', '--no-fund')
+    Invoke-Checked 'npm' @('run', 'build')
+} finally {
+    Pop-Location
+}
+$page = Get-Content -LiteralPath (Join-Path $ui 'dist\index.html') -Raw
+if ($page -match 'zeropass-ui-not-built') {
+    throw 'apps\desktop\dist holds the placeholder page, not the user interface'
+}
+$packages = @($Programs.Values | ForEach-Object { '-p', $_ })
 Invoke-Checked 'cargo' (@('build', '--release', '--locked') + $packages)
 
 # The memory probe exists for the tests only; it must not be in a program.
@@ -62,7 +84,7 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 # 2. Gather.
-foreach ($program in $Programs) {
+foreach ($program in $Programs.Keys) {
     Copy-Item -LiteralPath (Join-Path 'target\release' "$program.exe") -Destination $stage
 }
 foreach ($file in 'install.ps1', 'uninstall.ps1', 'README.txt') {

@@ -11,6 +11,11 @@ ignore = [
     # generator (uniffi_bindgen -> askama), a build-time tool that reads this
     # project's own files; it is not part of any binary or library that ships.
     { id = "RUSTSEC-2026-0374", reason = "build-time only, via the UniFFI bindings generator" },
+    # `proc-macro-error` is unmaintained. A procedural macro, run at compile
+    # time only, reached through the GTK 3 bindings (glib-macros, gtk3-macros)
+    # that Tauri uses on Linux; nothing of it is in a shipped program
+    # (ADR-0009).
+    { id = "RUSTSEC-2024-0370", reason = "compile-time only, via Tauri's GTK 3 bindings on Linux" },
 ]
 
 [licenses]
