@@ -9,9 +9,10 @@ administrators can change them. The vault daemon trusts the programs that
 connect to it by where they are installed, so that place must not be writable
 by the user (docs/adr/0008-windows-installation.md).
 
-Also adds the directory to the PATH, starts ZeroPass at logon for every user
+Also adds the desktop application to the Start menu and the directory to the
+PATH, starts ZeroPass at logon for every user
 (it does nothing for a user without a vault), lets the sync daemon accept
-connections from the local network (Windows Firewall, private networks only),
+connections from the local subnet (Windows Firewall, any kind of network),
 and registers the uninstaller in "Installed apps". Asks Windows for
 administrator rights if it does not have them. A running ZeroPass from an earlier installation is ended
 first: its vaults lock, as they would on a restart.
@@ -59,12 +60,14 @@ trap {
     exit 1
 }
 
-$Programs = @('zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe')
+$Programs = @('zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe')
 $Documents = @('uninstall.ps1', 'LICENSE', 'README.txt', 'VERSION')
 $RunKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 $EnvironmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
 $FirewallGroup = 'ZeroPass'
+# The Start menu entry of the desktop application, for every user.
+$Shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
 
 # Removes ZeroPass's own firewall rules, and every other rule for the sync
 # daemon at `$program`: those Windows created when it asked whether the
@@ -180,6 +183,15 @@ if ($NoAutostart) {
     Set-ItemProperty -Path $RunKey -Name 'ZeroPass' -Value ('"{0}"' -f (Join-Path $Destination 'zp-autostart.exe'))
 }
 
+# 5b. The desktop application in the Start menu, for every user.
+$shell = New-Object -ComObject WScript.Shell
+$link = $shell.CreateShortcut($Shortcut)
+$link.TargetPath = Join-Path $Destination 'zeropass.exe'
+$link.WorkingDirectory = $Destination
+$link.IconLocation = (Join-Path $Destination 'zeropass.exe') + ',0'
+$link.Description = 'ZeroPass password manager'
+$link.Save()
+
 # 6. "Installed apps".
 $size = [int]((Get-ChildItem -LiteralPath $Destination -File | Measure-Object -Property Length -Sum).Sum / 1KB)
 New-Item -Path $UninstallKey -Force | Out-Null
@@ -189,7 +201,7 @@ $values = @{
     DisplayVersion  = $version
     Publisher       = 'ZeroPass contributors'
     InstallLocation = $Destination
-    DisplayIcon     = (Join-Path $Destination 'zp-cli.exe')
+    DisplayIcon     = (Join-Path $Destination 'zeropass.exe')
     UninstallString = $uninstall
     URLInfoAbout    = 'https://github.com/makomo-oss/ZeroPass'
 }
@@ -202,7 +214,7 @@ foreach ($name in 'NoModify', 'NoRepair') {
 Set-ItemProperty -Path $UninstallKey -Name 'EstimatedSize' -Value $size -Type DWord
 
 Write-Host "ZeroPass $version is installed in $Destination."
-Write-Host 'Open a new terminal and create your vault with:  zp-cli init'
+Write-Host 'Open ZeroPass from the Start menu to create your vault (or, in a new terminal:  zp-cli init).'
 if (-not $NoAutostart) {
     Write-Host 'From the next logon on, ZeroPass starts by itself for users who have a vault.'
 }

@@ -5,4 +5,10 @@ ignore = [
     # `basic-toml` is unmaintained. Build-time only, via the UniFFI bindings
     # generator (uniffi_bindgen -> askama); not part of anything that ships.
     "RUSTSEC-2026-0374",
+    # `proc-macro-error` is unmaintained. Compile-time only (a procedural
+    # macro), via the GTK 3 bindings that Tauri uses on Linux (ADR-0009).
+    "RUSTSEC-2024-0370",
+    # `glib` 0.18: an unsound iterator over GVariant strings (VariantStrIter).
+    # Linux only, via the GTK 3 stack that Tauri uses; not used by ZeroPass.
+    "RUSTSEC-2024-0429",
 ]

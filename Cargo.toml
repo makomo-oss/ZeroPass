@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "bins/*"]
+members = ["crates/*", "bins/*", "apps/desktop/src-tauri"]
 # Fuzz targets form their own workspace (nightly + libFuzzer).
 exclude = ["fuzz"]
 
