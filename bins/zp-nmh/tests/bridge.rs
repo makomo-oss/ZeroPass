@@ -28,7 +28,16 @@ fn program(name: &str) -> PathBuf {
 /// client that makes the vault are others.
 fn others_are_built() {
     let mut cargo = Command::new(env!("CARGO"));
-    cargo.args(["build", "--locked", "-p", "zp-vaultd", "-p", "zp-cli"]);
+    cargo.args([
+        "build",
+        "--locked",
+        "-p",
+        "zp-vaultd",
+        "-p",
+        "zp-cli",
+        "-p",
+        "zp-keyagent",
+    ]);
     if dir().file_name().is_some_and(|name| name == "release") {
         cargo.arg("--release");
     }
@@ -42,10 +51,15 @@ fn others_are_built() {
 
 /// Runs `zp-cli` on `vault`; each of `input` answers a prompt.
 fn cli(vault: &Path, args: &[&str], input: &[&str]) -> String {
+    cli_with(vault, "--no-hardware-keystore", args, input)
+}
+
+/// Runs `zp-cli` with the key store `flag`.
+fn cli_with(vault: &Path, flag: &str, args: &[&str], input: &[&str]) -> String {
     let mut child = Command::new(program("zp-cli"))
         .arg("--vault")
         .arg(vault)
-        .arg("--no-hardware-keystore")
+        .arg(flag)
         .args(args)
         .env_remove("ZEROPASS_VAULT")
         .stdin(Stdio::piped())
@@ -269,4 +283,86 @@ fn another_extension_is_not_served() {
         bridge.stdout.read_to_end(&mut rest).unwrap();
         assert!(rest.is_empty(), "{args:?}");
     }
+}
+
+#[test]
+fn the_extension_saves_compares_updates_and_gets_one_time_codes() {
+    others_are_built();
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("totp.zpvault");
+    let _daemon = Daemon(&vault);
+    // The development key store stands in for Windows Hello.
+    let soft = "--insecure-software-keystore";
+    cli_with(&vault, soft, &["init"], &[PASSWORD, PASSWORD]);
+    let bank = added(&cli_with(
+        &vault,
+        soft,
+        &[
+            "add",
+            "login",
+            "--title",
+            "Bank",
+            "--username",
+            "alice",
+            "--url",
+            "https://bank.example.com",
+        ],
+        &[PASSWORD, "bank password"],
+    ));
+    cli_with(
+        &vault,
+        soft,
+        &["add", "totp", "--login", &bank],
+        &["otpauth://totp/Bank:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"],
+    );
+    let origin = "https://bank.example.com";
+    let mut bridge = Bridge::start(&vault, &[CHROME]);
+
+    let code = bridge.ask(json!({ "type": "totp", "origin": origin, "item": bank }));
+    let digits = code["code"].as_str().unwrap_or_default();
+    assert!(
+        digits.len() == 6 && digits.chars().all(|c| c.is_ascii_digit()),
+        "{code}"
+    );
+    let elsewhere =
+        bridge.ask(json!({ "type": "totp", "origin": "https://evil.test", "item": bank }));
+    assert_eq!(error_code(&elsewhere), "Denied");
+
+    let compare = |bridge: &mut Bridge, username: &str, password: &str| {
+        bridge.ask(json!({
+            "type": "compare", "origin": origin, "username": username, "password": password
+        }))
+    };
+    let same = compare(&mut bridge, "alice", "bank password");
+    assert_eq!(
+        (&same["item"], &same["same"]),
+        (&json!(bank), &json!(true)),
+        "{same}"
+    );
+    let changed = compare(&mut bridge, "alice", "new bank password");
+    assert_eq!(changed["same"], json!(false), "{changed}");
+    let updated = bridge.ask(json!({
+        "type": "update", "origin": origin, "item": bank, "password": "new bank password"
+    }));
+    assert_eq!(updated["ok"], json!(true), "{updated}");
+    assert_eq!(
+        compare(&mut bridge, "alice", "new bank password")["same"],
+        json!(true)
+    );
+
+    let fresh = compare(&mut bridge, "carol", "carol password");
+    assert_eq!(fresh["item"], json!(""), "{fresh}");
+    let saved = bridge.ask(json!({
+        "type": "save", "origin": origin, "username": "carol", "password": "carol password"
+    }));
+    let id = saved["item"].as_str().unwrap().to_owned();
+    let found = bridge.ask(json!({ "type": "find", "origin": origin }));
+    assert!(
+        found["logins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|login| login["id"] == json!(id)),
+        "{found}"
+    );
 }

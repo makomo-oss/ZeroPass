@@ -19,10 +19,9 @@ export default defineConfig({
     name: "ZeroPass",
     description:
       "Fills your logins from ZeroPass, the password manager without a server. Needs the ZeroPass desktop application.",
-    // The bridge to the desktop application, and the current tab when the
-    // user opens the popup (its address, to find its logins). No storage,
-    // no access to other tabs.
-    permissions: ["nativeMessaging", "activeTab"],
+    // Only the bridge to the desktop application. No storage, no tabs, no
+    // addresses of tabs: the popup asks a tab's own content script.
+    permissions: ["nativeMessaging"],
     ...(browser === "firefox"
       ? {
           browser_specific_settings: {

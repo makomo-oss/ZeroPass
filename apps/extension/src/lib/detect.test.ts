@@ -120,3 +120,24 @@ describe("user-name fields", () => {
     ]);
   });
 });
+
+describe("one-time-code fields", () => {
+  it("are recognised by autocomplete, name and length", async () => {
+    const { isOtpField } = await import("./detect");
+    page(`
+      <input id="a" autocomplete="one-time-code">
+      <input id="b" name="totp_code" maxlength="6" inputmode="numeric">
+      <input id="c" name="verification-code">
+      <input id="d" name="email">
+      <input id="e" name="otp" maxlength="40">
+      <input id="f" type="checkbox" name="otp">`);
+    expect(["a", "b", "c", "d", "e", "f"].map((id) => isOtpField(input(`#${id}`)))).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+  });
+});

@@ -28,16 +28,34 @@ export type PageState =
   | "no_vault"
   | "unavailable"
   | "unsupported"
+  | "cancelled"
   | "error";
 
 /** Asked by a content script or the popup, answered by the background. */
 export type Ask =
   | { kind: "find" }
   | { kind: "fill"; item: string }
+  | { kind: "totp"; item: string }
+  | { kind: "typed_username"; username: string }
+  | { kind: "submitted"; username: string; password: string }
+  | { kind: "pending" }
+  | { kind: "answer"; accept: boolean }
   | { kind: "open_app" }
   | { kind: "status" }
   | { kind: "find_for_tab"; tab: number }
   | { kind: "fill_tab"; tab: number; item: string };
+
+/** A login the extension offers to save or update. No secret. */
+export interface Proposal {
+  kind: "save" | "update";
+  /** The host of the page where it was typed. */
+  host: string;
+  username: string;
+}
+
+export type TotpAnswer =
+  | { ok: true; code: string }
+  | { ok: false; state: PageState; message: string };
 
 export interface FindAnswer {
   state: PageState;
@@ -50,7 +68,7 @@ export type FillAnswer =
   | { ok: false; state: PageState; message: string };
 
 /** Sent by the background to a page's top frame. */
-export type Order = { kind: "fill_now"; item: string };
+export type Order = { kind: "fill_now"; item: string } | { kind: "find_now" };
 
 /** An error the bridge reports: the daemon's code, or the bridge's own. */
 export interface BridgeError {
@@ -67,6 +85,8 @@ export function stateOf(code: string): PageState {
       return "not_running";
     case "NoVault":
       return "no_vault";
+    case "UserCancelled":
+      return "cancelled";
     case "Unavailable":
       return "unavailable";
     default:

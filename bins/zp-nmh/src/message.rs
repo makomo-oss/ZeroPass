@@ -15,6 +15,30 @@ pub(crate) struct Envelope {
     pub(crate) request: Request,
 }
 
+/// A secret in a request (a password the user typed): wiped when dropped,
+/// never printed.
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub(crate) struct Secret(String);
+
+impl Secret {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl core::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("<secret>")
+    }
+}
+
 /// What the extension asks.
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -34,6 +58,39 @@ pub(crate) enum Request {
         #[serde(default)]
         top: String,
         item: String,
+    },
+    /// The one-time code tied to a login of the page; Windows Hello asks.
+    Totp {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        item: String,
+    },
+    /// Whether what the user typed into the page is in the vault.
+    Compare {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        username: String,
+        password: Secret,
+    },
+    /// Saves a new login for the page.
+    Save {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        title: String,
+        username: String,
+        password: Secret,
+    },
+    /// Replaces the password of a login of the page.
+    Update {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        item: String,
+        password: Secret,
     },
     /// Start the desktop application.
     OpenApp,
@@ -74,6 +131,18 @@ pub(crate) enum Answer {
         username: Zeroizing<String>,
         #[serde(serialize_with = "secret")]
         password: Zeroizing<String>,
+    },
+    Code {
+        #[serde(serialize_with = "secret")]
+        code: Zeroizing<String>,
+    },
+    Comparison {
+        /// The login of the page with that user name, or empty.
+        item: String,
+        same: bool,
+    },
+    Saved {
+        item: String,
     },
     Done {},
 }

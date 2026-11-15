@@ -245,13 +245,18 @@ docs/    threat-model.md  adr/  spec/
   - 確認: `zp-origin` の単体テスト（11 件）、金庫デーモンの単体テスト（ブリッジの役割で 1 件ずつ・別サイトと格下げは `DENIED`・解錠できない・ほかの役割は使えない）、`bins/zp-nmh/tests/bridge.rs`（実際の `zp-cli`・`zp-vaultd`・`zp-nmh` で、金庫なし・施錠中・一致・不一致・格下げ・誤った形式・デーモン停止中、別の拡張 ID では応答しないこと）。
   - 限界（`extension.md` §10）: 起動の引数は起動した者が決められるので、同じ利用者のプログラムは ID を名乗れる。開発版の拡張 ID は公開鍵から導かれる（ストアの ID は P8-03）。実際のブラウザからの接続は P4-05 で確かめる。
 - [x] **P4-05** WXT 拡張: フォーム検出、オリジン厳密一致（eTLD+1 + フィッシング対策）、インライン候補、入力 — 主要 20 サイトで動作確認（依存: P4-04）
-  - 実装: `apps/extension`（WXT 0.21 + TypeScript。Chrome・Edge は MV3、Firefox は MV2。権限は `nativeMessaging` と `activeTab` だけ）。background がブリッジとの接続を持ち、要求のオリジンはブラウザの `sender` から得る（フレームとタブの最上位の両方）。content script がログインの欄（パスワードとその前の利用者名、2 段階の利用者名だけの画面、開いた Shadow DOM の中）を見つけ、欄にフォーカスすると、一致したログインを閉じた Shadow DOM の一覧で示し、利用者が選んだ（`isTrusted` のクリック）ものだけを入力する。見えない・無効・読み取り専用の欄、新しいパスワードだけの欄（登録の画面）には入れず、パスワードは `type=password` の欄にだけ入れる。送信はしない。ツールバーのポップアップから今のタブに入力することもできる。
+  - 実装: `apps/extension`（WXT 0.21 + TypeScript。Chrome・Edge は MV3、Firefox は MV2。権限は `nativeMessaging` だけ）。background がブリッジとの接続を持ち、要求のオリジンはブラウザの `sender` から得る（フレームとタブの最上位の両方）。content script がログインの欄（パスワードとその前の利用者名、2 段階の利用者名だけの画面、開いた Shadow DOM の中）を見つけ、欄にフォーカスすると、一致したログインを閉じた Shadow DOM の一覧で示し、利用者が選んだ（`isTrusted` のクリック）ものだけを入力する。見えない・無効・読み取り専用の欄、新しいパスワードだけの欄（登録の画面）には入れず、パスワードは `type=password` の欄にだけ入れる。送信はしない。ツールバーのポップアップから今のタブに入力することもできる（ポップアップは今のタブの最上位のフレームにログインを探させ、入力させる。タブのアドレスを読む権限は使わない）。
   - **別のサイトの iframe**: 照合はデーモンが行う。ブリッジ・IPC に最上位のフレームのオリジン（`top` / `top_origin`）を加え、フレームと同じサイトでなければ候補を出さず、パスワードも渡さない（`extension.md` §7）。
-  - 確認（自動）: 単体テスト（検出・オリジン・入力、vitest）。`e2e/local.e2e.mjs`（CI の `extension-e2e` でも毎回）: Playwright の Chromium に実際の拡張、実際の `zp-nmh`（テストの間だけ HKCU に登録）、実際の金庫デーモンで、入力・ページ側が値の変化を受け取ること・送信しないこと・2 段階・別サイトの iframe では出ない・同じサイトの iframe では出る・ページのスクリプトは一覧を押せない・施錠中は「Open ZeroPass」。
+  - 確認（自動）: 単体テスト（検出・オリジン・入力、vitest）。`e2e/local.e2e.mjs`（CI の `extension-e2e` でも毎回）: Playwright の Chromium に実際の拡張、実際の `zp-nmh`（テストの間だけ HKCU に登録）、実際の金庫デーモンで、入力・ページ側が値の変化を受け取ること・送信しないこと・2 段階・別サイトの iframe では出ない・同じサイトの iframe では出る・ページのスクリプトは一覧を押せない・施錠中は「Open ZeroPass」・ポップアップの経路（タブ自身による検索と入力。ポップアップの画面そのものはツールバーを押せないので操作していない）。
   - **主要サイトでの確認（2026-11-16）**: `e2e/sites.e2e.mjs --offscreen` で 37 サイトのログイン画面を開き、ダミーのログインを候補から選んで欄に入るかを確かめた。**31 サイトで入力できた**（GitHub、Wikipedia、Hacker News、LinkedIn、Facebook、Instagram、X、Google、Microsoft、Apple（同じサイトの iframe）、Dropbox、Netflix、Discord、Twitch、WordPress.com、Atlassian、Spotify、Zoom、Pinterest、note、Notion、Hugging Face、npm、PyPI、Docker、Proton、Steam、Tumblr、Vimeo、Kaggle、Amazon）。残り 6 サイトはボット対策・キャプチャ・読み込みの遅れでログインの欄まで届かなかった（GitLab、Stack Overflow、Reddit、Yahoo! JAPAN、PayPal、Mozilla accounts）。送信はしていない。表と分かったことは `docs/extension-sites.md`。
   - 配布: Windows のパッケージに、ビルドした拡張（`browser-extension\chrome`、`browser-extension\firefox`）を入れ、Program Files に置く。読み込み方は `packaging/windows/README.txt`（ストアでの配布は P8-03）。
   - **未確認（実機で確かめること）**: 利用者の Chrome・Edge・Firefox にインストール版の拡張を読み込み、インストールしたブリッジ（HKLM）で入力できること。Firefox は一度も動かしていない。実際のアカウントでのログイン。
-- [ ] **P4-06** 拡張: 保存／更新提案、TOTP 自動入力（デーモン側で生体認証）（依存: P4-05）
+- [x] **P4-06** 拡張: 保存／更新提案、TOTP 自動入力（デーモン側で生体認証）（依存: P4-05）
+  - IPC 102〜105（`BridgeTotp`・`BridgeSave`・`BridgeUpdate`・`BridgeCompare`、応答 26）とブリッジの `totp`・`save`・`update`・`compare`（`extension.md` §3.3・§4・§8・§9、`ipc.md` §4.3・§5・§13.2）。
+  - **TOTP はコードのたびにデーモン側で生体認証**: `BridgeTotp` は、ログインがページに一致することを確かめてから、TOTP のドメインを施錠して鍵エージェントで解錠し直し（ドメインが開いていても毎回 Windows Hello）、ログインに結び付いた TOTP のコードを返す。ブリッジはそのたびに鍵エージェントを起動する（コンソールの窓なし）。拡張はワンタイムコードの欄でページのログインを示し、選ばれたもののコードを入力する。
+  - **保存・更新の提案**: 送信（`submit`、ボタンのクリック、Enter。いずれも利用者の操作）を検出すると、入力値を金庫と比べ（デーモン側）、新しければ保存、パスワードが変わっていれば更新を、ページ上部のバー（閉じた Shadow DOM、`isTrusted` のクリックだけ受け付ける）で提案する。入力値は background のメモリにだけ、タブごとに最長 2 分置き、`storage` には書かない。ページが移っても移った先で提案する。2 段階のログインは前の画面の利用者名を使う。保存はページのオリジンを URL、ホストを題名にする。
+  - 確認: 金庫デーモンの単体テスト（開いていても毎回 Hello を求める・取り消せば `USER_CANCELLED`・別サイトでは Hello を求めずに `DENIED`・結び付いた TOTP がなければ `ITEM_NOT_FOUND`、保存・比較・更新・別サイトの枠では拒否）、`bins/zp-nmh/tests/bridge.rs`（実際のブリッジとデーモンで TOTP・比較・更新・保存）、拡張の `e2e/local.e2e.mjs`（実際の拡張で、ワンタイムコードの入力、新しいログインの保存の提案と保存、変わったパスワードの更新の提案と更新、変わっていなければ提案しない）。
+  - **未確認（実機で確かめること）**: Windows Hello のある金庫で、ブラウザから起動されたブリッジの鍵エージェントの確認画面が前面に出ること（テストはソフトウェアの鍵ストアで行う）。
 - [ ] **P4-07** インポート（Bitwarden / 1Password / Chrome CSV）と暗号化エクスポート（依存: P4-02）
 
 ### Phase 5: パスキーエンジン（原則④）

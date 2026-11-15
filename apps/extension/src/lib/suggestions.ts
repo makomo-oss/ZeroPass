@@ -57,9 +57,13 @@ export class Suggestions {
     return node !== null && node === this.host;
   }
 
-  show(anchor: HTMLElement, state: PageState, logins: Login[]): void {
+  /**
+   * Shows the logins under `anchor`, or what stands in the way. `heading`
+   * names what picking one does; `detail` says what went wrong.
+   */
+  show(anchor: HTMLElement, state: PageState, logins: Login[], heading = "ZeroPass", detail = ""): void {
     this.hide();
-    const message = messageFor(state);
+    const message = messageFor(state) ?? (detail || null);
     if (state === "ok" && logins.length === 0) return;
     if (state !== "ok" && message === null) return;
 
@@ -74,7 +78,7 @@ export class Suggestions {
     head.className = "head";
     const logo = document.createElement("span");
     logo.className = "logo";
-    head.append(logo, "ZeroPass");
+    head.append(logo, heading);
     box.append(head);
 
     if (state === "ok") {
@@ -157,6 +161,8 @@ function messageFor(state: PageState): string | null {
       return "ZeroPass is locked.";
     case "not_running":
       return "ZeroPass is not running.";
+    case "cancelled":
+      return "Windows Hello was cancelled.";
     case "no_vault":
       return "ZeroPass has no vault yet.";
     case "unavailable":

@@ -9,6 +9,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   addLogin,
+  attribute,
+  clickClosed,
   cli,
   expect,
   failed,
@@ -46,6 +48,9 @@ const LOGIN_PAGE = `<!doctype html><title>Login</title>
   });
 </script>`;
 
+const OTP_PAGE = `<!doctype html><title>Two-factor</title>
+<form><label>Code <input id="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></label><button>Verify</button></form>`;
+
 const TWO_STEP_PAGE = `<!doctype html><title>Step 1</title>
 <form><input type="email" id="identifier" autocomplete="username"><button>Next</button></form>`;
 
@@ -63,6 +68,7 @@ try {
     const pages = {
       "/login": LOGIN_PAGE,
       "/two-step": TWO_STEP_PAGE,
+      "/otp": OTP_PAGE,
       // A page of one site that frames the login page of another.
       "/framed": framePage(`http://localhost:${port}/login`),
       // ...and one that frames a page of its own site.
@@ -77,7 +83,10 @@ try {
   var port = server.address().port;
   const site = `http://127.0.0.1:${port}`;
 
-  addLogin(setup.vault, "Local", USER, SECRET, site);
+  const local = addLogin(setup.vault, "Local", USER, SECRET, site);
+  cli(setup.vault, ["add", "totp", "--login", local], [
+    "otpauth://totp/Local:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+  ]);
   addLogin(setup.vault, "Elsewhere", "bob", "elsewhere password", "https://elsewhere.test");
   addLogin(setup.vault, "Framed", "carol", "framed password", `http://localhost:${port}`);
 
@@ -105,6 +114,28 @@ try {
     expect(typed.email === USER.length && typed.password === SECRET.length, `the page saw ${JSON.stringify(typed)}`);
     expect((await page.title()) === "Login", "the form was submitted");
   }, () => shot("fill"));
+
+  await step("the popup's way works: the tab finds its own logins and fills the chosen one", async () => {
+    await page.goto(`${site}/login`);
+    const worker = context.serviceWorkers()[0];
+    // What the background does for the popup (find_for_tab, fill_tab), done
+    // from the background itself: the toolbar button cannot be pressed here.
+    const outcome = await worker.evaluate(async () => {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (!tab?.id) return { error: "no active tab" };
+      // `find_for_tab`: the tab's top frame finds its own logins.
+      const found = await chrome.tabs.sendMessage(tab.id, { kind: "find_now" }, { frameId: 0 });
+      const item = found?.logins?.[0]?.id;
+      if (!item) return { found };
+      // `fill_tab`: the top frame fills the login the user chose.
+      const filled = await chrome.tabs.sendMessage(tab.id, { kind: "fill_now", item }, { frameId: 0 });
+      return { found, filled };
+    });
+    expect(outcome.filled === true, `the popup's way failed: ${JSON.stringify(outcome)}`);
+    await page.waitForFunction((user) => document.getElementById("email").value === user, USER, {
+      timeout: 10_000,
+    });
+  }, () => shot("popup"));
 
   await step("the first step of a two-step login gets the user name", async () => {
     await page.goto(`${site}/two-step`);
@@ -157,6 +188,65 @@ try {
     expect(reached === null, "the page reached into the list");
     expect((await page.locator("#password").inputValue()) === "", "a made-up click filled the password");
   }, () => shot("untrusted"));
+
+  await step("a one-time-code field gets the code of the page's login", async () => {
+    await page.goto(`${site}/otp`);
+    const field = page.locator("#otp");
+    await field.click();
+    await page.waitForFunction(() => document.querySelector("zeropass-suggestions") !== null, null, {
+      timeout: 15_000,
+    });
+    await pickFirst(page, field);
+    await page.waitForFunction(() => /^\d{6}$/.test(document.getElementById("otp").value), null, {
+      timeout: 15_000,
+    });
+  }, () => shot("otp"));
+
+  const pressProposal = (kind) =>
+    clickClosed(
+      page,
+      "zeropass-proposal",
+      (node) => node.nodeName === "BUTTON" && attribute(node, "class") === kind,
+    );
+  const signIn = async (email, password) => {
+    await page.goto(`${site}/login`);
+    await page.locator("#email").fill(email);
+    await page.locator("#password").fill(password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  };
+
+  await step("after signing in with a new login, ZeroPass offers to save it", async () => {
+    await signIn("new.user@example.test", "a brand new password");
+    await page.waitForFunction(() => document.querySelector("zeropass-proposal") !== null, null, {
+      timeout: 15_000,
+    });
+    await shot("save");
+    expect(await pressProposal("yes"), "the Save button was not found");
+    await page.waitForFunction(() => document.querySelector("zeropass-proposal") === null);
+    await sleep(1000);
+    const listed = cli(setup.vault, ["list"]);
+    expect(listed.includes(`127.0.0.1:${port}`), `the new login is not in the vault:\n${listed}`);
+  }, () => shot("save-failed"));
+
+  await step("after signing in with a changed password, ZeroPass offers to update it", async () => {
+    await signIn(USER, "a changed password");
+    await page.waitForFunction(() => document.querySelector("zeropass-proposal") !== null, null, {
+      timeout: 15_000,
+    });
+    expect(await pressProposal("yes"), "the Update button was not found");
+    await sleep(1000);
+    const shown = cli(setup.vault, ["get", local, "--reveal"]);
+    expect(shown.includes("a changed password"), `the password was not updated:\n${shown}`);
+  }, () => shot("update-failed"));
+
+  await step("signing in with what the vault has offers nothing", async () => {
+    await signIn(USER, "a changed password");
+    await sleep(2500);
+    expect(
+      !(await page.evaluate(() => document.querySelector("zeropass-proposal") !== null)),
+      "a proposal was shown for an unchanged login",
+    );
+  }, () => shot("unchanged"));
 
   await step("a locked vault offers to open ZeroPass instead of logins", async () => {
     cli(setup.vault, ["lock"]);
