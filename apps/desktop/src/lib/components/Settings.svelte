@@ -7,6 +7,7 @@
     type AppInfo,
     type Status,
   } from "../api";
+  import Transfer from "./Transfer.svelte";
 
   let {
     status,
@@ -152,6 +153,8 @@
       </div>
     </form>
   </section>
+
+  <Transfer {onchanged} />
 
   <section class="card block">
     <h3>About</h3>

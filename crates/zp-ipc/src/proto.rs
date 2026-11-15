@@ -147,7 +147,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -254,6 +254,12 @@ pub mod request {
         /// Relay, uplink: the user's answer to `PairConfirmRequest`.
         #[prost(message, tag = "45")]
         PairConfirm(super::PairConfirm),
+        /// Makes an encrypted export of the whole vault (`docs/spec/export.md`).
+        #[prost(message, tag = "18")]
+        ExportVault(super::ExportVault),
+        /// Adds the items of an encrypted export to the vault.
+        #[prost(message, tag = "19")]
+        ImportExport(super::ImportExport),
         /// Sync daemon: asks where it can be reached and what it can use.
         #[prost(message, tag = "80")]
         SyncdStatus(super::SyncdStatus),
@@ -860,7 +866,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
     )]
     pub body: Option<response::Body>,
 }
@@ -941,6 +947,12 @@ pub mod response {
         /// pairing code can be shown from here on.
         #[prost(message, tag = "22")]
         Listening(super::Listening),
+        /// Answer to `ExportVault`.
+        #[prost(message, tag = "27")]
+        Exported(super::Exported),
+        /// Answer to `ImportExport`.
+        #[prost(message, tag = "28")]
+        ImportedItems(super::ImportedItems),
         /// Answer to `BridgeFind`.
         #[prost(message, tag = "24")]
         BridgeLogins(super::BridgeLogins),
@@ -1481,6 +1493,68 @@ pub struct BridgeComparison {
     pub same: bool,
 }
 
+// ---------------------------------------------------------------------------
+// Encrypted export (`docs/spec/export.md`)
+// ---------------------------------------------------------------------------
+
+/// Makes an encrypted export of every item of every domain. Every domain
+/// must be unlocked.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct ExportVault {
+    /// The passphrase that protects the file (at least 12 characters).
+    #[prost(string, tag = "1")]
+    pub passphrase: String,
+}
+
+/// Adds the items of an encrypted export, as new items.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct ImportExport {
+    /// The export file.
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+    /// Its passphrase.
+    #[prost(string, tag = "2")]
+    pub passphrase: String,
+}
+
+/// Answer to [`ExportVault`]: the file, sealed.
+#[derive(Clone, PartialEq, Message)]
+pub struct Exported {
+    /// The export file, ready to be written.
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+    /// What it holds.
+    #[prost(message, optional, tag = "2")]
+    pub counts: Option<ItemCounts>,
+}
+
+/// Answer to [`ImportExport`].
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct ImportedItems {
+    /// What was added.
+    #[prost(message, optional, tag = "1")]
+    pub counts: Option<ItemCounts>,
+}
+
+/// How many items of each kind.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct ItemCounts {
+    /// Logins.
+    #[prost(uint32, tag = "1")]
+    pub logins: u32,
+    /// Secure notes.
+    #[prost(uint32, tag = "2")]
+    pub notes: u32,
+    /// TOTP entries.
+    #[prost(uint32, tag = "3")]
+    pub totp: u32,
+    /// Passkeys.
+    #[prost(uint32, tag = "4")]
+    pub passkeys: u32,
+}
+
 redacted_debug!(
     PairJoin,
     PairOffered,
@@ -1497,6 +1571,8 @@ redacted_debug!(
     BridgeSave,
     BridgeUpdate,
     BridgeCompare,
+    ExportVault,
+    ImportExport,
     RecoveryKit,
 );
 

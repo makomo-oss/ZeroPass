@@ -1,0 +1,4 @@
+name,url,username,password,note
+Example Bank,https://bank.example.com/login,alice,"pa,ss ""word""",my note
+,https://mail.example.org/,bob@example.org,mail-pass,
+Empty,https://empty.example.com,,,

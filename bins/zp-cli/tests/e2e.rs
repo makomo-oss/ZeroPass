@@ -671,3 +671,130 @@ fn nearby_commands_fail_cleanly_without_a_partner() {
     let stderr = cli.fails(&["join"], &[PASSWORD, PASSWORD, "ZP1:AAAA"]);
     assert!(stderr.contains("already exists"), "{stderr}");
 }
+
+#[test]
+fn an_encrypted_export_moves_everything_to_another_vault() {
+    let source = Cli::new();
+    source.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let bank = added_id(&source.ok(
+        &[
+            "add",
+            "login",
+            "--title",
+            "Bank",
+            "--username",
+            "alice",
+            "--url",
+            "https://bank.example.com",
+        ],
+        &[PASSWORD, "bank password"],
+    ));
+    source.ok(&["add", "totp", "--login", &bank], &[TOTP_URI]);
+    source.ok(
+        &["add", "note", "--title", "Wi-Fi"],
+        &["purple monkey dishwasher"],
+    );
+
+    let export = source.vault.with_extension("zpexport");
+    let export_arg = export.to_str().unwrap();
+    // The passphrase is asked twice and must be long enough.
+    let refused = source.run(&["export", export_arg], &["short", "short"]);
+    assert!(!refused.success);
+    let done = source.ok(
+        &["export", export_arg],
+        &["an export passphrase", "an export passphrase"],
+    );
+    assert!(
+        done.contains("exported 1 login(s), 1 note(s), 1 one-time code(s)"),
+        "{done}"
+    );
+    // Encrypted: nothing of the items is in the file.
+    for secret in [
+        "bank password",
+        "purple monkey",
+        "bank.example.com",
+        "GEZDGNBV",
+    ] {
+        assert!(
+            !file_contains(&export, secret),
+            "{secret} is readable in the export"
+        );
+    }
+    // An existing file is not replaced without --force.
+    source.fails(&["export", export_arg], &[]);
+
+    let target = Cli::new();
+    target.ok(&["init"], &[PASSWORD, PASSWORD]);
+    target.fails(&["import", export_arg], &[PASSWORD, "a wrong passphrase!"]);
+    let imported = target.ok(&["import", export_arg], &["an export passphrase"]);
+    assert!(
+        imported.contains("imported 1 login(s), 1 note(s), 1 one-time code(s)"),
+        "{imported}"
+    );
+    let listed = target.ok(&["list"], &[]);
+    assert!(
+        listed.contains("Bank") && listed.contains("Wi-Fi"),
+        "{listed}"
+    );
+    // The one-time codes came along, still tied to the login.
+    let totp_list = target.ok(&["list", "--domain", "totp"], &[]);
+    let totp_id = totp_list.split_whitespace().next().unwrap();
+    let shown = target.ok(&["get", totp_id], &[]);
+    assert!(shown.contains("login:"), "{shown}");
+    let code = target.ok(&["totp", totp_id], &[]);
+    assert!(
+        code.split_whitespace()
+            .next()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_digit()),
+        "{code}"
+    );
+}
+
+#[test]
+fn exports_of_other_password_managers_are_imported() {
+    let cli = Cli::new();
+    cli.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let dir = cli.vault.parent().unwrap();
+    let chrome = dir.join("chrome.csv");
+    std::fs::write(
+        &chrome,
+        "name,url,username,password,note\nShop,https://shop.example.com,dave,shop password,\n",
+    )
+    .unwrap();
+    let bitwarden = dir.join("bitwarden.json");
+    std::fs::write(
+        &bitwarden,
+        r#"{"encrypted":false,"items":[
+            {"type":1,"name":"Mail","login":{"username":"bob","password":"mail password",
+             "totp":"GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ","uris":[{"uri":"https://mail.example.org"}]}},
+            {"type":2,"name":"Door code","notes":"1234"}]}"#,
+    )
+    .unwrap();
+
+    let out = cli.ok(&["import", chrome.to_str().unwrap()], &[PASSWORD]);
+    assert!(
+        out.contains("Chrome / Edge (CSV): 1 login(s)") && out.contains("added 1 login(s)"),
+        "{out}"
+    );
+    let out = cli.ok(&["import", bitwarden.to_str().unwrap()], &[]);
+    assert!(
+        out.contains("added 1 login(s), 1 note(s), 1 one-time code(s)"),
+        "{out}"
+    );
+    let listed = cli.ok(&["list"], &[]);
+    assert!(
+        listed.contains("Shop") && listed.contains("Mail") && listed.contains("Door code"),
+        "{listed}"
+    );
+    let shop = listed.lines().find(|line| line.contains("Shop")).unwrap();
+    let shown = cli.ok(
+        &["get", shop.split_whitespace().next().unwrap(), "--reveal"],
+        &[],
+    );
+    assert!(
+        shown.contains("shop password") && shown.contains("https://shop.example.com"),
+        "{shown}"
+    );
+}
