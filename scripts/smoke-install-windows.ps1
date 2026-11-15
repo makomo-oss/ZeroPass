@@ -77,9 +77,10 @@ $created = Invoke-Cli @('--insecure-software-keystore', 'init') @($password, $pa
 Assert ($created -match 'totp:\s+available') "the vault was created ($vault)"
 Assert (Test-Path $vault) 'the vault is in the default place'
 $added = Invoke-Cli @('--insecure-software-keystore', 'add', 'totp') @($totpUri)
-$id = ($added -split '\s+')[1]
+Assert ($added -match 'added ([0-9a-f]{32})') 'a TOTP entry was added'
+$id = $Matches[1]
 $code = Invoke-Cli @('--insecure-software-keystore', 'totp', $id)
-Assert ($code -match '^\d{6}') 'a TOTP code comes from the worker started from Program Files'
+Assert ($code -match '(^|\s)\d{6}(\s|$)') 'a TOTP code comes from the worker started from Program Files'
 $status = Invoke-Cli @('daemon', 'status')
 Assert ($status -match 'sandbox: yes') 'the vault daemon runs in its sandbox'
 Invoke-Cli @('daemon', 'stop') | Out-Null
