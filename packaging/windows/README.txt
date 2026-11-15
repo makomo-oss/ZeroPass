@@ -4,13 +4,15 @@ ZeroPass for Windows
 ZeroPass is a password and passkey manager without a server. Your vault stays
 on your devices and syncs between them over your local network or Bluetooth.
 
-Install (needs administrator rights, once):
+Install (needs administrator rights once; Windows asks for them):
 
-    Right-click PowerShell > "Run as administrator", go to this folder, then:
+    In this folder:
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
     The programs go to C:\Program Files\ZeroPass, where only administrators
     can change them. ZeroPass trusts its own programs by that location.
+    Windows Firewall lets the sync daemon accept connections from your other
+    devices on private networks (not on public ones).
 
 Create your vault (as yourself, in a new terminal):
 
@@ -22,7 +24,7 @@ Create your vault (as yourself, in a new terminal):
 
     Then make a recovery kit and keep it offline:  zp-cli recovery-kit
 
-Uninstall: "Installed apps" > ZeroPass > Uninstall, or as administrator:
+Uninstall: "Installed apps" > ZeroPass > Uninstall, or:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\ZeroPass\uninstall.ps1"
 

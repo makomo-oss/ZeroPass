@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
 Installs ZeroPass for every user of this computer (ADR-0008).
@@ -11,8 +10,10 @@ connect to it by where they are installed, so that place must not be writable
 by the user (docs/adr/0008-windows-installation.md).
 
 Also adds the directory to the PATH, starts ZeroPass at logon for every user
-(it does nothing for a user without a vault), and registers the uninstaller
-in "Installed apps". A running ZeroPass from an earlier installation is ended
+(it does nothing for a user without a vault), lets the sync daemon accept
+connections from the local network (Windows Firewall, private networks only),
+and registers the uninstaller in "Installed apps". Asks Windows for
+administrator rights if it does not have them. A running ZeroPass from an earlier installation is ended
 first: its vaults lock, as they would on a restart.
 
 Vaults are never touched: they stay in each user's
@@ -33,16 +34,46 @@ Do not start ZeroPass at logon.
 param(
     [string]$Destination = (Join-Path $env:ProgramFiles 'ZeroPass'),
     [switch]$RequireSignature,
-    [switch]$NoAutostart
+    [switch]$NoAutostart,
+    # Set when this script started itself with administrator rights: keeps
+    # the new window open so that its output can be read.
+    [switch]$PauseAtEnd
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath),
+        '-Destination', ('"{0}"' -f $Destination), '-PauseAtEnd')
+    if ($RequireSignature) { $arguments += '-RequireSignature' }
+    if ($NoAutostart) { $arguments += '-NoAutostart' }
+    $elevated = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    exit $elevated.ExitCode
+}
+
+trap {
+    Write-Host "error: $_" -ForegroundColor Red
+    if ($PauseAtEnd) { Read-Host 'Press Enter to close this window' | Out-Null }
+    exit 1
+}
+
 $Programs = @('zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe')
 $Documents = @('uninstall.ps1', 'LICENSE', 'README.txt', 'VERSION')
 $RunKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $UninstallKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
+$EnvironmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+$FirewallGroup = 'ZeroPass'
+
+# Tells running programs (Explorer, new terminals) that the environment changed.
+function Send-EnvironmentChange {
+    $signature = '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam, uint flags, uint timeout, out UIntPtr result);'
+    $user32 = Add-Type -MemberDefinition $signature -Name 'User32' -Namespace 'ZeroPassSetup' -PassThru
+    $result = [UIntPtr]::Zero
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG
+    [void]$user32::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+}
 
 $source = $PSScriptRoot
 $Destination = [System.IO.Path]::GetFullPath($Destination).TrimEnd('\')
@@ -102,12 +133,29 @@ foreach ($name in $Programs + $Documents) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $Destination $name) -Force
 }
 
-# 4. The PATH of every user, so that `zp-cli` can be typed anywhere.
-$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-$entries = @($machinePath -split ';' | Where-Object { $_ -ne '' })
-if (-not ($entries | Where-Object { $_.TrimEnd('\') -ieq $Destination })) {
-    [Environment]::SetEnvironmentVariable('Path', (($entries + $Destination) -join ';'), 'Machine')
+# 4. The PATH of every user, so that `zp-cli` can be typed anywhere. Read and
+#    written as stored, with its %VARIABLES% unexpanded and its kind of value
+#    kept, and only if the entry is missing.
+$environment = Get-Item -LiteralPath $EnvironmentKey
+$rawPath = [string]$environment.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+$pathKind = $environment.GetValueKind('Path')
+$present = @($rawPath -split ';' | Where-Object {
+    [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ieq $Destination
+})
+if ($present.Count -eq 0) {
+    $newPath = if ($rawPath) { $rawPath + ';' + $Destination } else { $Destination }
+    Set-ItemProperty -LiteralPath $EnvironmentKey -Name 'Path' -Value $newPath -Type $pathKind
+    Send-EnvironmentChange
 }
+
+# 4b. The sync daemon listens for the user's other devices: allow that, from
+#     the local subnet, on private networks only (not on public Wi-Fi).
+#     Without a rule, Windows would ask each user, and a standard user cannot
+#     say yes.
+Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName 'ZeroPass sync (local network)' -Group $FirewallGroup `
+    -Direction Inbound -Action Allow -Profile Private -RemoteAddress LocalSubnet `
+    -Program (Join-Path $Destination 'zp-syncd.exe') | Out-Null
 
 # 5. Start at logon, for every user.
 if ($NoAutostart) {
@@ -141,4 +189,7 @@ Write-Host "ZeroPass $version is installed in $Destination."
 Write-Host 'Open a new terminal and create your vault with:  zp-cli init'
 if (-not $NoAutostart) {
     Write-Host 'From the next logon on, ZeroPass starts by itself for users who have a vault.'
+}
+if ($PauseAtEnd) {
+    Read-Host 'Press Enter to close this window' | Out-Null
 }

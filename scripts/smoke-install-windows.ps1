@@ -48,6 +48,15 @@ function Wait-Until([scriptblock]$condition, [string]$what) {
 
 Assert (-not (Test-Path $destination)) 'nothing is installed yet'
 Assert (-not (Test-Path $vault)) 'this user has no vault yet'
+$environmentKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+function Get-RawPath {
+    $key = Get-Item -LiteralPath $environmentKey
+    return @{
+        Value = [string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+        Kind  = $key.GetValueKind('Path')
+    }
+}
+$pathBefore = Get-RawPath
 
 # 1. Install.
 & (Join-Path $Package 'install.ps1')
@@ -58,6 +67,12 @@ $run = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run').
 Assert ($run -eq ('"{0}"' -f (Join-Path $destination 'zp-autostart.exe'))) 'ZeroPass starts at logon'
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 Assert ($machinePath -split ';' -contains $destination) 'the PATH holds the installation'
+$pathInstalled = Get-RawPath
+Assert ($pathInstalled.Kind -eq $pathBefore.Kind) "the PATH is still of kind $($pathBefore.Kind)"
+Assert ($pathInstalled.Value -eq ($pathBefore.Value + ';' + $destination)) 'the rest of the PATH is as it was, unexpanded'
+$rule = @(Get-NetFirewallRule -Group 'ZeroPass')
+Assert ($rule.Count -eq 1 -and $rule[0].Direction -eq 'Inbound' -and $rule[0].Profile -eq 'Private') 'the sync daemon may accept connections on private networks'
+Assert ((($rule[0] | Get-NetFirewallApplicationFilter).Program) -eq (Join-Path $destination 'zp-syncd.exe')) 'the firewall rule is for the sync daemon only'
 $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
 $acl = Get-Acl $destination
@@ -150,5 +165,8 @@ Assert ($null -eq (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVer
 Assert (-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass')) 'ZeroPass is no longer listed'
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 Assert (-not ($machinePath -split ';' -contains $destination)) 'the PATH no longer holds the installation'
+$pathAfter = Get-RawPath
+Assert ($pathAfter.Kind -eq $pathBefore.Kind -and $pathAfter.Value -ceq $pathBefore.Value) 'the PATH is exactly as before the installation'
+Assert (@(Get-NetFirewallRule -Group 'ZeroPass' -ErrorAction SilentlyContinue).Count -eq 0) 'the firewall rule is gone'
 Assert (Test-Path $vault) 'the vault was kept'
 Write-Host 'smoke test passed'
