@@ -117,10 +117,16 @@ $userVault = Join-Path $work 'Vault\vault.zpvault'
 function Invoke-AsUser([string[]]$Arguments, [string[]]$Answers = @()) {
     Set-Content -LiteralPath "$work\in.txt" -Value $Answers
     $Arguments = @('--vault', "`"$userVault`"") + $Arguments
+    # Not -Wait: that waits for every process the client starts, and the
+    # daemons it starts keep running.
     $process = Start-Process -FilePath $cli -ArgumentList $Arguments -Credential $credential `
-        -LoadUserProfile -WorkingDirectory $work -Wait -PassThru `
+        -LoadUserProfile -WorkingDirectory $work -PassThru `
         -RedirectStandardInput "$work\in.txt" -RedirectStandardOutput "$work\out.txt" `
         -RedirectStandardError "$work\err.txt"
+    if (-not $process.WaitForExit(60000)) {
+        $process.Kill()
+        throw "as ${user}: zp-cli $($Arguments -join ' ') did not finish within 60 s"
+    }
     $output = (Get-Content -LiteralPath "$work\out.txt" -Raw) + (Get-Content -LiteralPath "$work\err.txt" -Raw)
     if ($process.ExitCode -ne 0) { throw "as ${user}: zp-cli $($Arguments -join ' ') failed: $output" }
     return $output
