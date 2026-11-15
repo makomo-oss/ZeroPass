@@ -107,10 +107,16 @@ $secret = ConvertTo-SecureString ('Zp!' + [guid]::NewGuid().ToString('N')) -AsPl
 New-LocalUser -Name $user -Password $secret -AccountNeverExpires | Out-Null
 Add-LocalGroupMember -Group 'Users' -Member $user -ErrorAction SilentlyContinue
 $credential = [pscredential]::new("$env:COMPUTERNAME\$user", $secret)
+# A directory of that user's own: the process started for it inherits this
+# session's environment (the administrator's %LOCALAPPDATA%), so its vault is
+# named explicitly.
 $work = Join-Path $env:PUBLIC 'zp-smoke'
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $work 'Vault') | Out-Null
+& icacls $work /grant "${user}:(OI)(CI)F" | Out-Null
+$userVault = Join-Path $work 'Vault\vault.zpvault'
 function Invoke-AsUser([string[]]$Arguments, [string[]]$Answers = @()) {
     Set-Content -LiteralPath "$work\in.txt" -Value $Answers
+    $Arguments = @('--vault', "`"$userVault`"") + $Arguments
     $process = Start-Process -FilePath $cli -ArgumentList $Arguments -Credential $credential `
         -LoadUserProfile -WorkingDirectory $work -Wait -PassThru `
         -RedirectStandardInput "$work\in.txt" -RedirectStandardOutput "$work\out.txt" `
