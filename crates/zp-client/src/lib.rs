@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use error::{Error, Result};
 pub use keyagent::KeyAgent;
+pub use zp_vault::default_device_name;
 
 /// Which key store protects the TOTP and passkey domains of a vault the
 /// daemon creates or opens.

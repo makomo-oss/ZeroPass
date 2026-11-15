@@ -5860,6 +5860,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "getrandom 0.4.3",
+ "qrcode",
  "serde",
  "tauri",
  "tauri-build",

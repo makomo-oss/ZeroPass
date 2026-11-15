@@ -9,13 +9,12 @@
 // development-only software key store (no Windows Hello prompt), and the
 // daemon is stopped at the end.
 
-import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { chromium } from "playwright-core";
+import { expect, failed, finish, launch, shot as picture, step } from "./harness.mjs";
 
 const PASSWORD = "correct horse battery staple";
 const NEW_PASSWORD = "a different long passphrase";
@@ -23,99 +22,15 @@ const NEW_PASSWORD = "a different long passphrase";
 const TOTP_URI =
   "otpauth://totp/Example:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Example";
 
-const profile = process.argv.includes("--release") ? "release" : "debug";
-const root = resolve(import.meta.dirname, "..", "..", "..");
-const bin = (name) => join(root, "target", profile, `${name}.exe`);
 const dir = mkdtempSync(join(tmpdir(), "zeropass-e2e-"));
 const vault = join(dir, "e2e.zpvault");
-const port = 9300 + Math.floor(Math.random() * 500);
 
-let failures = 0;
-let currentPage = null;
-async function step(name, run) {
-  try {
-    await run();
-    console.log(`ok: ${name}`);
-  } catch (error) {
-    failures += 1;
-    const picture = join(tmpdir(), `zeropass-e2e-failure-${Date.now()}.png`);
-    await currentPage?.screenshot({ path: picture }).catch(() => {});
-    console.log(`  screenshot: ${picture}`);
-    console.log(`FAILED: ${name}\n  ${String(error).split("\n").join("\n  ")}`);
-    throw error;
-  }
-}
-
-/** With E2E_SCREENSHOTS=<dir>, keeps a picture of the screen under `name`. */
-async function shot(name) {
-  if (process.env.E2E_SCREENSHOTS && currentPage) {
-    await currentPage.screenshot({ path: join(process.env.E2E_SCREENSHOTS, `${name}.png`) });
-  }
-}
-
-function expect(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-const app = spawn(
-  bin("zeropass"),
-  ["--vault", vault, "--insecure-software-keystore"],
-  {
-    env: {
-      ...process.env,
-      ZEROPASS_VAULT: "",
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
-      // Development builds also pass it themselves (main.rs).
-      ZEROPASS_E2E_CDP_PORT: String(port),
-    },
-    stdio: "ignore",
-  },
-);
-
-let exited = null;
-app.on("exit", (code) => (exited = code));
-
-let browser;
-const consoleProblems = [];
+let app;
 try {
-  // The webview listens once it has started.
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-      break;
-    } catch (error) {
-      if (exited !== null) throw new Error(`the application ended (exit code ${exited})`);
-      // A first start creates the webview's profile: slow on a fresh machine.
-      if (attempt > 300) {
-        // What the webview runs as, to tell why its port did not open.
-        const report = spawnSync("powershell.exe", [
-          "-NoProfile",
-          "-Command",
-          "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe' or name='zeropass.exe'\" | Where-Object { $_.CommandLine -like '*zeropass*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.CommandLine }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -ge 9000 -and $_.LocalPort -lt 10000 } | ForEach-Object { 'listen ' + $_.LocalAddress + ':' + $_.LocalPort + ' pid ' + $_.OwningProcess }; (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv",
-        ], { encoding: "utf8" });
-        console.log(`  webview processes and ports (port ${port}):
-${report.stdout}${report.stderr}`);
-        throw error;
-      }
-      await sleep(200);
-    }
-  }
-  const context = browser.contexts()[0];
-  let page = context.pages()[0];
-  for (let attempt = 0; !page; attempt += 1) {
-    await sleep(100);
-    page = context.pages()[0];
-    if (attempt > 100) throw new Error("the webview has no page");
-  }
-  page.on("console", (message) => {
-    if (message.type() === "error" || message.type() === "warning") {
-      consoleProblems.push(`${message.type()}: ${message.text()}`);
-    }
-  });
-  page.on("pageerror", (error) => consoleProblems.push(`page error: ${error.message}`));
-  page.setDefaultTimeout(15_000);
-  currentPage = page;
-  const button = (name) => page.getByRole("button", { name, exact: true });
+  app = await launch(vault, join(dir, "webview"));
+  const { page, button } = app;
+  const consoleProblems = app.problems;
+  const shot = (name) => picture(page, name);
 
   await step("a new vault is offered", async () => {
     await page.getByRole("heading", { name: "Create your vault" }).waitFor();
@@ -288,19 +203,10 @@ ${report.stdout}${report.stderr}`);
     expect(consoleProblems.length === 0, consoleProblems.join("\n"));
   });
 } catch (error) {
-  // A failed step was reported; anything else is said here.
-  if (failures === 0) console.log(`FAILED: ${error}`);
-  failures = Math.max(failures, 1);
+  failed(error);
 } finally {
-  await browser?.close().catch(() => {});
-  app.kill();
-  spawnSync(bin("zp-cli"), ["--vault", vault, "daemon", "stop"], { stdio: "ignore" });
+  await app?.close();
   await sleep(500);
   rmSync(dir, { recursive: true, force: true });
 }
-
-if (failures > 0) {
-  console.log(`${failures} step(s) failed`);
-  process.exit(1);
-}
-console.log("all steps passed");
+finish();

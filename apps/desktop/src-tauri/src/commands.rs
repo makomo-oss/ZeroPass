@@ -120,7 +120,9 @@ pub(crate) async fn status(app: AppHandle) -> CommandResult<Status> {
                 sandboxed: false,
             });
         }
-        status_of(state.daemon.call(request::Body::Status(proto::Status {}))?)
+        let status = status_of(state.daemon.call(request::Body::Status(proto::Status {}))?)?;
+        state.ensure_sync_daemon();
+        Ok(status)
     })
     .await
 }

@@ -1,10 +1,18 @@
 <script lang="ts">
   import { api, errorMessage, MIN_MASTER_PASSWORD_CHARS, type Status } from "../api";
+  import Join from "../components/Join.svelte";
 
   let {
     vaultPath,
     oncreated,
-  }: { vaultPath: string; oncreated: (status: Status) => void } = $props();
+    onjoined,
+  }: {
+    vaultPath: string;
+    oncreated: (status: Status) => void;
+    onjoined: () => void;
+  } = $props();
+
+  let joining = $state(false);
 
   let password = $state("");
   let again = $state("");
@@ -38,6 +46,11 @@
 </script>
 
 <main class="center">
+  {#if joining}
+  <div class="card panel">
+    <Join {onjoined} oncancel={() => (joining = false)} />
+  </div>
+  {:else}
   <form class="card panel" onsubmit={create}>
     <div class="head">
       <div class="logo" aria-hidden="true"></div>
@@ -95,8 +108,12 @@
     <button class="button primary" type="submit" disabled={!ready}>
       Create vault
     </button>
+    <button class="button ghost" type="button" onclick={() => (joining = true)} disabled={busy}>
+      Join a vault from another device instead
+    </button>
     <p class="muted small path" title={vaultPath}>{vaultPath}</p>
   </form>
+  {/if}
 </main>
 
 <style>

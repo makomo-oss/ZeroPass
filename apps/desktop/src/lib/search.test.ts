@@ -42,3 +42,11 @@ describe("search", () => {
     expect(sorted.map((item) => item.title)).toEqual(["A", "b", "item 9", "item 10"]);
   });
 });
+
+describe("transports", () => {
+  it("are named in words", async () => {
+    const { transportNames } = await import("./search");
+    expect(transportNames(["lan", "ble"])).toBe("the local network and Bluetooth");
+    expect(transportNames([])).toBe("—");
+  });
+});

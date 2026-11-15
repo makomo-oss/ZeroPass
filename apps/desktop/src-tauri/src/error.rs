@@ -60,3 +60,9 @@ impl From<zp_ipc::IpcError> for CommandError {
 
 /// The result of a command.
 pub(crate) type CommandResult<T> = Result<T, CommandError>;
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
