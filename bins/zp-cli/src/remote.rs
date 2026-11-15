@@ -1,39 +1,17 @@
 //! Commands that are carried out by the vault daemon: this process asks over
 //! the local IPC and never sees a vault key.
 
-use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command as Process;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
 
+use zp_client::vaultd::{self, Start};
+use zp_client::{KeyAgent, KeyStoreChoice};
 use zp_crypto::DomainId;
 use zp_ipc::proto::{self, ErrorCode, item, new_item, request, response};
-use zp_ipc::{Client, DAEMON_NAME, DAEMON_SANDBOX, DaemonPolicy, Endpoint, IpcError};
-use zp_sandbox::Access;
+use zp_ipc::{Client, IpcError};
 use zp_vault::VaultError;
 
-use super::keyagent::KeyAgent;
-use super::{
-    AddKind, CliResult, Command, Input, KeyStoreChoice, clipboard, dev_key_path, domain_name, mask,
-    parse_id,
-};
-
-/// How long a daemon that was just started may take to listen.
-const START_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Whether to start the daemon when it is not running.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Start {
-    /// Start it only if the vault file exists: nothing else needs a daemon.
-    IfVaultExists,
-    /// Start it; the vault is about to be created.
-    Always,
-    /// Do not start it.
-    Never,
-}
+use super::{AddKind, CliResult, Command, Input, clipboard, domain_name, mask, parse_id};
 
 fn to_proto(domain: DomainId) -> proto::Domain {
     match domain {
@@ -60,106 +38,6 @@ fn unexpected() -> Box<dyn std::error::Error> {
     "the vault daemon gave an unexpected answer".into()
 }
 
-/// Set by `--no-sandbox`: start the daemon as an ordinary process.
-static NO_SANDBOX: AtomicBool = AtomicBool::new(false);
-
-/// Makes this process start the daemon without the sandbox from now on.
-pub(crate) fn disable_sandbox() {
-    NO_SANDBOX.store(true, Ordering::Relaxed);
-}
-
-/// Gives the daemon's sandbox access to what the daemon works with, and to
-/// nothing else: its executable, the vault file, and the files it creates
-/// beside the vault (the database's journal).
-fn grant_to_sandbox(executable: &Path, vault: &Path) -> io::Result<()> {
-    // Installed under Program Files, the user may not change the executable's
-    // access rights, and need not: that directory lets every app container
-    // read and run what it holds (ADR-0008). If the container really cannot
-    // run it, starting the daemon says so.
-    match zp_sandbox::allow(DAEMON_SANDBOX, executable, Access::ReadExecute) {
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
-        other => other?,
-    }
-    if let Some(directory) = vault.parent() {
-        zp_sandbox::allow(DAEMON_SANDBOX, directory, Access::CreateFiles)?;
-    }
-    // Files that are already there are not covered by the grant on the
-    // directory.
-    let mut journal = vault.as_os_str().to_owned();
-    journal.push("-journal");
-    for existing in [
-        vault.to_path_buf(),
-        PathBuf::from(journal),
-        dev_key_path(vault),
-    ] {
-        if existing.exists() {
-            zp_sandbox::allow(DAEMON_SANDBOX, &existing, Access::Modify)?;
-        }
-    }
-    Ok(())
-}
-
-/// Starts the daemon for `vault` as a background process: in a sandbox without
-/// network access where the platform has one.
-fn start_daemon(vault: &Path, choice: KeyStoreChoice) -> CliResult<()> {
-    let name = format!("{DAEMON_NAME}{}", std::env::consts::EXE_SUFFIX);
-    let executable = std::env::current_exe()?.with_file_name(name);
-    let vault = std::path::absolute(vault)?;
-    let mut args: Vec<OsString> = vec!["--vault".into(), vault.clone().into()];
-    match choice {
-        KeyStoreChoice::Platform => {}
-        KeyStoreChoice::None => args.push("--no-hardware-keystore".into()),
-        KeyStoreChoice::InsecureSoftware => args.push("--insecure-software-keystore".into()),
-    }
-    let started = if zp_sandbox::SUPPORTED && !NO_SANDBOX.load(Ordering::Relaxed) {
-        grant_to_sandbox(&executable, &vault)
-            .and_then(|()| zp_sandbox::spawn(DAEMON_SANDBOX, &executable, &args))
-            .map(drop)
-    } else {
-        zp_ipc::spawn_detached(Process::new(&executable).args(&args))
-    };
-    started.map_err(|error| {
-        format!(
-            "cannot start the vault daemon ({}): {error}",
-            executable.display()
-        )
-        .into()
-    })
-}
-
-/// Connects to the daemon of `vault`, starting it if `start` says so.
-/// `Ok(None)` means it is not running and was not to be started.
-pub(crate) fn connect(
-    vault: &Path,
-    choice: KeyStoreChoice,
-    start: Start,
-) -> CliResult<Option<Client>> {
-    let endpoint = Endpoint::for_vault(vault)?;
-    let policy = DaemonPolicy::beside_current_exe()?;
-    let attempt = || Client::connect(&endpoint, &policy, "zp-cli");
-    match attempt() {
-        Ok(client) => return Ok(Some(client)),
-        Err(IpcError::NotRunning) => {}
-        Err(error) => return Err(error.into()),
-    }
-    match start {
-        Start::Never => return Ok(None),
-        Start::IfVaultExists if !vault.exists() => return Err(VaultError::NotFound.into()),
-        Start::IfVaultExists | Start::Always => {}
-    }
-    start_daemon(vault, choice)?;
-    let deadline = Instant::now() + START_TIMEOUT;
-    loop {
-        thread::sleep(Duration::from_millis(20));
-        match attempt() {
-            Ok(client) => return Ok(Some(client)),
-            Err(IpcError::NotRunning) if Instant::now() < deadline => {}
-            Err(IpcError::NotRunning) => return Err("the vault daemon did not start".into()),
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
 /// A conversation with the vault daemon.
 pub(crate) struct Remote {
     client: Client,
@@ -177,7 +55,7 @@ impl Remote {
     }
 
     pub(crate) fn open_with(vault: &Path, choice: KeyStoreChoice, start: Start) -> CliResult<Self> {
-        let client = connect(vault, choice, start)?.ok_or("the vault daemon is not running")?;
+        let client = vaultd::open(vault, choice, start)?;
         let mut remote = Self::with(client);
         remote.key_agent_for = Some((vault.to_path_buf(), choice));
         Ok(remote)
@@ -306,18 +184,6 @@ impl Remote {
     pub(crate) fn lock_all(&mut self) -> CliResult<()> {
         self.call(request::Body::Lock(proto::Lock { domain: None }))?;
         Ok(())
-    }
-
-    /// Asks the daemon for a pairing offer that names `hints` as where this
-    /// device can be reached. Returns the offer as text and how many seconds
-    /// it is valid. Every domain must be unlocked.
-    pub(crate) fn pair_offer(&mut self, hints: Vec<String>) -> CliResult<(String, u32)> {
-        match self.call(request::Body::PairOffer(proto::PairOffer { hints }))? {
-            response::Body::PairOffered(offered) => {
-                Ok((offered.offer.clone(), offered.lifetime_secs))
-            }
-            _ => Err(unexpected()),
-        }
     }
 
     /// `init`: creates the vault.

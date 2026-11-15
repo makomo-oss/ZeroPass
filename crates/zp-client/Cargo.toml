@@ -1,0 +1,23 @@
+[package]
+name = "zp-client"
+description = "What every ZeroPass client does to reach the daemons: start them, connect, and carry pairing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.21"
+zp-drive = { version = "0.0.0", path = "../zp-drive" }
+zp-ipc = { version = "0.0.0", path = "../zp-ipc" }
+zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
+zp-sandbox = { version = "0.0.0", path = "../zp-sandbox" }
+zp-vault = { version = "0.0.0", path = "../zp-vault" }
+
+[dev-dependencies]
+tempfile = "3.27.0"

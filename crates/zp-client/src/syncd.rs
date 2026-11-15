@@ -1,7 +1,6 @@
-//! The sync daemon, as seen from the command-line client
-//! (`docs/spec/ipc.md` §12).
+//! The sync daemon (`docs/spec/ipc.md` §12).
 //!
-//! The sync daemon holds every connection to other devices; this program has
+//! The sync daemon holds every connection to other devices; a client has
 //! none. For pairing it asks the sync daemon for a link to the other device
 //! and gets its bytes over an IPC relay ([`DeviceLink`]).
 
@@ -16,38 +15,39 @@ use zp_drive::{ChannelReader, Link};
 use zp_ipc::proto::{self, request, response};
 use zp_ipc::{Client, DaemonPolicy, Downlink, Endpoint, IpcError, SYNC_DAEMON_NAME, Uplink};
 
-use super::CliResult;
+use crate::vaultd::{STOP_TIMEOUT, client_name};
+use crate::{Error, Result, sibling};
 
-/// How long a sync daemon that was just started may take to listen.
+/// How long a sync daemon that was just started may take to listen, or to
+/// start syncing.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn unexpected() -> Box<dyn std::error::Error> {
-    "the sync daemon gave an unexpected answer".into()
+fn unexpected() -> Error {
+    Error::message("the sync daemon gave an unexpected answer")
 }
 
 /// Starts the sync daemon for `vault` as a background process. It is not
 /// sandboxed: it is the process that talks to other devices.
-fn start(vault: &Path) -> CliResult<()> {
-    let name = format!("{SYNC_DAEMON_NAME}{}", std::env::consts::EXE_SUFFIX);
-    let executable = std::env::current_exe()?.with_file_name(name);
+fn start(vault: &Path) -> Result<()> {
+    let executable = sibling(SYNC_DAEMON_NAME)?;
     let vault = std::path::absolute(vault)?;
     let mut daemon = Process::new(&executable);
     daemon.arg("--vault").arg(&vault);
     zp_ipc::spawn_detached(&mut daemon).map_err(|error| {
-        format!(
+        Error::message(format!(
             "cannot start the sync daemon ({}): {error}",
             executable.display()
-        )
-        .into()
+        ))
     })
 }
 
 /// Connects to the sync daemon of `vault`, starting it if `start_it` says so.
 /// `Ok(None)` means it is not running and was not to be started.
-pub(crate) fn connect(vault: &Path, start_it: bool) -> CliResult<Option<Client>> {
+pub fn connect(vault: &Path, start_it: bool) -> Result<Option<Client>> {
     let endpoint = Endpoint::for_sync_daemon(vault)?;
     let policy = DaemonPolicy::program_beside_current_exe(SYNC_DAEMON_NAME)?;
-    let attempt = || Client::connect(&endpoint, &policy, "zp-cli");
+    let name = client_name();
+    let attempt = || Client::connect(&endpoint, &policy, &name);
     match attempt() {
         Ok(client) => return Ok(Some(client)),
         Err(IpcError::NotRunning) => {}
@@ -63,19 +63,21 @@ pub(crate) fn connect(vault: &Path, start_it: bool) -> CliResult<Option<Client>>
         match attempt() {
             Ok(client) => return Ok(Some(client)),
             Err(IpcError::NotRunning) if Instant::now() < deadline => {}
-            Err(IpcError::NotRunning) => return Err("the sync daemon did not start".into()),
+            Err(IpcError::NotRunning) => {
+                return Err(Error::message("the sync daemon did not start"));
+            }
             Err(error) => return Err(error.into()),
         }
     }
 }
 
 /// Connects to the sync daemon of `vault`, starting it if necessary.
-pub(crate) fn open(vault: &Path) -> CliResult<Client> {
-    Ok(connect(vault, true)?.ok_or("the sync daemon is not running")?)
+pub fn open(vault: &Path) -> Result<Client> {
+    connect(vault, true)?.ok_or_else(|| Error::message("the sync daemon is not running"))
 }
 
 /// What the sync daemon tells about itself.
-pub(crate) fn status(client: &mut Client) -> CliResult<proto::SyncdStatusReply> {
+pub fn status(client: &mut Client) -> Result<proto::SyncdStatusReply> {
     match client.call(request::Body::SyncdStatus(proto::SyncdStatus {}))? {
         response::Body::SyncdStatus(status) => Ok(status),
         _ => Err(unexpected()),
@@ -85,7 +87,7 @@ pub(crate) fn status(client: &mut Client) -> CliResult<proto::SyncdStatusReply> 
 /// What the sync daemon tells about itself, once it is syncing: a sync daemon
 /// that was just started takes a moment to reach the vault daemon and to open
 /// its transports. Fails with its reason if it is not syncing by then.
-pub(crate) fn status_when_syncing(client: &mut Client) -> CliResult<proto::SyncdStatusReply> {
+pub fn status_when_syncing(client: &mut Client) -> Result<proto::SyncdStatusReply> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         let status = status(client)?;
@@ -93,30 +95,40 @@ pub(crate) fn status_when_syncing(client: &mut Client) -> CliResult<proto::Syncd
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            return Err(format!(
+            return Err(Error::message(format!(
                 "the sync daemon cannot reach other devices: {}",
                 status.not_syncing_because
-            )
-            .into());
+            )));
         }
         thread::sleep(Duration::from_millis(100));
     }
 }
 
+/// Has the sync daemon of `vault` sync with the other devices of the vault
+/// now, for at most `seconds`, and returns what it did. Starts the sync daemon
+/// if it is not running.
+pub fn sync_now(vault: &Path, seconds: u32) -> Result<proto::SyncResults> {
+    let mut client = open(vault)?;
+    match client.call(request::Body::SyncNow(proto::SyncNow { seconds }))? {
+        response::Body::SyncResults(results) => Ok(results),
+        _ => Err(unexpected()),
+    }
+}
+
 /// Stops the sync daemon of `vault` if it is running. Returns whether it was.
-pub(crate) fn stop(vault: &Path) -> CliResult<bool> {
+pub fn stop(vault: &Path) -> Result<bool> {
     let Some(mut client) = connect(vault, false)? else {
         return Ok(false);
     };
     client.call(request::Body::Shutdown(proto::Shutdown {}))?;
     // It answers before it lets go of its endpoint.
-    zp_ipc::wait_until_closed(&Endpoint::for_sync_daemon(vault)?, super::STOP_TIMEOUT);
+    zp_ipc::wait_until_closed(&Endpoint::for_sync_daemon(vault)?, STOP_TIMEOUT);
     Ok(true)
 }
 
 /// A link to another device, held by the sync daemon and reached through an
 /// IPC relay. What crosses it is the pairing channel's ciphertext.
-pub(crate) struct DeviceLink {
+pub struct DeviceLink {
     downlink: Downlink,
     uplink: Uplink,
 }
@@ -128,11 +140,11 @@ impl DeviceLink {
     ///
     /// For `PairListen`, `listening` runs once the sync daemon waits for the
     /// device: the moment to show the pairing code.
-    pub(crate) fn open(
+    pub fn open(
         vault: &Path,
         request: request::Body,
-        mut listening: impl FnMut() -> CliResult<()>,
-    ) -> CliResult<Self> {
+        mut listening: impl FnMut() -> Result<()>,
+    ) -> Result<Self> {
         let (id, mut downlink) = open(vault)?.start_relay(request)?;
         let uplink = match open(vault)?.attach_relay(id) {
             Ok(uplink) => uplink,
@@ -140,7 +152,7 @@ impl DeviceLink {
             Err(attach_error) => {
                 return match downlink.receive() {
                     Err(reason) => Err(reason.into()),
-                    Ok(response::Body::LinkEnded(ended)) => Err(ended.reason.into()),
+                    Ok(response::Body::LinkEnded(ended)) => Err(Error::Message(ended.reason)),
                     Ok(_) => Err(attach_error.into()),
                 };
             }
@@ -149,7 +161,7 @@ impl DeviceLink {
             match downlink.receive()? {
                 response::Body::Listening(_) => listening()?,
                 response::Body::Done(_) => return Ok(Self { downlink, uplink }),
-                response::Body::LinkEnded(ended) => return Err(ended.reason.into()),
+                response::Body::LinkEnded(ended) => return Err(Error::Message(ended.reason)),
                 _ => return Err(unexpected()),
             }
         }
