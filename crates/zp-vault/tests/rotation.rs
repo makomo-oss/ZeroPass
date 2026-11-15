@@ -402,3 +402,51 @@ fn a_recovery_kit_from_before_a_rotation_still_restores_everything() {
     assert_eq!(restored.get::<Login>(after).unwrap(), login("after"));
     assert_eq!(restored.get::<Login>(old).unwrap(), login("old"));
 }
+
+/// The processes of the vault daemon each open the file themselves; an
+/// unlocked domain moves between them as its slot key.
+#[test]
+fn an_unlocked_domain_moves_to_another_handle_of_the_file() {
+    let mut device = found();
+    let id = device.vault.insert(totp("Example")).unwrap();
+
+    let mut other = Vault::open(&device.path).unwrap();
+    assert!(matches!(
+        other.get::<TotpEntry>(id),
+        Err(VaultError::Locked(DomainId::Totp))
+    ));
+    assert!(matches!(
+        other.export_slot_key::<Totp>(),
+        Err(VaultError::Locked(DomainId::Totp))
+    ));
+
+    let (epoch, key) = device.vault.export_slot_key::<Totp>().unwrap();
+    assert_eq!(epoch, 1);
+    other.adopt_slot_key::<Totp>(epoch, &key).unwrap();
+    other.get::<TotpEntry>(id).unwrap();
+    // Only that domain came along.
+    assert!(!other.is_unlocked(DomainId::Password));
+    assert!(!other.is_unlocked(DomainId::Passkey));
+
+    // A key replaced through one handle is followed by the other.
+    assert_eq!(device.vault.rotate_key::<Totp>().unwrap(), 2);
+    let later = device.vault.insert(totp("Later")).unwrap();
+    other.get::<TotpEntry>(later).unwrap();
+    assert_eq!(other.key_epoch::<Totp>().unwrap(), 2);
+    let written_by_other = other.insert(totp("Other")).unwrap();
+    device.vault.get::<TotpEntry>(written_by_other).unwrap();
+
+    // A key that is not the slot key opens nothing.
+    let mut third = Vault::open(&device.path).unwrap();
+    let adopted = third.adopt_slot_key::<Totp>(epoch, &[0x11; 32]);
+    assert!(adopted.is_err() || third.get::<TotpEntry>(id).is_err());
+
+    // A vault without the domain has nothing to adopt it into.
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain.zpvault");
+    let mut without = Vault::create(&plain, PASSWORD, None, options("plain")).unwrap();
+    assert!(matches!(
+        without.adopt_slot_key::<Totp>(1, &key),
+        Err(VaultError::DomainUnavailable(DomainId::Totp))
+    ));
+}

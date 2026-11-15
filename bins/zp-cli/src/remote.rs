@@ -15,6 +15,7 @@ use zp_ipc::{Client, DAEMON_NAME, DAEMON_SANDBOX, DaemonPolicy, Endpoint, IpcErr
 use zp_sandbox::Access;
 use zp_vault::VaultError;
 
+use super::keyagent::KeyAgent;
 use super::{
     AddKind, CliResult, Command, Input, KeyStoreChoice, clipboard, dev_key_path, domain_name, mask,
     parse_id,
@@ -156,6 +157,10 @@ pub(crate) fn connect(
 pub(crate) struct Remote {
     client: Client,
     pub(crate) input: Input,
+    /// The vault and its key store, to start the key agent for.
+    key_agent_for: Option<(PathBuf, KeyStoreChoice)>,
+    /// The key agent, once something needed the hardware key store.
+    key_agent: Option<KeyAgent>,
 }
 
 impl Remote {
@@ -166,7 +171,21 @@ impl Remote {
 
     pub(crate) fn open_with(vault: &Path, choice: KeyStoreChoice, start: Start) -> CliResult<Self> {
         let client = connect(vault, choice, start)?.ok_or("the vault daemon is not running")?;
-        Ok(Self::with(client))
+        let mut remote = Self::with(client);
+        remote.key_agent_for = Some((vault.to_path_buf(), choice));
+        Ok(remote)
+    }
+
+    /// Makes the platform's hardware key store available to the daemon for
+    /// the rest of this conversation: starts the key agent, which shows the
+    /// biometric prompt when the daemon asks for it.
+    fn with_key_agent(&mut self) -> CliResult<()> {
+        if self.key_agent.is_none()
+            && let Some((vault, choice)) = &self.key_agent_for
+        {
+            self.key_agent = KeyAgent::start(vault, *choice)?;
+        }
+        Ok(())
     }
 
     /// Continues on an open connection.
@@ -174,6 +193,8 @@ impl Remote {
         Self {
             client,
             input: Input::new(),
+            key_agent_for: None,
+            key_agent: None,
         }
     }
 
@@ -198,7 +219,7 @@ impl Remote {
     }
 
     /// Unlocks `domain`. The master password is asked for here; the biometric
-    /// prompt of the other domains is shown by the daemon.
+    /// prompt of the other domains is shown by the key agent.
     fn unlock(&mut self, domain: DomainId) -> CliResult<()> {
         let mut unlock = proto::Unlock {
             domain: to_proto(domain) as i32,
@@ -207,6 +228,8 @@ impl Remote {
         if domain == DomainId::Password {
             let password = self.input.secret("Master password: ")?;
             unlock.master_password.push_str(&password);
+        } else {
+            self.with_key_agent()?;
         }
         self.call(request::Body::Unlock(unlock))?;
         Ok(())
@@ -297,6 +320,8 @@ impl Remote {
         password: &str,
         out: &mut impl Write,
     ) -> CliResult<()> {
+        // The TOTP and passkey vault keys are wrapped by the hardware key store.
+        self.with_key_agent()?;
         let reply = self.call(request::Body::CreateVault(proto::CreateVault {
             master_password: password.to_owned(),
         }))?;
@@ -332,6 +357,7 @@ impl Remote {
         password: &str,
         out: &mut impl Write,
     ) -> CliResult<()> {
+        self.with_key_agent()?;
         let reply = self.call(request::Body::RecoverVault(proto::RecoverVault {
             recovery_key: recovery_key.to_owned(),
             new_master_password: password.to_owned(),

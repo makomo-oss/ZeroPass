@@ -2304,6 +2304,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zp-keyagent"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "zeroize",
+ "zp-crypto",
+ "zp-hwkey",
+ "zp-ipc",
+ "zp-sandbox",
+]
+
+[[package]]
 name = "zp-nmh"
 version = "0.0.0"
 
@@ -2403,11 +2415,11 @@ name = "zp-vaultd"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "prost",
  "tempfile",
  "zeroize",
  "zp-crypto",
  "zp-drive",
- "zp-hwkey",
  "zp-ipc",
  "zp-pairing",
  "zp-sandbox",

@@ -9,7 +9,7 @@ repository.workspace = true
 license.workspace = true
 
 # This crate does not inherit the workspace lints: it needs `unsafe_code = "deny"`
-# instead of "forbid" so that the two `windows*` modules can opt in to the unsafe
+# instead of "forbid" so that the `windows*` modules can opt in to the unsafe
 # code required to call the Win32 process and security APIs. Keep the rest in sync
 # with the workspace table.
 [lints.rust]
@@ -23,6 +23,11 @@ dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
 print_stdout = "warn"
+
+[features]
+# For tests that check where key material is: reading the memory of another
+# process. Not part of any shipped program.
+probe = ["windows/Win32_System_Memory"]
 
 [dependencies]
 

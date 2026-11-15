@@ -22,6 +22,7 @@ use zp_pairing::qr::pairing_tag;
 use zp_pairing::{Hint, OfferRole, PairingOffer};
 use zp_vault::{VaultError, default_device_name};
 
+use super::keyagent::KeyAgent;
 use super::remote::{self, Remote, Start};
 use super::syncd::{self, DeviceLink};
 use super::{CliResult, Input, KeyStoreChoice, domain_name};
@@ -380,6 +381,10 @@ pub(super) fn join(
         device_name: name.clone(),
         master_password: password.as_str().to_owned(),
     });
+    // The daemon wraps the keys it is granted with the hardware key store,
+    // which the key agent reaches for it.
+    remote::connect(vault_path, choice, Start::Always)?;
+    let _key_agent = KeyAgent::start(vault_path, choice)?;
     // Nobody is asked on this side: the user of the other device confirms.
     let joined = relay_pairing(vault_path, choice, Start::Always, join, device, |_| false)?;
 

@@ -10,6 +10,7 @@
 //! what the daemon sends and receives over it: ciphertext only.
 
 mod clipboard;
+mod keyagent;
 mod nearby;
 mod remote;
 mod syncd;

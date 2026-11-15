@@ -1,20 +1,21 @@
 //! The daemon's state and what it does with each request.
 
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use zeroize::Zeroizing;
 use zp_crypto::{
     Domain, DomainId, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore, ItemId,
-    Passkey, Password, RecoveryKey, Totp,
+    KEY_LEN, PUBLIC_KEY_LEN, Passkey, Password, RecoveryKey, SealingKey, Totp, seal_to,
 };
-use zp_ipc::proto::{self, ErrorCode, Role, request, response};
-use zp_ipc::{Handler, Peer, PeerProcess, RelayEnd};
+use zp_ipc::RelayEnd;
+use zp_ipc::proto::{self, ErrorCode, request, response};
 use zp_vault::model::Content;
 use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError};
 
 use crate::convert::{self, NewItem, bad_request, domain_name, locked, vault_error};
+use crate::port::{self, KeyAgentPort};
 
 /// Which key store protects the TOTP and passkey domains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,53 @@ pub(crate) enum KeyStoreChoice {
     InsecureSoftware,
 }
 
-type Reply = Result<response::Body, proto::Error>;
+/// Which of the daemon's processes this is, and so which vault keys it may
+/// ever hold (ADR-0007).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// The process the clients talk to. Holds the password domain only.
+    Front,
+    /// The worker of one hardware-bound domain. Holds that domain only.
+    Domain(DomainId),
+    /// A short-lived process for what needs the keys of every domain at
+    /// once: creating, recovering and joining a vault, admitting a device,
+    /// the recovery kit, revoking a device.
+    Whole,
+}
+
+impl Scope {
+    /// Whether a process of this scope may hold the keys of `domain`.
+    pub(crate) fn holds(self, domain: DomainId) -> bool {
+        match self {
+            Scope::Whole => true,
+            Scope::Front => domain == DomainId::Password,
+            Scope::Domain(own) => own == domain,
+        }
+    }
+
+    /// The word for this scope on the command line and in messages.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Scope::Front => "front",
+            Scope::Domain(domain) => domain_name(domain),
+            Scope::Whole => "whole",
+        }
+    }
+}
+
+pub(crate) type Reply = Result<response::Body, proto::Error>;
+
+/// The associated data of a vault key sealed for another process of the daemon.
+fn transfer_context(domain: DomainId, epoch: u32) -> Vec<u8> {
+    let mut context = b"zeropass/v1/key-transfer".to_vec();
+    context.push(domain.as_u8());
+    context.extend_from_slice(&epoch.to_be_bytes());
+    context
+}
+
+fn internal(message: impl Into<String>) -> proto::Error {
+    proto::Error::new(ErrorCode::Internal, message)
+}
 
 fn done() -> Reply {
     Ok(response::Body::Done(proto::Done {}))
@@ -46,20 +93,137 @@ pub(crate) struct State {
     pub(crate) offer: Option<crate::pairing::PendingOffer>,
 }
 
-/// The vault daemon: owns the vault file and its keys.
+/// One process's hold on the vault: the vault file and the keys of the domains
+/// this process may have (its [`Scope`]).
 pub(crate) struct Service {
     pub(crate) path: PathBuf,
     pub(crate) key_store: KeyStoreChoice,
+    pub(crate) scope: Scope,
+    /// The way to the platform's hardware key store.
+    port: Arc<dyn KeyAgentPort>,
+    /// Receives the vault keys other processes of the daemon hand to this one.
+    sealing: SealingKey,
     state: Mutex<State>,
 }
 
 impl Service {
-    pub(crate) fn new(path: PathBuf, key_store: KeyStoreChoice) -> Self {
-        Self {
+    pub(crate) fn new(
+        path: PathBuf,
+        key_store: KeyStoreChoice,
+        scope: Scope,
+        port: Arc<dyn KeyAgentPort>,
+    ) -> Result<Self, proto::Error> {
+        Ok(Self {
             path,
             key_store,
+            scope,
+            port,
+            sealing: SealingKey::generate().map_err(|error| internal(error.to_string()))?,
             state: Mutex::new(State::default()),
+        })
+    }
+
+    /// Fails unless this process may hold the keys of every domain.
+    pub(crate) fn whole(&self) -> Result<(), proto::Error> {
+        if self.scope == Scope::Whole {
+            Ok(())
+        } else {
+            Err(internal("this process does not hold every domain"))
         }
+    }
+
+    /// Fails unless this process may hold the keys of `domain`.
+    fn holds(&self, domain: DomainId) -> Result<(), proto::Error> {
+        if self.scope.holds(domain) {
+            Ok(())
+        } else {
+            Err(internal(format!(
+                "the {} process does not hold the {} domain",
+                self.scope.name(),
+                domain_name(domain)
+            )))
+        }
+    }
+
+    /// Forgets the open vault file: another process has replaced what it
+    /// holds (recovery gives this copy a new identity).
+    pub(crate) fn reset(&self) {
+        *self.state() = State::default();
+    }
+
+    /// Whether the vault file exists.
+    pub(crate) fn exists(&self) -> bool {
+        self.state().vault.is_some() || self.path.exists()
+    }
+
+    /// The public key to seal a vault key to that is meant for this process.
+    pub(crate) fn import_key(&self) -> [u8; PUBLIC_KEY_LEN] {
+        *self.sealing.public_bytes()
+    }
+
+    /// Hands the unlocked `domain` to another process of the daemon: its slot
+    /// key, sealed to the key that process gave.
+    pub(crate) fn export(
+        &self,
+        domain: DomainId,
+        to: &[u8; PUBLIC_KEY_LEN],
+    ) -> Result<(u32, Vec<u8>), proto::Error> {
+        let mut state = self.state();
+        let vault = self.vault(&mut state)?;
+        let (epoch, key) = match domain {
+            DomainId::Password => vault.export_slot_key::<Password>(),
+            DomainId::Totp => vault.export_slot_key::<Totp>(),
+            DomainId::Passkey => vault.export_slot_key::<Passkey>(),
+        }
+        .map_err(vault_error)?;
+        let sealed = seal_to(to, &transfer_context(domain, epoch), key.as_slice())
+            .map_err(|error| internal(error.to_string()))?;
+        Ok((epoch, sealed))
+    }
+
+    /// Unlocks `domain` with the slot key another process of the daemon
+    /// sealed to [`Self::import_key`].
+    pub(crate) fn import(
+        &self,
+        domain: DomainId,
+        epoch: u32,
+        sealed: &[u8],
+    ) -> Result<(), proto::Error> {
+        self.holds(domain)?;
+        let key = self
+            .sealing
+            .open(&transfer_context(domain, epoch), sealed)
+            .map_err(|_| internal("the handed-over key could not be opened"))?;
+        let key: &[u8; KEY_LEN] = key
+            .as_slice()
+            .try_into()
+            .map_err(|_| internal("the handed-over key has the wrong length"))?;
+        let mut state = self.state();
+        let vault = self.vault(&mut state)?;
+        match domain {
+            DomainId::Password => vault.adopt_slot_key::<Password>(epoch, key),
+            DomainId::Totp => vault.adopt_slot_key::<Totp>(epoch, key),
+            DomainId::Passkey => vault.adopt_slot_key::<Passkey>(epoch, key),
+        }
+        .map_err(vault_error)
+    }
+
+    /// The domain a live item is stored in, which needs no key.
+    pub(crate) fn item_domain(&self, id: &[u8]) -> Result<DomainId, proto::Error> {
+        let id = convert::item_id(id)?;
+        let mut state = self.state();
+        Self::domain_of(self.vault(&mut state)?, id)
+    }
+
+    /// Whether the vault has `domain`. `false` if there is no vault yet.
+    pub(crate) fn has_domain(&self, domain: DomainId) -> Result<bool, proto::Error> {
+        if !self.exists() {
+            return Ok(false);
+        }
+        let mut state = self.state();
+        self.vault(&mut state)?
+            .has_domain(domain)
+            .map_err(vault_error)
     }
 
     pub(crate) fn state(&self) -> MutexGuard<'_, State> {
@@ -96,12 +260,19 @@ impl Service {
         &self,
         create: bool,
     ) -> Result<Option<Box<dyn HardwareKeyStore>>, proto::Error> {
-        let internal = |message: String| proto::Error::new(ErrorCode::Internal, message);
+        self.hardware_or_why(create).map(Result::ok)
+    }
+
+    /// Like [`Self::hardware`]; `Ok(Err)` says why this device has no key store.
+    fn hardware_or_why(
+        &self,
+        create: bool,
+    ) -> Result<Result<Box<dyn HardwareKeyStore>, String>, proto::Error> {
+        let missing = |why: &str| Ok(Err(why.to_owned()));
         match self.key_store {
-            KeyStoreChoice::None => Ok(None),
-            KeyStoreChoice::Platform => match zp_hwkey::platform_key_store(create) {
-                Ok(store) => Ok(Some(store)),
-                Err(HardwareKeyError::Unavailable(_)) => Ok(None),
+            KeyStoreChoice::None => missing("the daemon was started without one"),
+            KeyStoreChoice::Platform => match port::key_store(&self.port, create) {
+                Ok(store) => Ok(store),
                 Err(HardwareKeyError::UserCancelled) => Err(proto::Error::new(
                     ErrorCode::UserCancelled,
                     HardwareKeyError::UserCancelled.to_string(),
@@ -119,7 +290,9 @@ impl Service {
                 } else {
                     let bytes = match std::fs::read(&path) {
                         Ok(bytes) => Zeroizing::new(bytes),
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                            return missing("the software key store file is missing");
+                        }
                         Err(error) => {
                             return Err(internal(format!("{}: {error}", path.display())));
                         }
@@ -129,7 +302,7 @@ impl Service {
                     })?;
                     InsecureSoftwareKeyStore::from_key_bytes(key)
                 };
-                Ok(Some(Box::new(store)))
+                Ok(Ok(Box::new(store)))
             }
         }
     }
@@ -177,6 +350,7 @@ impl Service {
     }
 
     fn create_vault(&self, state: &mut State, request: &proto::CreateVault) -> Reply {
+        self.whole()?;
         if state.vault.is_some() || self.path.exists() {
             return Err(vault_error(VaultError::AlreadyExists));
         }
@@ -200,6 +374,7 @@ impl Service {
     }
 
     fn recover_vault(&self, state: &mut State, request: &proto::RecoverVault) -> Reply {
+        self.whole()?;
         if !self.path.exists() {
             return Err(vault_error(VaultError::NotFound));
         }
@@ -222,6 +397,7 @@ impl Service {
 
     fn unlock(&self, state: &mut State, request: &proto::Unlock) -> Reply {
         let domain = convert::domain_from_proto(request.domain)?;
+        self.holds(domain)?;
         let vault = self.vault(state)?;
         if domain == DomainId::Password {
             vault
@@ -232,39 +408,19 @@ impl Service {
         if !vault.has_domain(domain).map_err(vault_error)? {
             return Err(vault_error(VaultError::DomainUnavailable(domain)));
         }
-        let hint = self.sandbox_hint();
-        let hardware = self.hardware(false)?.ok_or_else(|| {
+        let hardware = self.hardware_or_why(false)?.map_err(|why| {
             proto::Error::about(
                 ErrorCode::HardwareUnavailable,
                 convert::domain_to_proto(domain),
-                format!("no hardware key store is available to unlock this domain{hint}"),
+                format!("no hardware key store is available to unlock this domain: {why}"),
             )
         })?;
         match domain {
             DomainId::Totp => vault.unlock_hardware::<Totp>(hardware.as_ref()),
             _ => vault.unlock_hardware::<Passkey>(hardware.as_ref()),
         }
-        .map_err(|error| {
-            let mut error = vault_error(error);
-            if error.code == ErrorCode::Internal as i32 {
-                error.message.push_str(&hint);
-            }
-            error
-        })?;
+        .map_err(vault_error)?;
         done()
-    }
-
-    /// What to add to an error of the platform's key store when this daemon runs
-    /// in a sandbox: Windows Hello keeps the credentials of a sandbox apart
-    /// from the user's own (ADR-0006), so a vault whose keys were wrapped
-    /// outside the sandbox cannot be opened inside it.
-    fn sandbox_hint(&self) -> String {
-        if self.key_store == KeyStoreChoice::Platform && zp_sandbox::is_sandboxed() {
-            " (the daemon runs in a sandbox, which does not see Windows Hello credentials \n             made outside it; for a vault created outside the sandbox, stop the daemon \n             and start it with `zp-cli --no-sandbox daemon start`)"
-                .to_owned()
-        } else {
-            String::new()
-        }
     }
 
     fn list_items(&self, state: &mut State, request: &proto::ListItems) -> Reply {
@@ -387,6 +543,7 @@ impl Service {
     }
 
     fn create_recovery_kit(&self, state: &mut State, request: proto::CreateRecoveryKit) -> Reply {
+        self.whole()?;
         let vault = self.vault(state)?;
         if vault.has_recovery_kit().map_err(vault_error)? && !request.replace {
             return Err(proto::Error::new(
@@ -428,8 +585,17 @@ impl Service {
     }
 
     fn revoke_device(&self, state: &mut State, request: &proto::RevokeDevice) -> Reply {
+        self.whole()?;
         let id = convert::device_id(&request.device_id)?;
         let vault = self.vault(state)?;
+        Self::revocable(vault, id)?;
+        Self::require_every_domain(vault)?;
+        vault.revoke_device(id).map_err(vault_error)?;
+        done()
+    }
+
+    /// Fails unless `id` is another device of the vault that is not revoked.
+    fn revocable(vault: &Vault, id: zp_crypto::DeviceId) -> Result<(), proto::Error> {
         let not_found = |message: &str| proto::Error::new(ErrorCode::DeviceNotFound, message);
         let registry = vault.registry().map_err(vault_error)?;
         if id == vault.device_id() {
@@ -441,9 +607,7 @@ impl Service {
         if registry.is_revoked(&id) {
             return Err(not_found("that device has already been revoked"));
         }
-        Self::require_every_domain(vault)?;
-        vault.revoke_device(id).map_err(vault_error)?;
-        done()
+        Ok(())
     }
 
     fn dispatch(&self, state: &mut State, request: request::Body) -> Reply {
@@ -492,37 +656,28 @@ impl Service {
                 Err(bad_request("this request needs a relay"))
             }
             // These belong to a relay that is already running.
-            Body::RelayAttach(_) | Body::LinkData(_) | Body::PairConfirm(_) => {
-                Err(bad_request("there is no relay on this connection"))
+            Body::RelayAttach(_)
+            | Body::LinkData(_)
+            | Body::PairConfirm(_)
+            | Body::KeyAgentReply(_) => Err(bad_request("there is no relay on this connection")),
+            // The key agent attaches to the process the clients talk to; the
+            // sync daemon's requests are not this daemon's.
+            Body::KeyAgentAttach(_)
+            | Body::SyncdStatus(_)
+            | Body::SyncNow(_)
+            | Body::PairListen(_)
+            | Body::PairConnect(_) => {
+                Err(bad_request("that request is not one this process answers"))
             }
             request => crate::sync::handle(self.vault(state)?, request),
         }
     }
 }
 
-/// Whether a connection with `role` may make `request` (`docs/spec/ipc.md` §5).
-fn permitted(role: Role, request: &request::Body) -> bool {
-    match role {
-        Role::Ui => true,
-        // The sync daemon moves ciphertext in and out, and nothing else.
-        Role::Sync => {
-            matches!(request, request::Body::Status(_)) || crate::sync::is_sync_request(request)
-        }
-        // What these roles may ask beyond the state of the vault is defined
-        // together with the components themselves (P4-04, P7-01).
-        Role::Bridge | Role::Broker => matches!(request, request::Body::Status(_)),
-        Role::Unspecified => false,
-    }
-}
-
-impl Handler for Service {
-    fn handle(&self, peer: &Peer, request: request::Body) -> response::Body {
-        if !permitted(peer.role, &request) {
-            return response::Body::Error(proto::Error::new(
-                ErrorCode::Denied,
-                "this client is not allowed to make that request",
-            ));
-        }
+impl Service {
+    /// Answers one request with what this process holds. Who may ask what
+    /// is decided where the clients connect (`front`).
+    pub(crate) fn serve(&self, request: request::Body) -> response::Body {
         let mut state = self.state();
         match self.dispatch(&mut state, request) {
             Ok(reply) => reply,
@@ -530,21 +685,9 @@ impl Handler for Service {
         }
     }
 
-    fn starts_relay(&self, request: &request::Body) -> bool {
-        matches!(
-            request,
-            request::Body::PairAdmit(_) | request::Body::PairJoin(_)
-        )
-    }
-
-    fn relay(&self, peer: &Peer, request: request::Body, relay: RelayEnd) -> response::Body {
-        if !permitted(peer.role, &request) {
-            return response::Body::Error(proto::Error::new(
-                ErrorCode::Denied,
-                "this client is not allowed to make that request",
-            ));
-        }
-        let outcome = match &request {
+    /// Runs a relay request: pairing over the link the client relays.
+    pub(crate) fn relay(&self, request: &request::Body, relay: RelayEnd) -> response::Body {
+        let outcome = match request {
             request::Body::PairAdmit(_) => self.pair_admit(relay),
             request::Body::PairJoin(join) => self.pair_join(join, relay),
             _ => Err(bad_request("not a relay request")),
@@ -552,559 +695,32 @@ impl Handler for Service {
         outcome.unwrap_or_else(response::Body::Error)
     }
 
-    fn rejected(&self, process: &PeerProcess) {
-        let who = process
-            .executable
-            .as_deref()
-            .map_or_else(|| "an unidentified process".to_owned(), describe);
-        log(&format!("refused a connection from {who}"));
+    /// Whether `domain` is unlocked in this process.
+    pub(crate) fn unlocked(&self, domain: DomainId) -> bool {
+        self.state()
+            .vault
+            .as_mut()
+            .is_some_and(|vault| vault.is_unlocked(domain))
     }
-}
 
-fn describe(path: &Path) -> String {
-    path.display().to_string()
+    /// Fails unless `device_id` names a device of the vault that can be
+    /// revoked. Needs no key.
+    pub(crate) fn check_revocable(&self, device_id: &[u8]) -> Result<(), proto::Error> {
+        let id = convert::device_id(device_id)?;
+        let mut state = self.state();
+        Self::revocable(self.vault(&mut state)?, id)
+    }
+
+    /// Whether the vault has a recovery kit. Needs no key.
+    pub(crate) fn has_recovery_kit(&self) -> Result<bool, proto::Error> {
+        let mut state = self.state();
+        self.vault(&mut state)?
+            .has_recovery_kit()
+            .map_err(vault_error)
+    }
 }
 
 /// Lower-case names of the domains, for the start-up message.
 pub(crate) fn domain_names() -> String {
     DomainId::ALL.map(domain_name).join(", ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zp_ipc::proto::{Domain as D, new_item};
-
-    const PASSWORD: &str = "correct horse battery staple";
-    const TOTP_URI: &str =
-        "otpauth://totp/Example:alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Example";
-
-    struct Fixture {
-        service: Service,
-        _dir: tempfile::TempDir,
-    }
-
-    fn fixture(key_store: KeyStoreChoice) -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
-        Fixture {
-            service: Service::new(dir.path().join("test.zpvault"), key_store),
-            _dir: dir,
-        }
-    }
-
-    fn peer(role: Role) -> Peer {
-        Peer {
-            process: PeerProcess {
-                pid: None,
-                executable: None,
-            },
-            role,
-        }
-    }
-
-    impl Fixture {
-        fn call_as(&self, role: Role, request: request::Body) -> Reply {
-            match self.service.handle(&peer(role), request) {
-                response::Body::Error(error) => Err(error),
-                reply => Ok(reply),
-            }
-        }
-
-        fn call(&self, request: request::Body) -> Reply {
-            self.call_as(Role::Ui, request)
-        }
-
-        fn code(&self, request: request::Body) -> ErrorCode {
-            let error = self.call(request).expect_err("an error");
-            ErrorCode::try_from(error.code).unwrap()
-        }
-
-        fn create(&self) {
-            self.call(request::Body::CreateVault(proto::CreateVault {
-                master_password: PASSWORD.into(),
-            }))
-            .unwrap();
-        }
-
-        fn status(&self) -> proto::StatusReply {
-            match self.call(request::Body::Status(proto::Status {})).unwrap() {
-                response::Body::Status(status) => status,
-                _ => panic!("not a status"),
-            }
-        }
-
-        fn unlocked(&self, domain: D) -> bool {
-            self.status()
-                .domains
-                .iter()
-                .any(|status| status.domain == domain as i32 && status.unlocked)
-        }
-
-        fn lock(&self) {
-            self.call(request::Body::Lock(proto::Lock { domain: None }))
-                .unwrap();
-        }
-
-        fn unlock(&self, domain: D, password: &str) -> Reply {
-            self.call(request::Body::Unlock(proto::Unlock {
-                domain: domain as i32,
-                master_password: password.into(),
-            }))
-        }
-
-        fn add(&self, content: new_item::Content) -> Vec<u8> {
-            let request = request::Body::AddItem(proto::AddItem {
-                item: Some(proto::NewItem {
-                    content: Some(content),
-                }),
-            });
-            match self.call(request).unwrap() {
-                response::Body::ItemAdded(added) => added.item_id,
-                _ => panic!("not added"),
-            }
-        }
-
-        fn list(&self, domain: D, query: &str) -> Vec<proto::ItemSummary> {
-            let request = request::Body::ListItems(proto::ListItems {
-                domain: domain as i32,
-                query: query.into(),
-            });
-            match self.call(request).unwrap() {
-                response::Body::Items(items) => items.items,
-                _ => panic!("not a list"),
-            }
-        }
-    }
-
-    fn login(title: &str, password: &str) -> new_item::Content {
-        new_item::Content::Login(proto::Login {
-            title: title.into(),
-            username: "alice".into(),
-            password: password.into(),
-            urls: vec!["https://example.com".into()],
-            notes: String::new(),
-        })
-    }
-
-    fn get(id: &[u8]) -> request::Body {
-        request::Body::GetItem(proto::GetItem {
-            item_id: id.to_vec(),
-        })
-    }
-
-    #[test]
-    fn a_vault_is_created_used_locked_and_unlocked() {
-        let fixture = fixture(KeyStoreChoice::InsecureSoftware);
-        assert!(!fixture.status().vault_exists);
-        assert_eq!(fixture.code(get(&[0; 16])), ErrorCode::NoVault);
-
-        fixture.create();
-        let status = fixture.status();
-        assert!(status.vault_exists);
-        assert_eq!(status.vault_id.len(), 16);
-        assert!(status.domains.iter().all(|d| d.available && d.unlocked));
-        assert_eq!(
-            fixture.code(request::Body::CreateVault(proto::CreateVault {
-                master_password: PASSWORD.into(),
-            })),
-            ErrorCode::VaultExists
-        );
-
-        let bank = fixture.add(login("Bank", "hunter2-hunter2"));
-        fixture.add(login("Airline", "another-password"));
-        fixture.add(new_item::Content::Note(proto::Note {
-            title: "Wi-Fi".into(),
-            body: "the passphrase".into(),
-        }));
-        let titles: Vec<String> = fixture
-            .list(D::Password, "")
-            .into_iter()
-            .map(|item| item.title)
-            .collect();
-        assert_eq!(titles, ["Airline", "Bank", "Wi-Fi"]);
-        assert_eq!(fixture.list(D::Password, "bank").len(), 1);
-
-        match fixture.call(get(&bank)).unwrap() {
-            response::Body::Item(item) => match item.content {
-                Some(proto::item::Content::Login(login)) => {
-                    assert_eq!(login.password, "hunter2-hunter2");
-                }
-                _ => panic!("not a login"),
-            },
-            _ => panic!("not an item"),
-        }
-
-        // Locked: nothing can be read, and the error names the domain.
-        fixture.lock();
-        assert!(!fixture.unlocked(D::Password));
-        let error = fixture.call(get(&bank)).err().unwrap();
-        assert_eq!(error.code, ErrorCode::Locked as i32);
-        assert_eq!(error.domain, Some(D::Password as i32));
-        assert_eq!(
-            fixture
-                .unlock(D::Password, "not the password")
-                .err()
-                .unwrap()
-                .code,
-            ErrorCode::WrongPassword as i32
-        );
-        fixture.unlock(D::Password, PASSWORD).unwrap();
-        assert!(fixture.unlocked(D::Password));
-        // The password does not open the other domains.
-        assert!(!fixture.unlocked(D::Totp));
-        fixture.call(get(&bank)).unwrap();
-
-        // Update and delete.
-        fixture
-            .call(request::Body::UpdateItem(proto::UpdateItem {
-                item_id: bank.clone(),
-                item: Some(proto::NewItem {
-                    content: Some(login("Bank", "a-new-password")),
-                }),
-            }))
-            .unwrap();
-        fixture
-            .call(request::Body::DeleteItem(proto::DeleteItem {
-                item_id: bank.clone(),
-            }))
-            .unwrap();
-        assert_eq!(fixture.code(get(&bank)), ErrorCode::ItemNotFound);
-    }
-
-    #[test]
-    fn totp_codes_come_out_but_the_seed_does_not() {
-        let fixture = fixture(KeyStoreChoice::InsecureSoftware);
-        fixture.create();
-        let id = fixture.add(new_item::Content::Totp(proto::NewTotp {
-            otpauth_uri: TOTP_URI.into(),
-            login_id: None,
-        }));
-        match fixture
-            .call(request::Body::TotpCode(proto::TotpCode {
-                item_id: id.clone(),
-            }))
-            .unwrap()
-        {
-            response::Body::TotpCode(code) => {
-                assert_eq!(code.code.len(), 6);
-                assert!((1..=30).contains(&code.seconds_remaining));
-            }
-            _ => panic!("not a code"),
-        }
-        match fixture.call(get(&id)).unwrap() {
-            response::Body::Item(item) => {
-                assert!(matches!(
-                    item.content,
-                    Some(proto::item::Content::Totp(ref info)) if info.issuer == "Example"
-                ));
-            }
-            _ => panic!("not an item"),
-        }
-        assert_eq!(fixture.list(D::Totp, "").len(), 1);
-
-        // After locking, the hardware-bound domain opens without the master
-        // password (the software key store asks for nothing).
-        fixture.lock();
-        assert_eq!(
-            fixture.code(request::Body::TotpCode(proto::TotpCode {
-                item_id: id.clone()
-            })),
-            ErrorCode::Locked
-        );
-        fixture.unlock(D::Totp, "").unwrap();
-        assert!(fixture.unlocked(D::Totp));
-        assert!(!fixture.unlocked(D::Password));
-
-        let bad = new_item::Content::Totp(proto::NewTotp {
-            otpauth_uri: "not a uri".into(),
-            login_id: None,
-        });
-        let request = request::Body::AddItem(proto::AddItem {
-            item: Some(proto::NewItem { content: Some(bad) }),
-        });
-        assert_eq!(fixture.code(request), ErrorCode::InvalidInput);
-    }
-
-    #[test]
-    fn without_a_key_store_the_hardware_domains_do_not_exist() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        let status = fixture.status();
-        let available: Vec<bool> = status.domains.iter().map(|d| d.available).collect();
-        assert_eq!(available, [true, false, false]);
-        assert_eq!(
-            fixture.unlock(D::Totp, "").err().unwrap().code,
-            ErrorCode::DomainUnavailable as i32
-        );
-        let totp = new_item::Content::Totp(proto::NewTotp {
-            otpauth_uri: TOTP_URI.into(),
-            login_id: None,
-        });
-        let request = request::Body::AddItem(proto::AddItem {
-            item: Some(proto::NewItem {
-                content: Some(totp),
-            }),
-        });
-        assert_eq!(fixture.code(request), ErrorCode::DomainUnavailable);
-    }
-
-    #[test]
-    fn the_recovery_kit_needs_every_domain_and_restores_access() {
-        let fixture = fixture(KeyStoreChoice::InsecureSoftware);
-        fixture.create();
-        let id = fixture.add(login("Bank", "hunter2-hunter2"));
-        fixture.lock();
-        fixture.unlock(D::Password, PASSWORD).unwrap();
-        let kit = request::Body::CreateRecoveryKit(proto::CreateRecoveryKit { replace: false });
-        let error = fixture.call(kit.clone()).err().unwrap();
-        assert_eq!(error.code, ErrorCode::Locked as i32);
-        assert_eq!(error.domain, Some(D::Totp as i32));
-        fixture.unlock(D::Totp, "").unwrap();
-        fixture.unlock(D::Passkey, "").unwrap();
-        let recovery_key = match fixture.call(kit.clone()).unwrap() {
-            response::Body::RecoveryKit(kit) => kit.recovery_key.clone(),
-            _ => panic!("not a kit"),
-        };
-        assert!(fixture.status().has_recovery_kit);
-        assert_eq!(fixture.code(kit), ErrorCode::RecoveryKitExists);
-
-        let recover = |key: &str| {
-            request::Body::RecoverVault(proto::RecoverVault {
-                recovery_key: key.into(),
-                new_master_password: "an entirely different passphrase".into(),
-            })
-        };
-        assert_eq!(fixture.code(recover("garbage")), ErrorCode::InvalidInput);
-        fixture.call(recover(&recovery_key)).unwrap();
-        fixture.lock();
-        assert_eq!(
-            fixture.unlock(D::Password, PASSWORD).err().unwrap().code,
-            ErrorCode::WrongPassword as i32
-        );
-        fixture
-            .unlock(D::Password, "an entirely different passphrase")
-            .unwrap();
-        fixture.call(get(&id)).unwrap();
-    }
-
-    #[test]
-    fn the_master_password_can_be_changed() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        let change = |current: &str| {
-            request::Body::ChangeMasterPassword(proto::ChangeMasterPassword {
-                current: current.into(),
-                new: "an entirely different passphrase".into(),
-            })
-        };
-        assert_eq!(fixture.code(change("wrong")), ErrorCode::WrongPassword);
-        fixture.call(change(PASSWORD)).unwrap();
-        fixture.lock();
-        assert!(fixture.unlock(D::Password, PASSWORD).is_err());
-        fixture
-            .unlock(D::Password, "an entirely different passphrase")
-            .unwrap();
-        let weak = request::Body::ChangeMasterPassword(proto::ChangeMasterPassword {
-            current: "an entirely different passphrase".into(),
-            new: "short".into(),
-        });
-        assert_eq!(fixture.code(weak), ErrorCode::WeakPassword);
-    }
-
-    #[test]
-    fn devices_are_listed_and_this_device_cannot_be_revoked() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        let devices = match fixture
-            .call(request::Body::ListDevices(proto::ListDevices {}))
-            .unwrap()
-        {
-            response::Body::Devices(devices) => devices.devices,
-            _ => panic!("not devices"),
-        };
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].state, proto::DeviceState::ThisDevice as i32);
-        assert_eq!(devices[0].device_id, fixture.status().device_id);
-        let revoke =
-            |id: Vec<u8>| request::Body::RevokeDevice(proto::RevokeDevice { device_id: id });
-        assert_eq!(
-            fixture.code(revoke(devices[0].device_id.clone())),
-            ErrorCode::DeviceNotFound
-        );
-        let unknown = vec![9; devices[0].device_id.len()];
-        assert_eq!(fixture.code(revoke(unknown)), ErrorCode::DeviceNotFound);
-        assert_eq!(fixture.code(revoke(vec![1, 2, 3])), ErrorCode::BadRequest);
-    }
-
-    #[test]
-    fn only_a_user_interface_may_do_more_than_ask_for_the_status() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        let id = fixture.add(login("Bank", "hunter2-hunter2"));
-        for role in [Role::Bridge, Role::Broker, Role::Sync] {
-            fixture
-                .call_as(role, request::Body::Status(proto::Status {}))
-                .unwrap();
-            for request in [
-                get(&id),
-                request::Body::ListItems(proto::ListItems {
-                    domain: D::Password as i32,
-                    query: String::new(),
-                }),
-                request::Body::Lock(proto::Lock { domain: None }),
-                request::Body::Shutdown(proto::Shutdown {}),
-            ] {
-                let error = fixture.call_as(role, request).err().unwrap();
-                assert_eq!(error.code, ErrorCode::Denied as i32, "{role:?}");
-            }
-        }
-        // Nothing was locked by the refused requests.
-        assert!(fixture.unlocked(D::Password));
-        assert!(
-            fixture
-                .call_as(Role::Unspecified, request::Body::Status(proto::Status {}))
-                .is_err()
-        );
-    }
-
-    /// The sync daemon's view of the vault, over the real IPC, shows what the
-    /// vault file holds, and what it hands in is checked like any peer's data.
-    #[test]
-    fn the_sync_daemon_reads_and_writes_ops_through_the_ipc() {
-        use std::sync::Arc;
-        use zp_ipc::{Client, ClientPolicy, DaemonPolicy, Endpoint, RemoteOpLog, Server};
-        use zp_sync::OpLog;
-        use zp_vault::Store;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.zpvault");
-        let service = Arc::new(Service::new(path.clone(), KeyStoreChoice::None));
-        let ui = peer(Role::Ui);
-        let created = service.handle(
-            &ui,
-            request::Body::CreateVault(proto::CreateVault {
-                master_password: PASSWORD.into(),
-            }),
-        );
-        assert!(matches!(created, response::Body::Status(_)));
-        for title in ["One", "Two", "Three"] {
-            let added = service.handle(
-                &ui,
-                request::Body::AddItem(proto::AddItem {
-                    item: Some(proto::NewItem {
-                        content: Some(login(title, "a-password")),
-                    }),
-                }),
-            );
-            assert!(matches!(added, response::Body::ItemAdded(_)));
-        }
-        // The sync daemon works on the locked vault.
-        service.lock_all();
-
-        // This test binary plays the sync daemon.
-        let this = std::env::current_exe().unwrap();
-        let endpoint = Endpoint::for_vault(&path).unwrap();
-        let policy = ClientPolicy::deny_all().allow(&this, Role::Sync);
-        let server = Server::bind(&endpoint, policy, "test").unwrap();
-        let shutdown = server.shutdown_handle();
-        let serving = {
-            let service = Arc::clone(&service);
-            std::thread::spawn(move || server.serve(service))
-        };
-        let client =
-            Client::connect(&endpoint, &DaemonPolicy::default().allow(&this), "syncd").unwrap();
-        let mut remote = RemoteOpLog::new(client).unwrap();
-
-        let store = Store::open(&path).unwrap();
-        assert_eq!(remote.vault_id(), store.vault_id());
-        assert_eq!(remote.device_id(), store.device_id());
-        assert_eq!(
-            remote.channel_key().public_bytes(),
-            store.channel_key().unwrap().public_bytes()
-        );
-        let own = store.device_id();
-        let vector = remote.version_vector().unwrap();
-        assert_eq!(vector, store.version_vector().unwrap());
-        assert_eq!(vector.get(&own), 3);
-        let registry = remote.registry().unwrap();
-        assert_eq!(registry.records().count(), 1);
-        assert!(registry.is_active(&own));
-
-        let ops = remote.ops_after(own, 0, 100).unwrap();
-        assert_eq!(ops, store.ops_after(own, 0, 100).unwrap());
-        assert_eq!(ops.len(), 3);
-        assert_eq!(remote.ops_after(own, 2, 100).unwrap().len(), 1);
-        assert_eq!(remote.ops_after(own, 0, 2).unwrap().len(), 2);
-        assert_eq!(remote.key_updates().unwrap().len(), 0);
-
-        // Handing in what is already there changes nothing.
-        let report = remote.apply(ops.clone()).unwrap();
-        assert_eq!((report.applied, report.duplicates), (0, 3));
-        let records: Vec<_> = registry.records().cloned().collect();
-        assert!(!remote.merge_registry(records, Vec::new()).unwrap());
-        assert_eq!(remote.merge_key_updates(Vec::new()).unwrap(), 0);
-
-        // An op that was tampered with is refused, and nothing is stored.
-        let mut forged = ops[2].clone();
-        forged.body.seq = 4;
-        let error = remote.apply(vec![forged]).unwrap_err();
-        match error {
-            zp_ipc::RemoteSyncError::Ipc(error) => {
-                assert_eq!(error.code(), Some(ErrorCode::SyncRejected), "{error}");
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-        assert_eq!(remote.version_vector().unwrap().get(&own), 3);
-
-        drop(remote);
-        shutdown.shutdown();
-        serving.join().unwrap();
-    }
-
-    #[test]
-    fn the_sync_daemon_cannot_read_items_and_others_cannot_sync() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        let sync = || request::Body::SyncVector(proto::SyncVector {});
-        fixture.call_as(Role::Sync, sync()).unwrap();
-        fixture.call_as(Role::Ui, sync()).unwrap();
-        for role in [Role::Bridge, Role::Broker] {
-            let error = fixture.call_as(role, sync()).err().unwrap();
-            assert_eq!(error.code, ErrorCode::Denied as i32);
-        }
-        // Malformed sync data is the sender's fault.
-        let garbage = request::Body::SyncApply(proto::SyncApply { ops: vec![0xFF; 8] });
-        let error = fixture.call_as(Role::Sync, garbage).err().unwrap();
-        assert_eq!(error.code, ErrorCode::SyncRejected as i32);
-    }
-
-    #[test]
-    fn shutdown_locks_everything() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        fixture
-            .call(request::Body::Shutdown(proto::Shutdown {}))
-            .unwrap();
-        assert!(!fixture.unlocked(D::Password));
-    }
-
-    #[test]
-    fn idle_domains_are_locked_by_the_tick() {
-        let fixture = fixture(KeyStoreChoice::None);
-        fixture.create();
-        {
-            let mut state = fixture.service.state();
-            let vault = state.vault.as_mut().unwrap();
-            vault.set_auto_lock(zp_vault::AutoLock {
-                password: Some(std::time::Duration::ZERO),
-                hardware: None,
-            });
-            // `set_auto_lock` applies the timeout at once; unlock again so that
-            // the tick has something to do.
-            vault.unlock_password(PASSWORD).unwrap();
-        }
-        fixture.service.tick();
-        let state = fixture.service.state();
-        assert!(format!("{:?}", state.vault).contains("unlocked: []"));
-    }
 }

@@ -26,3 +26,5 @@ zp-vault = { version = "0.0.0", path = "../../crates/zp-vault" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# The isolation test reads the memory of the daemon's processes.
+zp-sandbox = { version = "0.0.0", path = "../../crates/zp-sandbox", features = ["probe"] }

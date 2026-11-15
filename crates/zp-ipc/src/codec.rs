@@ -12,10 +12,7 @@ use crate::IpcError;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Writes one message as a frame.
-pub(crate) fn write_frame<W: Write, M: Message>(
-    writer: &mut W,
-    message: &M,
-) -> Result<(), IpcError> {
+pub fn write_frame<W: Write, M: Message>(writer: &mut W, message: &M) -> Result<(), IpcError> {
     let len = message.encoded_len();
     if len > MAX_FRAME {
         return Err(IpcError::FrameTooLarge(len));
@@ -34,9 +31,7 @@ pub(crate) fn write_frame<W: Write, M: Message>(
 
 /// Reads one frame. Returns `None` if the other side closed the connection
 /// before the start of a frame.
-pub(crate) fn read_frame<R: Read, M: Message + Default>(
-    reader: &mut R,
-) -> Result<Option<M>, IpcError> {
+pub fn read_frame<R: Read, M: Message + Default>(reader: &mut R) -> Result<Option<M>, IpcError> {
     let mut header = [0u8; 4];
     let mut filled = 0;
     while filled < header.len() {

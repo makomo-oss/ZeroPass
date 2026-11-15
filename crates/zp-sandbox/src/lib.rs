@@ -16,6 +16,27 @@ mod harden;
 mod windows;
 #[cfg(windows)]
 mod windows_harden;
+#[cfg(all(windows, feature = "probe"))]
+mod windows_probe;
+
+/// Whether `needle` occurs in the memory of the process `pid`. `None` where
+/// this is not implemented.
+///
+/// For tests that check where key material is and is not. It does what any
+/// program of the same user can do, including to a process that hardened
+/// itself (`docs/spec/hardening.md` §3).
+#[cfg(feature = "probe")]
+pub fn memory_contains(pid: u32, needle: &[u8]) -> Option<std::io::Result<bool>> {
+    #[cfg(windows)]
+    {
+        Some(windows_probe::memory_contains(pid, needle))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, needle);
+        None
+    }
+}
 
 pub use harden::{
     Hardening, Measure, can_duplicate_handles_of, can_read_memory_of, harden_network_process,

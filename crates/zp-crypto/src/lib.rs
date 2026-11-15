@@ -14,6 +14,7 @@ mod keywrap;
 mod mem;
 mod recovery_code;
 pub mod rng;
+mod sealed;
 mod secret;
 mod signature_store;
 
@@ -27,6 +28,7 @@ pub use error::CryptoError;
 pub use hardware::{HardwareBound, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore};
 pub use kdf::{KDF_SALT_LEN, KdfParams, derive_password_kek};
 pub use keywrap::{RecoveryKey, WRAPPED_KEY_LEN};
+pub use sealed::{SealingKey, seal_to};
 pub use secret::{
     Generate, ItemKey, KEY_LEN, PasswordKek, RecoveryKek, Role, SecretKey, VaultKey, Wrap, role,
 };
