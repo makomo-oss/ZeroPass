@@ -72,7 +72,14 @@ pub(crate) fn disable_sandbox() {
 /// nothing else: its executable, the vault file, and the files it creates
 /// beside the vault (the database's journal).
 fn grant_to_sandbox(executable: &Path, vault: &Path) -> io::Result<()> {
-    zp_sandbox::allow(DAEMON_SANDBOX, executable, Access::ReadExecute)?;
+    // Installed under Program Files, the user may not change the executable's
+    // access rights, and need not: that directory lets every app container
+    // read and run what it holds (ADR-0008). If the container really cannot
+    // run it, starting the daemon says so.
+    match zp_sandbox::allow(DAEMON_SANDBOX, executable, Access::ReadExecute) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {}
+        other => other?,
+    }
     if let Some(directory) = vault.parent() {
         zp_sandbox::allow(DAEMON_SANDBOX, directory, Access::CreateFiles)?;
     }

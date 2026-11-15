@@ -392,14 +392,35 @@ fn bad_invocations_fail_cleanly() {
     let stderr = cli.fails(&["init"], &[PASSWORD, "something else entirely"]);
     assert!(stderr.contains("do not match"), "{stderr}");
 
+    // Without a vault named, the user's own vault is meant (ADR-0008). Here
+    // the user's directories are a temporary one, and it holds no vault yet.
+    let home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
         .arg("list")
         .env_remove("ZEROPASS_VAULT")
+        .env("LOCALAPPDATA", home.path())
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path())
         .stdin(Stdio::null())
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no vault file given"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no vault file exists"), "{stderr}");
+    let default_directory = if cfg!(windows) {
+        home.path().join("ZeroPass").join("Vault")
+    } else if cfg!(target_os = "macos") {
+        home.path()
+            .join("Library/Application Support/ZeroPass/Vault")
+    } else {
+        home.path().join("zeropass").join("Vault")
+    };
+    // Its directory is there, ready for `init`.
+    assert!(
+        default_directory.is_dir(),
+        "{}",
+        default_directory.display()
+    );
 }
 
 #[test]

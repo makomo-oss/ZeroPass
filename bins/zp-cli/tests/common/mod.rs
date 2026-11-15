@@ -47,6 +47,10 @@ pub(crate) fn daemon_is_built() {
 
 /// Stops the daemon of `vault` if one is running, so that it does not outlive
 /// the test and the vault file can be deleted.
+#[allow(
+    dead_code,
+    reason = "not every test binary that includes this module uses it"
+)]
 pub(crate) fn stop_daemon(vault: &Path) {
     let _ = Command::new(env!("CARGO_BIN_EXE_zp-cli"))
         .arg("--vault")

@@ -11,6 +11,7 @@
 | [0005](0005-noise-patterns-and-sans-io.md) | Noise のパターンと入出力を持たないプロトコル実装 | 採用 |
 | [0006](0006-windows-sandbox.md) | Windows では vaultd を AppContainer で動かす | 採用 |
 | [0007](0007-domain-processes-and-key-agent.md) | 金庫デーモンをドメインごとのプロセスに分け、Windows Hello は鍵エージェントが外から使う | 採用 |
+| [0008](0008-windows-installation.md) | Windows ではマシン全体に（Program Files へ）インストールし、ログオン時は Run キーから起動する | 採用 |
 
 ## テンプレート
 

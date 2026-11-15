@@ -186,6 +186,18 @@ fn check(status: WIN32_ERROR) -> io::Result<()> {
     }
 }
 
+/// An error of the `windows` crate as the operating system error it stands
+/// for, so that callers can tell, say, a denied access from other failures.
+fn os_error(error: windows::core::Error) -> io::Error {
+    // HRESULT_FROM_WIN32: severity 1, facility 7 (Win32), the code below.
+    let hresult = error.code().0 as u32;
+    if hresult & 0xFFFF_0000 == 0x8007_0000 {
+        io::Error::from_raw_os_error((hresult & 0xFFFF) as i32)
+    } else {
+        io::Error::other(error)
+    }
+}
+
 /// Adds entries for the container `container` to the access control list of
 /// the file or directory at `path`. Each entry is a set of rights and the way
 /// it is inherited by what the directory contains.
@@ -245,9 +257,11 @@ fn add_entries(container: &str, path: &Path, entries: &[(u32, ACE_FLAGS)]) -> io
     // SAFETY: `descriptor` points to a writable SECURITY_DESCRIPTOR that lives
     // until the end of this function; `merged` is a valid ACL that lives as long.
     unsafe {
-        InitializeSecurityDescriptor(descriptor, SECURITY_DESCRIPTOR_REVISION)?;
-        SetSecurityDescriptorDacl(descriptor, true, Some(merged), false)?;
-        SetFileSecurityW(&wide, DACL_SECURITY_INFORMATION, descriptor).ok()?;
+        InitializeSecurityDescriptor(descriptor, SECURITY_DESCRIPTOR_REVISION).map_err(os_error)?;
+        SetSecurityDescriptorDacl(descriptor, true, Some(merged), false).map_err(os_error)?;
+        SetFileSecurityW(&wide, DACL_SECURITY_INFORMATION, descriptor)
+            .ok()
+            .map_err(os_error)?;
     }
     Ok(())
 }

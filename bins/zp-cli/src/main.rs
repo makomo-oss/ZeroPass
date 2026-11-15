@@ -32,7 +32,8 @@ type CliResult<T> = Result<T, Box<dyn Error>>;
 #[derive(Parser)]
 #[command(name = "zp-cli", version, about = "ZeroPass command-line client")]
 struct Cli {
-    /// Path of the vault file.
+    /// Path of the vault file. Without it, the vault in this user's ZeroPass
+    /// directory (on Windows `%LOCALAPPDATA%\ZeroPass\Vault\vault.zpvault`).
     #[arg(long, env = "ZEROPASS_VAULT", global = true)]
     vault: Option<PathBuf>,
 
@@ -122,6 +123,10 @@ enum DaemonAction {
     Start,
     /// Lock everything and stop the daemon.
     Stop,
+    /// Run at logon (`zp-autostart`): if the vault exists, start the vault
+    /// daemon and the sync daemon. Prints nothing.
+    #[command(hide = true)]
+    Autostart,
 }
 
 /// One line typed in the shell.
@@ -305,6 +310,31 @@ fn dev_key_path(vault: &Path) -> PathBuf {
     vault.with_extension("devkey")
 }
 
+/// Where this user's vault is kept when no other is named (ADR-0008): a
+/// directory of its own, because the vault daemon's sandbox is given access to
+/// the whole directory (`docs/spec/ipc.md` §9.1). The directory is created.
+fn default_vault_path() -> CliResult<PathBuf> {
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("ZeroPass"))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/ZeroPass"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+            })
+            .map(|data| data.join("zeropass"))
+    };
+    let directory = base
+        .ok_or("cannot tell where this user's files go: pass --vault <PATH> or set ZEROPASS_VAULT")?
+        .join("Vault");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
+    Ok(directory.join("vault.zpvault"))
+}
+
 fn parse_id(text: &str) -> CliResult<ItemId> {
     let invalid = || "an item identifier is 32 hexadecimal digits";
     if text.len() != 32 || !text.is_ascii() {
@@ -443,6 +473,15 @@ fn daemon(
     action: &DaemonAction,
     out: &mut impl Write,
 ) -> CliResult<()> {
+    if matches!(action, DaemonAction::Autostart) {
+        // Nothing to serve yet: the first command that needs a daemon starts it.
+        if !vault_path.exists() {
+            return Ok(());
+        }
+        remote::connect(vault_path, choice, Start::Always)?;
+        syncd::connect(vault_path, true)?;
+        return Ok(());
+    }
     if matches!(action, DaemonAction::Stop) {
         // The sync daemon first: it works through the vault daemon.
         let sync_stopped = syncd::stop(vault_path)?;
@@ -495,10 +534,10 @@ fn run(cli: Cli) -> CliResult<()> {
     if let TopCommand::ClipboardClear { after, token } = cli.command {
         return clipboard::clear_later(after, token);
     }
-    let vault_path = cli
-        .vault
-        .clone()
-        .ok_or("no vault file given: pass --vault <PATH> or set ZEROPASS_VAULT")?;
+    let vault_path = match cli.vault.clone() {
+        Some(path) => path,
+        None => default_vault_path()?,
+    };
     let mut out = io::stdout().lock();
     let choice = KeyStoreChoice::from_flags(&cli);
     if cli.no_sandbox {

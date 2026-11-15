@@ -308,28 +308,33 @@ fn a_link_that_opens_a_pairing_goes_to_whoever_waits_for_one() {
             })
         };
 
-        // A device that wants to pair finds the PC and opens with the pairing
-        // handshake. (The phone may be announced too; the PC's announcement is
-        // the one that answers.)
+        // A device that wants to pair finds the devices and opens with the
+        // pairing handshake, until one hands the link over. Only the PC
+        // waits; the phone drops it. Discovery may find the phone alone at
+        // first, or reach the PC before its loop waits: try again.
         let mut joiner = network.endpoint();
         let first = Handshake::pairing(true, &ChannelKey::generate().unwrap(), &[3; PSK_LEN])
             .unwrap()
             .step(&[])
             .unwrap();
         let mut writers = Vec::new();
-        assert!(eventually(|| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let diverted = loop {
             for found in joiner.discover(Duration::from_millis(20)).unwrap() {
-                let link = joiner.connect(&found.address).unwrap();
-                let (_reader, mut writer) = link.split().unwrap();
-                writer.write_all(&first).unwrap();
+                let Ok(link) = joiner.connect(&found.address) else {
+                    continue;
+                };
+                let (reader, mut writer) = link.split().unwrap();
+                let _ = writer.write_all(&first);
                 // Kept open: the receiving side must be able to read it.
-                writers.push((_reader, writer));
+                writers.push((reader, writer));
             }
-            !writers.is_empty()
-        }));
-        let diverted = pairing_links
-            .recv_timeout(Duration::from_secs(5))
-            .expect("no pairing link was handed over");
+            match pairing_links.recv_timeout(Duration::from_millis(200)) {
+                Ok(link) => break link,
+                Err(_) if Instant::now() < deadline => {}
+                Err(_) => panic!("no pairing link was handed over"),
+            }
+        };
         let (mut reader, _writer) = diverted.split().unwrap();
         let mut received = Vec::new();
         let mut buffer = [0u8; 256];

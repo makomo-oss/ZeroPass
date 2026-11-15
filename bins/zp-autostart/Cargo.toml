@@ -1,0 +1,15 @@
+[package]
+name = "zp-autostart"
+description = "ZeroPass logon launcher: starts the daemons of the user's vault without a console window."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependencies: it only starts `zp-cli` beside it (ADR-0008).
+[dependencies]
