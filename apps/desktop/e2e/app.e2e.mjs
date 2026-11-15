@@ -84,7 +84,17 @@ try {
     } catch (error) {
       if (exited !== null) throw new Error(`the application ended (exit code ${exited})`);
       // A first start creates the webview's profile: slow on a fresh machine.
-      if (attempt > 300) throw error;
+      if (attempt > 300) {
+        // What the webview runs as, to tell why its port did not open.
+        const report = spawnSync("powershell.exe", [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe' or name='zeropass.exe'\" | Where-Object { $_.CommandLine -like '*zeropass*' -and $_.CommandLine -notlike '*--type=*' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.CommandLine.Substring(0, [Math]::Min(400, $_.CommandLine.Length)) }; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -ge 9000 -and $_.LocalPort -lt 10000 } | ForEach-Object { 'listen ' + $_.LocalAddress + ':' + $_.LocalPort + ' pid ' + $_.OwningProcess }; (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv",
+        ], { encoding: "utf8" });
+        console.log(`  webview processes and ports (port ${port}):
+${report.stdout}${report.stderr}`);
+        throw error;
+      }
       await sleep(200);
     }
   }
