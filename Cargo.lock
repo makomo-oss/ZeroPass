@@ -5859,11 +5859,13 @@ name = "zeropass-desktop"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "getrandom 0.4.3",
  "serde",
  "tauri",
  "tauri-build",
  "zeroize",
  "zp-client",
+ "zp-clipboard",
  "zp-ipc",
 ]
 

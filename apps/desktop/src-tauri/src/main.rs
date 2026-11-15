@@ -9,9 +9,12 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod clipboard;
 mod commands;
 mod daemon;
 mod error;
+mod generator;
+mod items;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -73,6 +76,27 @@ fn own_page(url: &Url) -> bool {
     }
 }
 
+/// DEVELOPMENT BUILDS ONLY: with `ZEROPASS_E2E_CDP_PORT`, opens the webview's
+/// debugging port for the end-to-end tests (`apps/desktop/e2e`). Some
+/// versions of WebView2 do not take the port from their own environment
+/// variable; this passes it as the application's argument to the webview.
+/// Not compiled into release builds.
+#[cfg(all(debug_assertions, windows))]
+fn end_to_end_port<R: tauri::Runtime, M: tauri::Manager<R>>(
+    builder: WebviewWindowBuilder<'_, R, M>,
+) -> WebviewWindowBuilder<'_, R, M> {
+    match std::env::var("ZEROPASS_E2E_CDP_PORT")
+        .ok()
+        .and_then(|port| port.parse::<u16>().ok())
+    {
+        // wry's own arguments are replaced: they are repeated here.
+        Some(port) => builder.additional_browser_args(&format!(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={port}"
+        )),
+        None => builder,
+    }
+}
+
 fn main() {
     let started = Instant::now();
     let args = Args::parse();
@@ -109,7 +133,7 @@ fn main() {
         startup_report: args.startup_time,
     };
 
-    let outcome = tauri::Builder::default()
+    let built = tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
@@ -118,6 +142,21 @@ fn main() {
             commands::unlock,
             commands::lock,
             commands::ui_ready,
+            items::list_items,
+            items::get_item,
+            items::reveal_password,
+            items::copy,
+            items::copy_text,
+            items::add_login,
+            items::update_login,
+            items::add_note,
+            items::update_note,
+            items::add_totp,
+            items::delete_item,
+            items::totp_code,
+            items::generate_password,
+            items::create_recovery_kit,
+            items::change_master_password,
         ])
         .setup(|app| {
             let config = app
@@ -127,23 +166,34 @@ fn main() {
                 .first()
                 .ok_or("the configuration has no window")?
                 .clone();
-            WebviewWindowBuilder::from_config(app.handle(), &config)?
+            let builder = WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .on_navigation(own_page)
                 .on_new_window(|_, _| NewWindowResponse::Deny)
                 .on_download(|_, _| false)
                 // Nothing the page does is kept on disk by the webview.
                 .incognito(true)
-                .devtools(cfg!(debug_assertions))
-                .build()?;
+                .devtools(cfg!(debug_assertions));
+            #[cfg(all(debug_assertions, windows))]
+            let builder = end_to_end_port(builder);
+            builder.build()?;
             Ok(())
         })
-        .run(tauri::generate_context!());
-    if let Err(error) = outcome {
-        let _ = std::io::Write::write_all(
-            &mut std::io::stderr(),
-            format!("zeropass: {error}\n").as_bytes(),
-        );
-        std::process::exit(1);
+        .build(tauri::generate_context!());
+    match built {
+        Ok(app) => app.run(|_, event| {
+            if let tauri::RunEvent::Exit = event {
+                // A secret copied a moment ago must not outlive the
+                // application on the clipboard.
+                clipboard::clear_now();
+            }
+        }),
+        Err(error) => {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                format!("zeropass: {error}\n").as_bytes(),
+            );
+            std::process::exit(1);
+        }
     }
 }
 

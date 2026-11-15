@@ -55,6 +55,23 @@ npm test          # vitest
 npm audit --audit-level=moderate
 ```
 
+End to end (Windows): drives the real program, and the real vault daemon in
+its sandbox, through WebView2's debugging protocol (`playwright-core`, no
+browser download). Build first, as above, with the daemons:
+
+```sh
+cargo build -p zeropass-desktop -p zp-vaultd -p zp-keyagent -p zp-syncd -p zp-cli
+node e2e/app.e2e.mjs              # E2E_SCREENSHOTS=<dir> keeps pictures
+```
+
+It uses a new vault in a temporary directory with the development-only
+software key store, so Windows Hello does not ask. Copying to the clipboard is
+checked only with `ZEROPASS_TEST_CLIPBOARD=1` (as in CI). The debugging port is
+opened through `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, which WebView2 reads
+from the environment (see ADR-0009 for what that means for same-user
+programs), and, because some WebView2 versions ignore that variable, through
+`ZEROPASS_E2E_CDP_PORT`, which only development builds read.
+
 Known `npm audit` findings below that level: `deepmerge` (low; prototype
 pollution in merging objects) inside `@sveltejs/vite-plugin-svelte`, which
 merges the build configuration only and is not part of the page.
