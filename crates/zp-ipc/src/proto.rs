@@ -1323,6 +1323,10 @@ pub struct BridgeFind {
     /// The page's origin, as the browser reports it (`scheme://host[:port]`).
     #[prost(string, tag = "1")]
     pub origin: String,
+    /// The origin of the tab's top frame, if the page is a frame of another
+    /// page; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
 }
 
 /// The user name and password of one login, to fill into the page at
@@ -1335,6 +1339,9 @@ pub struct BridgeFill {
     /// The login (16 bytes).
     #[prost(bytes = "vec", tag = "2")]
     pub item_id: Vec<u8>,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "3")]
+    pub top_origin: String,
 }
 
 /// Answer to [`BridgeFind`]: the best matches first. No secrets.

@@ -157,6 +157,16 @@ New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 foreach ($name in $Programs + $Documents) {
     Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $Destination $name) -Force
 }
+# The browser extension, for the user to add to the browser from here: a
+# place only administrators can change (docs/spec/extension.md §2).
+$extensionSource = Join-Path $source 'browser-extension'
+$extensionTarget = Join-Path $Destination 'browser-extension'
+if (Test-Path -LiteralPath $extensionTarget) {
+    Remove-Item -LiteralPath $extensionTarget -Recurse -Force
+}
+if (Test-Path -LiteralPath $extensionSource) {
+    Copy-Item -LiteralPath $extensionSource -Destination $extensionTarget -Recurse
+}
 
 # 4. The PATH of every user, so that `zp-cli` can be typed anywhere. Read and
 #    written as stored, with its %VARIABLES% unexpanded and its kind of value

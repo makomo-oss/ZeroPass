@@ -3,7 +3,7 @@
 //!
 //! The daemon decides which logins belong to the page whose origin the
 //! extension names (`zp-origin`), and hands out a password only for one login
-//! that does.
+//! that does, in a frame of the same site as the tab's top frame.
 
 use zp_crypto::Password;
 use zp_ipc::proto::{self, ErrorCode, response};
@@ -14,13 +14,24 @@ use zp_vault::model::{Content, Login};
 use crate::convert::{self, bad_request, vault_error};
 use crate::service::Reply;
 
-fn origin(text: &str) -> Result<Origin, proto::Error> {
-    Origin::parse(text).map_err(|error| bad_request(&error.to_string()))
+/// The page to fill: its origin, if it may be filled at all. A frame of
+/// another site than the tab's top frame may not (clickjacking).
+fn page(origin: &str, top: &str) -> Result<Option<Origin>, proto::Error> {
+    let page = Origin::parse(origin).map_err(|error| bad_request(&error.to_string()))?;
+    if !top.is_empty() {
+        let top = Origin::parse(top).map_err(|error| bad_request(&error.to_string()))?;
+        if !page.same_site(&top) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(page))
 }
 
 /// The logins that match the page, best first: exact matches, then by title.
 pub(crate) fn find(vault: &mut Vault, request: &proto::BridgeFind) -> Reply {
-    let page = origin(&request.origin)?;
+    let Some(page) = page(&request.origin, &request.top_origin)? else {
+        return Ok(response::Body::BridgeLogins(proto::BridgeLogins::default()));
+    };
     let mut found: Vec<(Match, proto::BridgeLogin)> = vault
         .list::<Password>()
         .map_err(vault_error)?
@@ -53,7 +64,12 @@ pub(crate) fn find(vault: &mut Vault, request: &proto::BridgeFind) -> Reply {
 
 /// The user name and password of one login, if it belongs to the page.
 pub(crate) fn fill(vault: &mut Vault, request: &proto::BridgeFill) -> Reply {
-    let page = origin(&request.origin)?;
+    let Some(page) = page(&request.origin, &request.top_origin)? else {
+        return Err(proto::Error::new(
+            ErrorCode::Denied,
+            "the page is a frame of another site",
+        ));
+    };
     let id = convert::item_id(&request.item_id)?;
     let login: Login = vault.get(id).map_err(vault_error)?;
     if page

@@ -86,6 +86,9 @@ Assert ($rule[0].Direction -eq 'Inbound' -and $rule[0].Action -eq 'Allow' -and $
 Assert ((($rule[0] | Get-NetFirewallAddressFilter).RemoteAddress) -eq 'LocalSubnet') 'but only from the local subnet'
 $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
+$extensionManifest = Get-Content -LiteralPath (Join-Path $destination 'browser-extension\chrome\manifest.json') -Raw | ConvertFrom-Json
+Assert ($extensionManifest.key -and $extensionManifest.permissions -contains 'nativeMessaging') 'the browser extension is installed, with its fixed identifier'
+Assert (Test-Path (Join-Path $destination 'browser-extension\firefox\manifest.json')) 'the Firefox extension is installed'
 $nativeHostKeys = @(
     'HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts\io.github.makomo_oss.zeropass',
     'HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\io.github.makomo_oss.zeropass',
