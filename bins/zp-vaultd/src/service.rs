@@ -651,6 +651,8 @@ impl Service {
                 done()
             }
             Body::PairOffer(request) => self.pair_offer(state, &request),
+            Body::BridgeFind(request) => crate::bridge::find(self.vault(state)?, &request),
+            Body::BridgeFill(request) => crate::bridge::fill(self.vault(state)?, &request),
             // These start a relay and do not arrive here.
             Body::PairAdmit(_) | Body::PairJoin(_) => {
                 Err(bad_request("this request needs a relay"))

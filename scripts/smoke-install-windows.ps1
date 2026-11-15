@@ -70,7 +70,7 @@ New-NetFirewallRule -DisplayName 'zp-syncd' -Direction Inbound -Action Allow -Pr
 
 # 1. Install.
 & (Join-Path $Package 'install.ps1')
-foreach ($name in 'zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe', 'uninstall.ps1') {
+foreach ($name in 'zeropass.exe', 'zp-cli.exe', 'zp-vaultd.exe', 'zp-syncd.exe', 'zp-keyagent.exe', 'zp-autostart.exe', 'zp-nmh.exe', 'uninstall.ps1') {
     Assert (Test-Path (Join-Path $destination $name)) "$name is installed"
 }
 $run = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run').ZeroPass
@@ -86,6 +86,22 @@ Assert ($rule[0].Direction -eq 'Inbound' -and $rule[0].Action -eq 'Allow' -and $
 Assert ((($rule[0] | Get-NetFirewallAddressFilter).RemoteAddress) -eq 'LocalSubnet') 'but only from the local subnet'
 $entry = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\ZeroPass'
 Assert ($entry.InstallLocation -eq $destination) 'ZeroPass is listed in Installed apps'
+$nativeHostKeys = @(
+    'HKLM:\SOFTWARE\Google\Chrome\NativeMessagingHosts\io.github.makomo_oss.zeropass',
+    'HKLM:\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\io.github.makomo_oss.zeropass',
+    'HKLM:\SOFTWARE\Chromium\NativeMessagingHosts\io.github.makomo_oss.zeropass',
+    'HKLM:\SOFTWARE\Mozilla\NativeMessagingHosts\io.github.makomo_oss.zeropass')
+foreach ($key in $nativeHostKeys) {
+    $manifestPath = (Get-Item -Path $key).GetValue('')
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    Assert ($manifest.path -eq (Join-Path $destination 'zp-nmh.exe') -and $manifest.type -eq 'stdio') "the extension bridge is registered ($key)"
+    # The browsers want a list, even of one: read it as one, whatever
+    # PowerShell makes of a single element.
+    $raw = Get-Content -LiteralPath $manifestPath -Raw
+    Assert ($raw -match '"allowed_(origins|extensions)":\s*\[') "the manifest lists the allowed extensions ($key)"
+    $allowed = @(if ($key -like '*Mozilla*') { $manifest.allowed_extensions } else { $manifest.allowed_origins })
+    Assert ($allowed.Count -eq 1 -and ($allowed[0] -eq 'chrome-extension://gehobienihkbhglhnibeobdkgeinamdn/' -or $allowed[0] -eq 'zeropass@makomo-oss.github.io')) 'it serves the ZeroPass extension only'
+}
 $shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\ZeroPass.lnk'
 Assert ((New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath -eq (Join-Path $destination 'zeropass.exe')) 'the desktop application is in the Start menu'
 $acl = Get-Acl $destination
@@ -194,5 +210,6 @@ $pathAfter = Get-RawPath
 Assert ($pathAfter.Kind -eq $pathBefore.Kind -and $pathAfter.Value -ceq $pathBefore.Value) 'the PATH is exactly as before the installation'
 Assert (@(Get-SyncDaemonRules).Count -eq 0) 'no firewall rule for the sync daemon is left'
 Assert (-not (Test-Path $shortcut)) 'the Start menu entry is gone'
+Assert (-not ($nativeHostKeys | Where-Object { Test-Path $_ })) 'the extension bridge is no longer registered'
 Assert (Test-Path $vault) 'the vault was kept'
 Write-Host 'smoke test passed'

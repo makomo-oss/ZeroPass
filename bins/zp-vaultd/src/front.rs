@@ -470,9 +470,15 @@ fn permitted(role: Role, request: &request::Body) -> bool {
         Role::Sync => {
             matches!(request, request::Body::Status(_)) || crate::sync::is_sync_request(request)
         }
-        // What these roles may ask beyond the state of the vault is defined
-        // together with the components themselves (P4-04, P7-01).
-        Role::Bridge | Role::Broker => matches!(request, request::Body::Status(_)),
+        // The browser extension's bridge: the logins of a page, one at a
+        // time (`docs/spec/extension.md` §4).
+        Role::Bridge => matches!(
+            request,
+            request::Body::Status(_) | request::Body::BridgeFind(_) | request::Body::BridgeFill(_)
+        ),
+        // What this role may ask beyond the state of the vault is defined
+        // together with the agent broker (P7-01).
+        Role::Broker => matches!(request, request::Body::Status(_)),
         // The key agent only answers.
         Role::KeyAgent => matches!(request, request::Body::KeyAgentAttach(_)),
         Role::Unspecified => false,

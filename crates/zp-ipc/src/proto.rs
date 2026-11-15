@@ -147,7 +147,7 @@ pub struct Request {
     /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101"
     )]
     pub body: Option<request::Body>,
 }
@@ -268,6 +268,14 @@ pub mod request {
         /// link. Starts a relay.
         #[prost(message, tag = "83")]
         PairConnect(super::PairConnect),
+        /// Extension bridge: the logins that match a web page
+        /// (`docs/spec/extension.md` §4).
+        #[prost(message, tag = "100")]
+        BridgeFind(super::BridgeFind),
+        /// Extension bridge: the user name and password of one login, for the
+        /// page it matches.
+        #[prost(message, tag = "101")]
+        BridgeFill(super::BridgeFill),
         /// Key agent: offers the platform's hardware key store to the vault
         /// daemon. Starts a relay.
         #[prost(message, tag = "96")]
@@ -838,7 +846,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
     )]
     pub body: Option<response::Body>,
 }
@@ -919,6 +927,12 @@ pub mod response {
         /// pairing code can be shown from here on.
         #[prost(message, tag = "22")]
         Listening(super::Listening),
+        /// Answer to `BridgeFind`.
+        #[prost(message, tag = "24")]
+        BridgeLogins(super::BridgeLogins),
+        /// Answer to `BridgeFill`.
+        #[prost(message, tag = "25")]
+        BridgeCredential(super::BridgeCredential),
         /// Relay of the key agent, downlink: something to ask the platform's
         /// hardware key store.
         #[prost(message, tag = "23")]
@@ -1299,6 +1313,67 @@ pub struct LinkEnded {
     pub reason: String,
 }
 
+// ---------------------------------------------------------------------------
+// Extension bridge (`docs/spec/extension.md` §4)
+// ---------------------------------------------------------------------------
+
+/// The logins that match the web page at `origin`.
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeFind {
+    /// The page's origin, as the browser reports it (`scheme://host[:port]`).
+    #[prost(string, tag = "1")]
+    pub origin: String,
+}
+
+/// The user name and password of one login, to fill into the page at
+/// `origin`, which the login must match.
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeFill {
+    /// The page's origin.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The login (16 bytes).
+    #[prost(bytes = "vec", tag = "2")]
+    pub item_id: Vec<u8>,
+}
+
+/// Answer to [`BridgeFind`]: the best matches first. No secrets.
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeLogins {
+    /// The matching logins.
+    #[prost(message, repeated, tag = "1")]
+    pub logins: Vec<BridgeLogin>,
+}
+
+/// A login that matches a page.
+#[derive(Clone, PartialEq, Message)]
+pub struct BridgeLogin {
+    /// The login (16 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub item_id: Vec<u8>,
+    /// Its title.
+    #[prost(string, tag = "2")]
+    pub title: String,
+    /// Its user name.
+    #[prost(string, tag = "3")]
+    pub username: String,
+    /// Whether it matches the page's host exactly (rather than its site).
+    #[prost(bool, tag = "4")]
+    pub exact: bool,
+}
+
+/// Answer to [`BridgeFill`].
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct BridgeCredential {
+    /// The user name.
+    #[prost(string, tag = "1")]
+    pub username: String,
+    /// The password.
+    #[prost(string, tag = "2")]
+    pub password: String,
+}
+
 redacted_debug!(
     PairJoin,
     PairOffered,
@@ -1311,6 +1386,7 @@ redacted_debug!(
     Login,
     Note,
     TotpCodeReply,
+    BridgeCredential,
     RecoveryKit,
 );
 
@@ -1357,8 +1433,8 @@ mod tests {
 
     #[test]
     fn unknown_requests_decode_to_an_empty_body() {
-        // A request with only a field this version does not define (tag 100).
-        let bytes = [0xA2, 0x06, 0x00];
+        // A request with only a field this version does not define (tag 120).
+        let bytes = [0xC2, 0x07, 0x00];
         assert_eq!(Request::decode(bytes.as_slice()).unwrap().body, None);
     }
 }
