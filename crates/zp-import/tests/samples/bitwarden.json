@@ -1,0 +1,19 @@
+{
+  "encrypted": false,
+  "folders": [],
+  "items": [
+    {
+      "id": "1", "type": 1, "name": "Bank", "notes": "branch 12",
+      "login": {
+        "username": "alice", "password": "bank-pass", "totp": "JBSWY3DPEHPK3PXP",
+        "uris": [{ "match": null, "uri": "https://bank.example.com" }, { "uri": "https://m.bank.example.com" }]
+      }
+    },
+    {
+      "id": "2", "type": 1, "name": "Mail",
+      "login": { "username": "bob", "password": "mail-pass", "totp": "otpauth://totp/Mail:bob?secret=GEZDGNBVGY3TQOJQ&issuer=Mail", "uris": [] }
+    },
+    { "id": "3", "type": 2, "name": "Wi-Fi", "notes": "purple monkey", "secureNote": { "type": 0 } },
+    { "id": "4", "type": 3, "name": "Visa", "card": { "number": "4111111111111111" } }
+  ]
+}

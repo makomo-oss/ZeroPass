@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # Crates that must never reach the network, on every platform.
-OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-origin zp-client zp-vaultd zp-keyagent zp-autostart zp-nmh zp-cli)
+OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-origin zp-import zp-client zp-vaultd zp-keyagent zp-autostart zp-nmh zp-cli)
 
 # Crates that are built for desktop platforms only, and checked for those
 # (docs/adr/0009-desktop-application.md): Tauri depends on an HTTP client on

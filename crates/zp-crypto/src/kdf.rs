@@ -122,7 +122,7 @@ impl KdfParams {
     }
 }
 
-fn argon2id(
+pub(crate) fn argon2id(
     params: &KdfParams,
     password: &[u8],
     salt: &[u8],

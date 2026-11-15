@@ -80,6 +80,34 @@ fn done() -> Reply {
     Ok(response::Body::Done(proto::Done {}))
 }
 
+fn counts(summary: &zp_vault::export::ExportSummary) -> proto::ItemCounts {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    proto::ItemCounts {
+        logins: count(summary.logins),
+        notes: count(summary.notes),
+        totp: count(summary.totp),
+        passkeys: count(summary.passkeys),
+    }
+}
+
+/// An export error as the clients see it.
+fn export_error(error: zp_vault::export::ExportError) -> proto::Error {
+    use zp_vault::export::ExportError;
+    match error {
+        ExportError::WeakPassphrase => {
+            proto::Error::new(ErrorCode::WeakPassword, error.to_string())
+        }
+        ExportError::WrongPassphrase => {
+            proto::Error::new(ErrorCode::WrongPassword, error.to_string())
+        }
+        ExportError::NotAnExport | ExportError::UnsupportedVersion(_) | ExportError::Damaged => {
+            proto::Error::new(ErrorCode::InvalidInput, error.to_string())
+        }
+        ExportError::Vault(error) => vault_error(error),
+        ExportError::Crypto(error) => internal(error.to_string()),
+    }
+}
+
 pub(crate) fn log(message: &str) {
     let _ = writeln!(io::stderr(), "zp-vaultd: {message}");
 }
@@ -570,6 +598,31 @@ impl Service {
         }))
     }
 
+    fn export_vault(&self, state: &mut State, request: &proto::ExportVault) -> Reply {
+        self.whole()?;
+        let params = zp_crypto::KdfParams::calibrate(std::time::Duration::from_millis(500))
+            .map_err(|error| internal(error.to_string()))?;
+        let vault = self.vault(state)?;
+        let (data, summary) = vault
+            .export_encrypted(&request.passphrase, &params)
+            .map_err(export_error)?;
+        Ok(response::Body::Exported(proto::Exported {
+            data,
+            counts: Some(counts(&summary)),
+        }))
+    }
+
+    fn import_export(&self, state: &mut State, request: &proto::ImportExport) -> Reply {
+        self.whole()?;
+        let vault = self.vault(state)?;
+        let summary = vault
+            .import_encrypted(&request.data, &request.passphrase)
+            .map_err(export_error)?;
+        Ok(response::Body::ImportedItems(proto::ImportedItems {
+            counts: Some(counts(&summary)),
+        }))
+    }
+
     fn list_devices(&self, state: &mut State) -> Reply {
         let vault = self.vault(state)?;
         let registry = vault.registry().map_err(vault_error)?;
@@ -654,6 +707,8 @@ impl Service {
                 done()
             }
             Body::CreateRecoveryKit(request) => self.create_recovery_kit(state, request),
+            Body::ExportVault(request) => self.export_vault(state, &request),
+            Body::ImportExport(request) => self.import_export(state, &request),
             Body::ListDevices(_) => self.list_devices(state),
             Body::RevokeDevice(request) => self.revoke_device(state, &request),
             Body::Shutdown(_) => {

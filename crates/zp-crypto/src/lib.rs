@@ -8,6 +8,7 @@ mod device;
 mod domain;
 mod envelope;
 mod error;
+mod export;
 mod hardware;
 mod kdf;
 mod keywrap;
@@ -25,6 +26,7 @@ pub use device::{
 pub use domain::{Domain, DomainId, Passkey, Password, Totp};
 pub use envelope::{ENVELOPE_OVERHEAD, ENVELOPE_VERSION, NONCE_LEN, TAG_LEN};
 pub use error::CryptoError;
+pub use export::ExportKey;
 pub use hardware::{HardwareBound, HardwareKeyError, HardwareKeyStore, InsecureSoftwareKeyStore};
 pub use kdf::{KDF_SALT_LEN, KdfParams, derive_password_kek};
 pub use keywrap::{RecoveryKey, WRAPPED_KEY_LEN};

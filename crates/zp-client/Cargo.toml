@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 thiserror = "2.0.21"
 zp-drive = { version = "0.0.0", path = "../zp-drive" }
+zp-import = { version = "0.0.0", path = "../zp-import" }
 zp-ipc = { version = "0.0.0", path = "../zp-ipc" }
 zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
 zp-sandbox = { version = "0.0.0", path = "../zp-sandbox" }

@@ -16,6 +16,7 @@ mod devices;
 mod error;
 mod generator;
 mod items;
+mod transfer;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -65,6 +66,8 @@ pub(crate) struct AppState {
     pub(crate) startup_report: Option<PathBuf>,
     /// Whether this application has made sure the sync daemon runs.
     pub(crate) sync_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A file read for import, waiting for the user to confirm.
+    pub(crate) pending_import: transfer::PendingImport,
     /// The pairing this device offers, if any.
     pub(crate) pairing: devices::Pairing,
 }
@@ -138,6 +141,7 @@ fn main() {
         startup_report: args.startup_time,
         sync_started: std::sync::Arc::default(),
         pairing: devices::Pairing::default(),
+        pending_import: transfer::PendingImport::default(),
     };
 
     let built = tauri::Builder::default()
@@ -174,6 +178,10 @@ fn main() {
             devices::pair_cancel,
             devices::join_vault,
             devices::default_device_name,
+            transfer::import_choose,
+            transfer::import_confirm,
+            transfer::import_cancel,
+            transfer::export_vault,
         ])
         .setup(|app| {
             let config = app

@@ -1,0 +1,5 @@
+folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+,,login,Bank,branch 12,,0,"https://bank.example.com
+https://m.bank.example.com",alice,bank-pass,JBSWY3DPEHPK3PXP
+,,note,Wi-Fi,purple monkey,,0,,,,
+,,card,Visa,,,0,,,,
