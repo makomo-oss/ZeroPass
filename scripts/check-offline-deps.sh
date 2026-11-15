@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # Crates that must never reach the network.
-OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-vaultd zp-keyagent zp-cli)
+OFFLINE_CRATES=(zp-crypto zp-sync zp-pairing zp-vault zp-drive zp-ipc zp-sandbox zp-vaultd zp-keyagent zp-autostart zp-cli)
 
 # Crates that provide sockets, network protocols or radio access.
 # `mio` covers tokio's net/process/signal features; tokio without them is allowed.

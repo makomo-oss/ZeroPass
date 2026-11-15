@@ -45,6 +45,28 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
 
+  install-windows:
+    name: package + install on a clean machine (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the package (unsigned)
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      # The runner is a fresh machine: install, start at "logon", use and
+      # remove ZeroPass (P3-07). The runner is an administrator, as the
+      # installer needs; what a standard user meets under Program Files is
+      # covered by bins/zp-cli/tests/installed.rs.
+      - name: Install, use and uninstall
+        shell: pwsh
+        run: ./scripts/smoke-install-windows.ps1 -Package (Get-ChildItem target/package -Directory | Select-Object -First 1).FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeropass-windows-unsigned
+          path: target/package/*.zip*
+          retention-days: 7
+
   supply-chain:
     name: cargo-deny + cargo-audit
     runs-on: ubuntu-latest
