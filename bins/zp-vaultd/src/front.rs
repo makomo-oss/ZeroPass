@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use zeroize::Zeroizing;
 use zp_crypto::DomainId;
 use zp_ipc::proto::{self, ErrorCode, Role, new_item, request, response};
 use zp_ipc::{Handler, Peer, PeerProcess, RelayEnd};
@@ -322,7 +323,7 @@ impl Front {
             return Err(vault_error(zp_vault::VaultError::AlreadyExists));
         }
         let mut whole = self.spawner.back(Scope::Whole);
-        let password = request.master_password.clone();
+        let password = Zeroizing::new(request.master_password.clone());
         as_result(whole.call(request::Body::CreateVault(request)))?;
         self.adopt(backs, whole.as_mut(), &password)?;
         self.status(backs)
@@ -333,7 +334,7 @@ impl Front {
         // nothing that is open or unlocked survives it.
         self.lock(backs, None);
         let mut whole = self.spawner.back(Scope::Whole);
-        let password = request.new_master_password.clone();
+        let password = Zeroizing::new(request.new_master_password.clone());
         as_result(whole.call(request::Body::RecoverVault(request)))?;
         self.adopt(backs, whole.as_mut(), &password)?;
         self.status(backs)
@@ -451,7 +452,7 @@ impl Front {
             return Err(vault_error(zp_vault::VaultError::AlreadyExists));
         }
         let mut whole = self.spawner.back(Scope::Whole);
-        let password = join.master_password.clone();
+        let password = Zeroizing::new(join.master_password.clone());
         let reply = as_result(whole.relay(request::Body::PairJoin(join), relay))?;
         self.adopt(&mut backs, whole.as_mut(), &password)?;
         Ok(reply)
