@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { fieldsOf, findLoginFields, isUsernameField } from "./detect";
+import { fieldsOf, findLoginFields, isUsernameField, usernameOf } from "./detect";
 
 // Nothing is laid out in tests: a field counts as visible unless it, or an
 // ancestor, is marked hidden here.
@@ -139,5 +139,48 @@ describe("one-time-code fields", () => {
       false,
       false,
     ]);
+  });
+});
+
+describe("the user name of a sign-in", () => {
+  it("is what was typed", () => {
+    page(`<form><input type="email" id="email" value=" alice@example.test "><input type="password" id="p" value="x"></form>`);
+    const [fields] = findLoginFields(document, visible);
+    expect(usernameOf(fields!)).toBe("alice@example.test");
+  });
+
+  it("is the hidden or read-only one a site keeps when it asks for the password only", () => {
+    page(`
+      <form>
+        <input type="hidden" name="flow" value="password">
+        <input type="hidden" autocomplete="username" value="alice@example.test">
+        <input type="password" id="p" value="x">
+      </form>`);
+    const [hidden] = findLoginFields(document, visible);
+    expect(hidden?.username).toBeNull();
+    expect(usernameOf(hidden!)).toBe("alice@example.test");
+
+    page(`
+      <form>
+        <input type="email" readonly value="bob@example.test">
+        <input type="password" id="p" value="x">
+      </form>`);
+    const [readOnly] = findLoginFields(document, visible);
+    expect(usernameOf(readOnly!)).toBe("bob@example.test");
+
+    page(`
+      <form>
+        <div data-hidden><input type="text" name="username" value="carol"></div>
+        <input type="text" name="nickname" value="not this">
+        <input type="password" id="p" value="x">
+      </form>`);
+    const [oddlyNamed] = findLoginFields(document, visible);
+    expect(usernameOf(oddlyNamed!)).toBe("carol");
+  });
+
+  it("is nothing when the page keeps none", () => {
+    page(`<form><input type="hidden" name="token" value="abc"><input type="password" id="p" value="x"></form>`);
+    const [fields] = findLoginFields(document, visible);
+    expect(usernameOf(fields!)).toBe("");
   });
 });

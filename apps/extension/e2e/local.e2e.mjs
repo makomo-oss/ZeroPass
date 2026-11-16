@@ -51,6 +51,22 @@ const LOGIN_PAGE = `<!doctype html><title>Login</title>
 const OTP_PAGE = `<!doctype html><title>Two-factor</title>
 <form><label>Code <input id="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6"></label><button>Verify</button></form>`;
 
+// A site that remembers who signs in: the password only, the user name kept
+// in a hidden field for password managers.
+const WELCOME_BACK_PAGE = `<!doctype html><title>Welcome back</title>
+<form id="again" action="/done" method="post">
+  <p>Welcome back, new.user@example.test</p>
+  <input type="hidden" autocomplete="username" value="new.user@example.test">
+  <label>Password <input type="password" id="again-password"></label>
+  <button>Sign in</button>
+</form>
+<script>
+  document.getElementById("again").addEventListener("submit", (event) => {
+    event.preventDefault();
+    document.title = "submitted";
+  });
+</script>`;
+
 const TWO_STEP_PAGE = `<!doctype html><title>Step 1</title>
 <form><input type="email" id="identifier" autocomplete="username"><button>Next</button></form>`;
 
@@ -68,6 +84,7 @@ try {
     const pages = {
       "/login": LOGIN_PAGE,
       "/two-step": TWO_STEP_PAGE,
+      "/welcome-back": WELCOME_BACK_PAGE,
       "/otp": OTP_PAGE,
       // A page of one site that frames the login page of another.
       "/framed": framePage(`http://localhost:${port}/login`),
@@ -227,6 +244,50 @@ try {
     const listed = cli(setup.vault, ["list"]);
     expect(listed.includes(`127.0.0.1:${port}`), `the new login is not in the vault:\n${listed}`);
   }, () => shot("save-failed"));
+
+  await step("signing in again with the login just saved offers nothing", async () => {
+    await signIn("new.user@example.test", "a brand new password");
+    await sleep(2500);
+    expect(
+      !(await page.evaluate(() => document.querySelector("zeropass-proposal") !== null)),
+      "a proposal was shown for the login just saved",
+    );
+  }, () => shot("saved-again"));
+
+  await step("the same login typed with other capitals offers nothing", async () => {
+    await signIn("New.User@example.test", "a brand new password");
+    await sleep(2500);
+    expect(
+      !(await page.evaluate(() => document.querySelector("zeropass-proposal") !== null)),
+      "a proposal was shown for the same user name in other capitals",
+    );
+  }, () => shot("capitals"));
+
+  await step("a site that asks for the password only offers nothing for a saved login", async () => {
+    // That page's sign-in is noticed: another password gets an offer...
+    await page.goto(`${site}/welcome-back`);
+    await page.locator("#again-password").fill("not the saved password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForFunction(() => document.querySelector("zeropass-proposal") !== null, null, {
+      timeout: 15_000,
+    });
+    const notNow = await clickClosed(
+      page,
+      "zeropass-proposal",
+      (node) => node.nodeName === "BUTTON" && attribute(node, "class") === undefined,
+    );
+    expect(notNow, "the Not now button was not found");
+    await page.waitForFunction(() => document.querySelector("zeropass-proposal") === null);
+    // ...and the saved one none.
+    await page.goto(`${site}/welcome-back`);
+    await page.locator("#again-password").fill("a brand new password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await sleep(2500);
+    expect(
+      !(await page.evaluate(() => document.querySelector("zeropass-proposal") !== null)),
+      "a proposal was shown on the password-only page",
+    );
+  }, () => shot("welcome-back"));
 
   await step("after signing in with a changed password, ZeroPass offers to update it", async () => {
     await signIn(USER, "a changed password");
