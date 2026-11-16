@@ -48,12 +48,32 @@ fn others_are_built() {
         if dir().file_name().is_some_and(|name| name == "release") {
             cargo.arg("--release");
         }
-        let output = cargo.output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // This build resolves features for three packages, not for the
+        // whole workspace, so it may relink programs that `cargo test
+        // --workspace` has just built. Windows refuses to replace a program
+        // it still holds (a virus scanner, a process that has just ended):
+        // "Access is denied (os error 5)". Then the programs already built
+        // serve, after a few tries.
+        let mut tries = 0;
+        loop {
+            let output = cargo.output().unwrap();
+            if output.status.success() {
+                return;
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let in_use = stderr.contains("(os error 5)");
+            tries += 1;
+            if in_use && tries < 4 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+            let built = ["zp-vaultd", "zp-cli", "zp-keyagent"]
+                .iter()
+                .all(|name| program(name).exists());
+            assert!(in_use && built, "{stderr}");
+            eprintln!("note: the other programs are in use; testing the ones already built");
+            return;
+        }
     });
 }
 
