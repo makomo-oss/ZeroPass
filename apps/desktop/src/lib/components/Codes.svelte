@@ -9,6 +9,7 @@
     type DomainState,
     type Summary,
   } from "../api";
+  import { userActive } from "../activity";
   import { byTitle } from "../search";
   import ConfirmButton from "./ConfirmButton.svelte";
   import CopyButton from "./CopyButton.svelte";
@@ -39,6 +40,14 @@
   let uri = $state("");
   let loginId = $state("");
   let ticker: ReturnType<typeof setInterval> | undefined;
+  /** The codes were put away because nobody was at the window. */
+  let idle = $state(false);
+  /**
+   * How recently the user must have been active for a new code to be
+   * fetched: fetching one is using the TOTP domain, which must be able to
+   * lock itself after a minute without use.
+   */
+  const ACTIVE_MS = 45_000;
 
   let unlocked = $derived(domain?.available === true && domain.unlocked);
 
@@ -106,19 +115,35 @@
       entry.remaining -= 1;
       if (entry.remaining <= 0) {
         entry.remaining = 0;
+        if (!userActive(ACTIVE_MS, Date.now(), document.visibilityState === "visible")) {
+          // Nobody is here: put the codes away and let the domain lock.
+          entries = [];
+          idle = true;
+          return;
+        }
         void refresh(entry);
       }
     }
   }
 
+  function showAgain() {
+    idle = false;
+    void load();
+  }
+
   $effect(() => {
-    if (unlocked) {
+    if (unlocked && !idle) {
       void load();
       ticker = setInterval(tick, 1000);
     } else {
       entries = [];
     }
     return () => clearInterval(ticker);
+  });
+
+  // A domain that locked itself starts afresh when opened again.
+  $effect(() => {
+    if (!unlocked) idle = false;
   });
 
   onDestroy(() => {
@@ -212,7 +237,12 @@
       </form>
     {/if}
 
-    {#if entries.length === 0}
+    {#if idle}
+      <div class="locked card">
+        <p>The codes were put away after a while without activity. They lock after a minute without use.</p>
+        <button class="button primary" onclick={showAgain}>Show one-time codes</button>
+      </div>
+    {:else if entries.length === 0}
       <p class="muted">No one-time codes yet.</p>
     {/if}
     <ul class="list">
