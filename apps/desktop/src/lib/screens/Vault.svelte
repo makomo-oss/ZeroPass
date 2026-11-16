@@ -20,6 +20,7 @@
   import NoteEditor from "../components/NoteEditor.svelte";
   import NoteView from "../components/NoteView.svelte";
   import Settings from "../components/Settings.svelte";
+  import { userActive } from "../activity";
   import { byTitle, filterItems, hostOf } from "../search";
 
   let {
@@ -113,6 +114,8 @@
 
   /** How often the list is read again: other devices change the vault too. */
   const RELOAD_MS = 10_000;
+  /** How recently the user must have been active for a background reload. */
+  const ACTIVE_MS = 60_000;
 
   onMount(() => {
     void load();
@@ -126,7 +129,9 @@
     const timer = setInterval(() => {
       // Not while a form is open: nothing the user types is disturbed, but
       // there is no need either.
-      if (document.visibilityState === "visible" && mode === "view") void load();
+      // Only while the user is here: reading the vault counts as using it,
+      // and an idle window must let the vault lock itself.
+      if (mode === "view" && userActive(ACTIVE_MS, Date.now(), document.visibilityState === "visible")) void load();
     }, RELOAD_MS);
     window.addEventListener("keydown", keys);
     window.addEventListener("focus", onFocus);

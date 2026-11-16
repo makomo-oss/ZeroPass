@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
+  import { watchActivity } from "./lib/activity";
   import { api, domainState, errorMessage, type AppInfo, type Status } from "./lib/api";
   import Splash from "./lib/screens/Splash.svelte";
   import Unlock from "./lib/screens/Unlock.svelte";
@@ -51,6 +52,10 @@
       .then((found) => (info = found))
       .catch(() => {});
     void refresh();
+    // The state of the vault is asked for without using its keys (Status),
+    // so this polling never holds off the auto-lock; what reads items does
+    // so only while the user is active (lib/activity.ts).
+    const stopWatching = watchActivity();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, POLL_MS);
@@ -59,6 +64,7 @@
     return () => {
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      stopWatching();
     };
   });
 
