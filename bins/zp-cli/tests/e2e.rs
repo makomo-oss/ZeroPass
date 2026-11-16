@@ -798,3 +798,27 @@ fn exports_of_other_password_managers_are_imported() {
         "{shown}"
     );
 }
+
+#[test]
+fn init_creates_the_folder_of_a_new_vault() {
+    let mut cli = Cli::new();
+    // A folder that is not there yet, two levels deep.
+    cli.vault = cli
+        ._dir
+        .path()
+        .join("not")
+        .join("there")
+        .join("new.zpvault");
+    let out = cli.ok(&["init"], &[PASSWORD, PASSWORD]);
+    assert!(out.contains("created vault"), "{out}");
+    assert!(cli.vault.exists());
+    // ...and a command for a vault that is not there creates nothing.
+    let missing = cli._dir.path().join("elsewhere").join("none.zpvault");
+    let other = Cli {
+        vault: missing.clone(),
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    let err = other.fails(&["list"], &[]);
+    assert!(err.contains("no vault file"), "{err}");
+    assert!(!missing.parent().unwrap().exists());
+}
