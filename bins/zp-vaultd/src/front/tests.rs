@@ -787,6 +787,48 @@ fn the_bridge_saves_compares_and_updates_logins_of_the_page() {
         .call_as(Role::Bridge, update("https://login.example.com"))
         .unwrap();
     assert!(compare("alice", "second password").same);
+    // The same account, typed with other capitals.
+    let capitals = compare(" Alice ", "second password");
+    assert_eq!(
+        (capitals.item_id.as_slice(), capitals.same),
+        (added.item_id.as_slice(), true)
+    );
+    // A page that asks for the password only (it remembers who signs in):
+    // the login with that password is the one, and nothing is offered.
+    let unnamed = compare("", "second password");
+    assert!(unnamed.same && unnamed.item_id.is_empty());
+    // Another password there: which login changed cannot be told, and no
+    // login is to be overwritten by guessing.
+    let unknown = compare("", "some other password");
+    assert!(unknown.same && unknown.item_id.is_empty());
+    // A page without logins still gets the offer to save.
+    let elsewhere = request::Body::BridgeCompare(proto::BridgeCompare {
+        origin: "https://other.test".into(),
+        top_origin: String::new(),
+        username: String::new(),
+        password: "a password".into(),
+    });
+    let response::Body::BridgeComparison(fresh) = fixture.call_as(Role::Bridge, elsewhere).unwrap()
+    else {
+        panic!("not a comparison");
+    };
+    assert!(!fresh.same && fresh.item_id.is_empty());
+    // A login saved without a user name is found again once the user name
+    // shows.
+    fixture
+        .call_as(
+            Role::Bridge,
+            request::Body::BridgeSave(proto::BridgeSave {
+                origin: "https://login.example.com".into(),
+                top_origin: String::new(),
+                title: String::new(),
+                username: String::new(),
+                password: "unnamed password".into(),
+            }),
+        )
+        .unwrap();
+    assert!(compare("carol", "unnamed password").same);
+    assert!(!compare("carol", "carol password").same);
     // A frame of another site may do none of it.
     let framed = request::Body::BridgeSave(proto::BridgeSave {
         origin: "https://login.example.com".into(),

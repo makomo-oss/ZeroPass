@@ -1484,11 +1484,15 @@ pub struct BridgeCompare {
 /// Answer to [`BridgeCompare`].
 #[derive(Clone, PartialEq, Message)]
 pub struct BridgeComparison {
-    /// The login of the page with that user name (16 bytes); empty if there
-    /// is none.
+    /// The login of the page with that user name (16 bytes), compared
+    /// regardless of case; empty if there is none, or if no user name was
+    /// typed.
     #[prost(bytes = "vec", tag = "1")]
     pub item_id: Vec<u8>,
-    /// Whether that login already has that password.
+    /// Whether there is nothing to offer: a login of the page already has
+    /// that user name and password; or no user name was typed and the page
+    /// has a login with that password, or has logins and it cannot be told
+    /// which one changed.
     #[prost(bool, tag = "2")]
     pub same: bool,
 }

@@ -137,6 +137,31 @@ export function findLoginFields(root: Document | Element, visible: Visible): Log
   return found;
 }
 
+/**
+ * The user name a sign-in is for. A site that remembers who signs in asks
+ * for the password only, and often keeps the user name in a hidden or
+ * read-only field of the form for password managers; that field counts when
+ * the user could not type one. The nearest such field before the password,
+ * with a value; otherwise what was typed (or nothing).
+ */
+export function usernameOf(fields: LoginFields): string {
+  const typed = fields.username?.value.trim() ?? "";
+  if (typed !== "" && fields.username && isUsernameField(fields.username)) return typed;
+  const password = fields.password;
+  if (password) {
+    const kept = inputs(scopeOf(password)).filter(
+      (input) =>
+        input !== password &&
+        input.value.trim() !== "" &&
+        (isUsernameField(input) || (input.type === "hidden" && autocomplete(input).includes("username"))) &&
+        input.compareDocumentPosition(password) & Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    const nearest = kept.at(-1)?.value.trim();
+    if (nearest) return nearest;
+  }
+  return typed;
+}
+
 /** The login fields that `field` belongs to, if it is one. */
 export function fieldsOf(
   field: HTMLInputElement,

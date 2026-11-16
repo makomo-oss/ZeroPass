@@ -7,7 +7,7 @@
 import { browser } from "wxt/browser";
 import { defineContentScript } from "wxt/utils/define-content-script";
 
-import { fieldsOf, findLoginFields, isPasswordField, otpField, type LoginFields } from "../lib/detect";
+import { fieldsOf, findLoginFields, isPasswordField, otpField, usernameOf, type LoginFields } from "../lib/detect";
 import { fillLogin, setValue } from "../lib/fill";
 import { hideProposal, showProposal } from "../lib/proposal";
 import type { Ask, FillAnswer, FindAnswer, Login, Order, Proposal, TotpAnswer } from "../lib/protocol";
@@ -131,7 +131,7 @@ export default defineContentScript({
       const withPassword = forms.find((fields) => fields.password && fields.password.value !== "");
       if (withPassword?.password) {
         lastSubmit = Date.now();
-        const username = withPassword.username?.value ?? "";
+        const username = usernameOf(withPassword);
         void ask<Proposal | null>({ kind: "submitted", username, password: withPassword.password.value }).then(
           (proposal) => {
             if (proposal && isTop) propose(proposal);

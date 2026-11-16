@@ -127,29 +127,48 @@ pub(crate) fn check(
 /// vault (`docs/spec/extension.md` §8).
 pub(crate) fn compare(vault: &mut Vault, request: &proto::BridgeCompare) -> Reply {
     let page = page(&request.origin, &request.top_origin)?.ok_or_else(framed)?;
-    let username = request.username.trim();
-    let mut found: Option<(Vec<u8>, bool)> = None;
+    let username = request.username.trim().to_lowercase();
+    let mut logins = Vec::new();
     for (id, content) in vault.list::<Password>().map_err(vault_error)? {
         let Content::Login(login) = content else {
             continue;
         };
-        if login.username.trim() != username
-            || page
-                .best_match(login.urls.iter().map(String::as_str))
-                .is_none()
+        if page
+            .best_match(login.urls.iter().map(String::as_str))
+            .is_some()
         {
-            continue;
-        }
-        let same = login.password == request.password;
-        // One with the same password settles it.
-        if same || found.is_none() {
-            found = Some((id.as_bytes().to_vec(), same));
-        }
-        if same {
-            break;
+            logins.push((id, login));
         }
     }
-    let (item_id, same) = found.unwrap_or_default();
+    let typed = |login: &Login| login.password == request.password;
+    let (item_id, same) = if username.is_empty() {
+        // The page did not show the user name (a site that remembers who
+        // signs in asks for the password only). A login of the page with
+        // that password is the one. Otherwise there is no telling which
+        // login changed, and only a page without logins gets an offer: to
+        // save it.
+        let known = logins.iter().any(|(_, login)| typed(login));
+        (Vec::new(), known || !logins.is_empty())
+    } else {
+        // User names are compared regardless of case: "Alice" and "alice"
+        // sign in to the same account almost everywhere.
+        let named: Vec<_> = logins
+            .iter()
+            .filter(|(_, login)| login.username.trim().to_lowercase() == username)
+            .collect();
+        if let Some((id, _)) = named.iter().find(|(_, login)| typed(login)) {
+            (id.as_bytes().to_vec(), true)
+        } else if let Some((id, _)) = named.first() {
+            (id.as_bytes().to_vec(), false)
+        } else {
+            // A login saved from a page that did not show the user name is
+            // the same login when it has that password.
+            let unnamed = logins
+                .iter()
+                .any(|(_, login)| login.username.trim().is_empty() && typed(login));
+            (Vec::new(), unnamed)
+        }
+    };
     Ok(response::Body::BridgeComparison(proto::BridgeComparison {
         item_id,
         same,
