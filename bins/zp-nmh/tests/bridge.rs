@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::Once;
 
 use serde_json::{Value, json};
 
@@ -26,27 +27,34 @@ fn program(name: &str) -> PathBuf {
 
 /// `cargo test -p zp-nmh` builds only this package; the daemon and the
 /// client that makes the vault are others.
+///
+/// Once for all the tests of this file, before any of them runs those
+/// programs: the tests run in parallel, and Windows cannot replace a program
+/// that another test is running ("Access is denied").
 fn others_are_built() {
-    let mut cargo = Command::new(env!("CARGO"));
-    cargo.args([
-        "build",
-        "--locked",
-        "-p",
-        "zp-vaultd",
-        "-p",
-        "zp-cli",
-        "-p",
-        "zp-keyagent",
-    ]);
-    if dir().file_name().is_some_and(|name| name == "release") {
-        cargo.arg("--release");
-    }
-    let output = cargo.output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    static BUILT: Once = Once::new();
+    BUILT.call_once(|| {
+        let mut cargo = Command::new(env!("CARGO"));
+        cargo.args([
+            "build",
+            "--locked",
+            "-p",
+            "zp-vaultd",
+            "-p",
+            "zp-cli",
+            "-p",
+            "zp-keyagent",
+        ]);
+        if dir().file_name().is_some_and(|name| name == "release") {
+            cargo.arg("--release");
+        }
+        let output = cargo.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    });
 }
 
 /// Runs `zp-cli` on `vault`; each of `input` answers a prompt.
