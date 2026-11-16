@@ -196,7 +196,8 @@
   <p class="muted small">
     Revoke a lost or retired device. The vault keys are replaced so that it
     cannot read what changes from then on; what it already holds stays
-    readable to it.
+    readable to it. Every part of the vault must be open: Windows Hello asks up
+    to twice, once for your one-time codes and once for your passkeys.
   </p>
 </div>
 

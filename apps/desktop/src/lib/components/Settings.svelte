@@ -108,8 +108,8 @@
         </p>
       {/if}
       <p class="muted small">
-        Every part of the vault must be open: Windows Hello may ask for your
-        one-time codes and your passkeys.
+        Every part of the vault must be open: Windows Hello asks up to twice,
+        once for your one-time codes and once for your passkeys.
       </p>
       <div>
         <button class="button" class:primary={!status.has_recovery_kit} onclick={() => void createKit()} disabled={kitBusy}>

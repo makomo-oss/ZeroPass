@@ -74,8 +74,9 @@
   {#if progress.stage === "idle" || progress.stage === "starting"}
     <h3>Add a device</h3>
     <p class="muted">
-      Preparing a pairing code. Windows Hello may ask: adding a device hands
-      it every part of the vault.
+      Preparing a pairing code. Adding a device hands it every part of the
+      vault, so Windows Hello asks up to twice: once for your one-time codes,
+      once for your passkeys (not for a part that is already open).
     </p>
   {:else if progress.stage === "waiting"}
     <h3>Add a device</h3>

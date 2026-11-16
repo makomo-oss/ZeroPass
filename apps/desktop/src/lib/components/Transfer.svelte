@@ -104,7 +104,9 @@
           <span>Its passphrase</span>
           <input class="input" type="password" autocomplete="off" bind:value={importPassphrase} />
         </label>
-        <p class="muted small">Windows Hello may ask: the export can hold one-time codes and passkeys.</p>
+        <p class="muted small">
+          Windows Hello may ask up to twice, for one-time codes and for passkeys: the export can hold both.
+        </p>
       {:else if preview.kind === "other"}
         <p>
           <strong>{preview.file}</strong> ({preview.format}): {preview.logins} login(s)
@@ -142,7 +144,8 @@
   <p class="muted small">
     Every item of the vault, one-time codes and passkeys included, in one file
     protected by a passphrase you choose now. Keep the passphrase apart from the
-    file: whoever has both can read everything.
+    file: whoever has both can read everything. Windows Hello asks up to
+    twice, once for your one-time codes and once for your passkeys.
   </p>
   <form class="form" onsubmit={exportVault}>
     <label class="field">
