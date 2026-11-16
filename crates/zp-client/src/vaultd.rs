@@ -124,7 +124,16 @@ pub fn connect(vault: &Path, choice: KeyStoreChoice, start: Start) -> Result<Opt
     match start {
         Start::Never => return Ok(None),
         Start::IfVaultExists if !vault.exists() => return Err(VaultError::NotFound.into()),
-        Start::IfVaultExists | Start::Always => {}
+        Start::IfVaultExists => {}
+        // The vault is about to be created: its folder must be there, for
+        // the daemon's sandbox is given access to it.
+        Start::Always => {
+            if let Some(folder) = std::path::absolute(vault)?.parent() {
+                std::fs::create_dir_all(folder).map_err(|error| {
+                    Error::message(format!("cannot create {}: {error}", folder.display()))
+                })?;
+            }
+        }
     }
     start_daemon(vault, choice)?;
     let deadline = Instant::now() + START_TIMEOUT;
