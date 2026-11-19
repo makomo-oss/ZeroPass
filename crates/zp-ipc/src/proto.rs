@@ -135,6 +135,11 @@ pub enum ErrorCode {
     /// Sync data handed in was refused: malformed, not signed by a device of
     /// the vault, or against the rules of the sync protocol.
     SyncRejected = 19,
+    /// A passkey credential listed in `excludeCredentials` already exists for
+    /// this relying party.
+    CredentialExcluded = 20,
+    /// None of the requested passkey signature algorithms are supported.
+    UnsupportedAlgorithm = 21,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,10 +149,10 @@ pub enum ErrorCode {
 /// One request from a client to the daemon.
 #[derive(Clone, PartialEq, Message)]
 pub struct Request {
-    /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
+    /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -254,6 +259,13 @@ pub mod request {
         /// Relay, uplink: the user's answer to `PairConfirmRequest`.
         #[prost(message, tag = "45")]
         PairConfirm(super::PairConfirm),
+        /// Passkey: creates and stores a passkey in the passkey worker
+        /// (`docs/spec/passkey.md` §5).
+        #[prost(message, tag = "64")]
+        PasskeyCreate(super::PasskeyCreate),
+        /// Passkey: lists passkey candidates matching an origin and RP ID.
+        #[prost(message, tag = "65")]
+        PasskeyList(super::PasskeyList),
         /// Makes an encrypted export of the whole vault (`docs/spec/export.md`).
         #[prost(message, tag = "18")]
         ExportVault(super::ExportVault),
@@ -866,7 +878,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
     )]
     pub body: Option<response::Body>,
 }
@@ -953,6 +965,12 @@ pub mod response {
         /// Answer to `ImportExport`.
         #[prost(message, tag = "28")]
         ImportedItems(super::ImportedItems),
+        /// Answer to `PasskeyCreate`.
+        #[prost(message, tag = "29")]
+        PasskeyCreated(super::PasskeyCreated),
+        /// Answer to `PasskeyList`.
+        #[prost(message, tag = "30")]
+        PasskeyCandidates(super::PasskeyCandidates),
         /// Answer to `BridgeFind`.
         #[prost(message, tag = "24")]
         BridgeLogins(super::BridgeLogins),
@@ -1557,6 +1575,122 @@ pub struct ItemCounts {
     /// Passkeys.
     #[prost(uint32, tag = "4")]
     pub passkeys: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Passkey requests and responses (`docs/spec/passkey.md` §5)
+// ---------------------------------------------------------------------------
+
+/// Creates and stores a new passkey in the passkey worker (`VK-K`).
+/// Private key material never leaves the passkey worker.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCreate {
+    /// The page's origin, as the browser reports it (`scheme://host[:port]`).
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame, if the page is framed; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// Requested relying party ID; empty to default to `origin`'s host.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// Relying party display name.
+    #[prost(string, tag = "4")]
+    pub rp_name: String,
+    /// Opaque user handle (1..=64 bytes).
+    #[prost(bytes = "vec", tag = "5")]
+    pub user_handle: Vec<u8>,
+    /// User account name.
+    #[prost(string, tag = "6")]
+    pub user_name: String,
+    /// User display name.
+    #[prost(string, tag = "7")]
+    pub user_display_name: String,
+    /// Preferred COSE algorithms in priority order (`-7` = ES256, `-8` = EdDSA).
+    #[prost(sint32, repeated, tag = "8")]
+    pub algorithms: Vec<i32>,
+    /// Credential IDs that must not already exist for this RP.
+    #[prost(bytes = "vec", repeated, tag = "9")]
+    pub exclude_credential_ids: Vec<Vec<u8>>,
+    /// SHA-256 hash of `clientDataJSON` (32 bytes, optional in P5-02).
+    #[prost(bytes = "vec", tag = "10")]
+    pub client_data_hash: Vec<u8>,
+}
+
+/// Answer to [`PasskeyCreate`]: public key and identifiers only. Never
+/// contains private key material.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCreated {
+    /// Vault item identifier (16 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub item_id: Vec<u8>,
+    /// Generated WebAuthn credential identifier (32 bytes).
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_id: Vec<u8>,
+    /// Public key encoded as SubjectPublicKeyInfo DER.
+    #[prost(bytes = "vec", tag = "3")]
+    pub public_key_spki: Vec<u8>,
+    /// Public key encoded as canonical CBOR COSE_Key.
+    #[prost(bytes = "vec", tag = "4")]
+    pub public_key_cose: Vec<u8>,
+    /// Chosen COSE algorithm (`-7` = ES256, `-8` = EdDSA).
+    #[prost(sint32, tag = "5")]
+    pub cose_algorithm: i32,
+}
+
+/// Lists stored passkeys matching an origin and RP ID.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyList {
+    /// The page's origin (`scheme://host[:port]`).
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// Requested relying party ID; empty to default to `origin`'s host.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// Optional `allowCredentials` filter; empty for discoverable credentials.
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub allow_credential_ids: Vec<Vec<u8>>,
+}
+
+/// Answer to [`PasskeyList`]: public metadata only. Never contains private key
+/// material.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCandidates {
+    /// Matching passkey candidates.
+    #[prost(message, repeated, tag = "1")]
+    pub candidates: Vec<PasskeyCandidate>,
+}
+
+/// One passkey candidate matching a relying party.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCandidate {
+    /// Vault item identifier (16 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub item_id: Vec<u8>,
+    /// WebAuthn credential identifier.
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_id: Vec<u8>,
+    /// Relying party identifier.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// Relying party display name.
+    #[prost(string, tag = "4")]
+    pub rp_name: String,
+    /// Opaque user handle.
+    #[prost(bytes = "vec", tag = "5")]
+    pub user_handle: Vec<u8>,
+    /// User account name.
+    #[prost(string, tag = "6")]
+    pub user_name: String,
+    /// User display name.
+    #[prost(string, tag = "7")]
+    pub user_display_name: String,
+    /// COSE algorithm (`-7` = ES256, `-8` = EdDSA).
+    #[prost(sint32, tag = "8")]
+    pub cose_algorithm: i32,
 }
 
 redacted_debug!(
