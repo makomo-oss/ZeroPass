@@ -277,7 +277,8 @@ docs/    threat-model.md  adr/  spec/
 - **保留（所有者の判断、2026-11-16）**: Windows Hello でパスワードのドメインも開けるようにすること（実機確認の後に所有者から提案）。案: 端末ごとのオプトイン（既定はオフ。オンにするにはマスターパスワード）。Windows へのサインイン後の最初の解錠と、14 日ごとにマスターパスワードを求める。マスターパスワードとこの設定の変更にもマスターパスワードを求める。他の端末には同期しない。代償: その端末では Windows Hello（PIN でも通る）だけでパスワードと TOTP の両方が開き、原則③の独立性が弱まる（G5 と、TPM のある端末での G9 は保たれる）。進めるなら ADR を書き、`crypto.md` §6 のスロット表（ハードウェアのスロットを P にも）と脅威モデル §5.3 を改める。
 
 ### Phase 5: パスキーエンジン（原則④）
-- [ ] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
+- [x] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
+  - 決定: `passkey` クレート群は採用せず、監査済み暗号プリミティブ（`p256`、`ed25519-dalek`、`sha2`）と `ciborium` の上に `zp-passkey` を自作する（[ADR-0010](../docs/adr/0010-passkey-engine.md)）。ライセンス（MIT OR Apache-2.0）と保守状況は問題ないが、`async` 前提、`coset::CoseKey` の `Zeroize` 非対応、依存ツリーと暗号クレート世代の重複、Phase 6 モバイルの `clientDataHash` 直接入力との整合を踏まえて判断。ES256/EdDSA の同期可能パスキー（attestation `none`、`signCount = 0`、UV=生体認証）をスコープとし、仕様初版を `docs/spec/passkey.md` に記録。
 - [ ] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
 - [ ] **P5-03** `zp-passkey`: `makeCredential` / `getAssertion`（authenticatorData、attestation `none`、UV=生体認証、signCount 方針） — WebAuthn 適合テストベクタ（依存: P5-02）
 - [ ] **P5-04** 拡張: `navigator.credentials.create/get` の仲介とデーモン連携 — webauthn.io で登録・認証（依存: P5-03, P4-05）

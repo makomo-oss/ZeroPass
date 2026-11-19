@@ -13,6 +13,7 @@
 | [0007](0007-domain-processes-and-key-agent.md) | 金庫デーモンをドメインごとのプロセスに分け、Windows Hello は鍵エージェントが外から使う | 採用 |
 | [0008](0008-windows-installation.md) | Windows ではマシン全体に（Program Files へ）インストールし、ログオン時は Run キーから起動する | 採用 |
 | [0009](0009-desktop-application.md) | デスクトップアプリは Tauri の埋め込みページだけを表示し、金庫には IPC の UI として接続する | 採用 |
+| [0010](0010-passkey-engine.md) | パスキーエンジンは `passkey` クレート群を使わず、監査済み暗号プリミティブの上に `zp-passkey` として自作する | 採用 |
 
 ## テンプレート
 
