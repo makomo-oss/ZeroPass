@@ -417,8 +417,11 @@ impl Front {
         Ok(worker)
     }
 
-    /// Creates a passkey for the browser extension (`docs/spec/passkey.md` §1, §5).
-    fn bridge_passkey_create(&self, backs: &mut Backs, request: proto::PasskeyCreate) -> Reply {
+    /// Creates a passkey (`docs/spec/passkey.md` §1, §5). Every ceremony sets
+    /// `UV=1` and therefore reverifies the user regardless of caller role
+    /// (also required on platforms where `zp-ipc` assigns `Role::Ui` to
+    /// `zp-nmh`).
+    fn passkey_create(&self, backs: &mut Backs, request: proto::PasskeyCreate) -> Reply {
         // Validate origin, RP ID and hash length before asking the user for biometrics.
         crate::passkey::resolve_rp_id(&request.origin, &request.top_origin, &request.rp_id)?;
         crate::passkey::parse_client_data_hash(&request.client_data_hash)?;
@@ -426,8 +429,9 @@ impl Front {
         as_result(worker.call(request::Body::PasskeyCreate(request)))
     }
 
-    /// Signs a passkey assertion for the browser extension (`docs/spec/passkey.md` §1, §5).
-    fn bridge_passkey_get_assertion(
+    /// Signs a passkey assertion (`docs/spec/passkey.md` §1, §5). Every ceremony
+    /// sets `UV=1` and therefore reverifies the user regardless of caller role.
+    fn passkey_get_assertion(
         &self,
         backs: &mut Backs,
         request: proto::PasskeyGetAssertion,
@@ -438,7 +442,7 @@ impl Front {
         as_result(worker.call(request::Body::PasskeyGetAssertion(request)))
     }
 
-    fn dispatch(&self, backs: &mut Backs, role: Role, request: request::Body) -> Reply {
+    fn dispatch(&self, backs: &mut Backs, request: request::Body) -> Reply {
         use request::Body;
         match request {
             Body::Status(_) => self.status(backs),
@@ -482,27 +486,11 @@ impl Front {
             }
             Body::TotpCode(code) => self.route(backs, DomainId::Totp, Body::TotpCode(code)),
             Body::BridgeTotp(totp) => self.bridge_totp(backs, &totp),
-            Body::PasskeyCreate(create) => {
-                if role == Role::Bridge {
-                    self.bridge_passkey_create(backs, create)
-                } else {
-                    self.route(backs, DomainId::Passkey, Body::PasskeyCreate(create))
-                }
-            }
+            Body::PasskeyCreate(create) => self.passkey_create(backs, create),
             Body::PasskeyList(list) => {
                 self.route(backs, DomainId::Passkey, Body::PasskeyList(list))
             }
-            Body::PasskeyGetAssertion(assertion) => {
-                if role == Role::Bridge {
-                    self.bridge_passkey_get_assertion(backs, assertion)
-                } else {
-                    self.route(
-                        backs,
-                        DomainId::Passkey,
-                        Body::PasskeyGetAssertion(assertion),
-                    )
-                }
-            }
+            Body::PasskeyGetAssertion(assertion) => self.passkey_get_assertion(backs, assertion),
             Body::CreateRecoveryKit(kit) => {
                 if self.engine.has_recovery_kit()? && !kit.replace {
                     return Err(proto::Error::new(
@@ -632,7 +620,7 @@ impl Handler for Front {
             return denied();
         }
         let mut backs = self.backs();
-        self.dispatch(&mut backs, peer.role, request)
+        self.dispatch(&mut backs, request)
             .unwrap_or_else(response::Body::Error)
     }
 

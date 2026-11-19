@@ -1172,4 +1172,48 @@ fn bridge_passkey_create_verifies_the_user_every_time_and_checks_origin() {
         assert_eq!(err.code, ErrorCode::Denied as i32);
     }
     assert_eq!(agent.prompts.load(Ordering::SeqCst), prompts);
+
+    // Role::Ui (used by zp-nmh on platforms without peer-executable
+    // identification, such as macOS) also reverifies the user and unlocks a
+    // locked passkey domain for both PasskeyCreate and PasskeyGetAssertion.
+    fixture
+        .call(request::Body::Lock(proto::Lock {
+            domain: Some(D::Passkey as i32),
+        }))
+        .unwrap();
+    assert!(!fixture.unlocked(D::Passkey));
+    let before_ui = agent.prompts.load(Ordering::SeqCst);
+    let response::Body::PasskeyCreated(ui_created) = fixture
+        .call_as(
+            Role::Ui,
+            make("https://example.com", "", "example.com", b"ui-user"),
+        )
+        .unwrap()
+    else {
+        panic!("expected PasskeyCreated for Role::Ui");
+    };
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), before_ui + 1);
+    fixture
+        .call(request::Body::Lock(proto::Lock {
+            domain: Some(D::Passkey as i32),
+        }))
+        .unwrap();
+    let response::Body::PasskeyAssertion(ui_assertion) = fixture
+        .call_as(
+            Role::Ui,
+            request::Body::PasskeyGetAssertion(proto::PasskeyGetAssertion {
+                origin: "https://example.com".into(),
+                top_origin: String::new(),
+                rp_id: "example.com".into(),
+                client_data_hash: vec![0x55; 32],
+                allow_credential_ids: Vec::new(),
+                credential_id: ui_created.credential_id.clone(),
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected PasskeyAssertion for Role::Ui");
+    };
+    assert_eq!(ui_assertion.credential_id, ui_created.credential_id);
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), before_ui + 2);
 }
