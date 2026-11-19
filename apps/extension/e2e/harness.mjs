@@ -15,19 +15,19 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 
 export const EXTENSION_ID = "gehobienihkbhglhnibeobdkgeinamdn";
-const NATIVE_HOST = "io.github.makomo_oss.zeropass";
+export const NATIVE_HOST = "io.github.makomo_oss.zeropass";
 export const PASSWORD = "correct horse battery staple";
 
 const root = resolve(import.meta.dirname, "..", "..", "..");
 const profile = process.argv.includes("--release") ? "release" : "debug";
-const bin = (name) => join(root, "target", profile, `${name}.exe`);
+export const bin = (name) => join(root, "target", profile, `${name}.exe`);
 export const extensionDir = join(root, "apps", "extension", ".output", "chrome-mv3");
 
 /**
  * Where the test browser looks for native messaging hosts, per user: the
  * Chromium of Playwright reads one of these, depending on its build.
  */
-const HOST_KEYS = [
+export const HOST_KEYS = [
   `HKCU\\Software\\Chromium\\NativeMessagingHosts\\${NATIVE_HOST}`,
   `HKCU\\Software\\Google\\Chrome for Testing\\NativeMessagingHosts\\${NATIVE_HOST}`,
 ];
@@ -64,7 +64,7 @@ export function failed(error) {
 }
 
 /** This process's environment, without a vault named by it. */
-function withoutVault() {
+export function withoutVault() {
   const env = { ...process.env };
   delete env.ZEROPASS_VAULT;
   return env;

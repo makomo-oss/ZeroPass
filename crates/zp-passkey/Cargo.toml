@@ -25,3 +25,4 @@ zp-vault = { version = "0.0.0", path = "../zp-vault" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+zp-sync = { version = "0.0.0", path = "../zp-sync" }
