@@ -92,6 +92,48 @@ pub(crate) enum Request {
         item: String,
         password: Secret,
     },
+    /// Creates and stores a WebAuthn passkey; Windows Hello asks.
+    PasskeyCreate {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        rp_id: String,
+        #[serde(default)]
+        rp_name: String,
+        user_handle: String,
+        #[serde(default)]
+        user_name: String,
+        #[serde(default)]
+        user_display_name: String,
+        algorithms: Vec<i32>,
+        #[serde(default)]
+        exclude_credential_ids: Vec<String>,
+        client_data_hash: String,
+    },
+    /// Lists passkeys matching an origin and RP ID (no prompt; `Locked` if locked).
+    PasskeyList {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        rp_id: String,
+        #[serde(default)]
+        allow_credential_ids: Vec<String>,
+    },
+    /// Signs a WebAuthn assertion; Windows Hello asks.
+    PasskeyGet {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        rp_id: String,
+        client_data_hash: String,
+        #[serde(default)]
+        allow_credential_ids: Vec<String>,
+        #[serde(default)]
+        credential_id: String,
+    },
     /// Start the desktop application.
     OpenApp,
 }
@@ -113,6 +155,19 @@ pub(crate) struct Login {
     pub(crate) r#match: &'static str,
 }
 
+/// A passkey matching a page. No private key.
+#[derive(Serialize)]
+pub(crate) struct PasskeyCandidate {
+    pub(crate) id: String,
+    pub(crate) credential_id: String,
+    pub(crate) rp_id: String,
+    pub(crate) rp_name: String,
+    pub(crate) user_handle: String,
+    pub(crate) user_name: String,
+    pub(crate) user_display_name: String,
+    pub(crate) cose_algorithm: i32,
+}
+
 /// What the bridge answers.
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -122,6 +177,7 @@ pub(crate) enum Answer {
         running: bool,
         unlocked: bool,
         totp: bool,
+        passkey: bool,
     },
     Logins {
         logins: Vec<Login>,
@@ -143,6 +199,25 @@ pub(crate) enum Answer {
     },
     Saved {
         item: String,
+    },
+    PasskeyCreated {
+        item: String,
+        credential_id: String,
+        public_key_spki: String,
+        public_key_cose: String,
+        cose_algorithm: i32,
+        authenticator_data: String,
+        attestation_object: String,
+    },
+    PasskeyCandidates {
+        candidates: Vec<PasskeyCandidate>,
+    },
+    PasskeyAssertion {
+        item: String,
+        credential_id: String,
+        user_handle: String,
+        authenticator_data: String,
+        signature: String,
     },
     Done {},
 }

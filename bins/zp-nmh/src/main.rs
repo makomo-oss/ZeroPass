@@ -92,6 +92,106 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn b64url_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
+    for chunk in bytes.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 {
+            u32::from(chunk[1])
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            u32::from(chunk[2])
+        } else {
+            0
+        };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3F) as usize] as char);
+        }
+    }
+    out
+}
+
+fn b64url_decode(text: &str) -> Result<Vec<u8>, Failure> {
+    let invalid = || Failure::new("BadRequest", "malformed base64url field");
+    let bytes = text.as_bytes();
+    if bytes.len() % 4 == 1 {
+        return Err(invalid());
+    }
+    let val = |b: u8| -> Result<u32, Failure> {
+        match b {
+            b'A'..=b'Z' => Ok(u32::from(b - b'A')),
+            b'a'..=b'z' => Ok(u32::from(b - b'a' + 26)),
+            b'0'..=b'9' => Ok(u32::from(b - b'0' + 52)),
+            b'-' => Ok(62),
+            b'_' => Ok(63),
+            _ => Err(invalid()),
+        }
+    };
+    let mut out = Vec::with_capacity((bytes.len() * 3) / 4);
+    for chunk in bytes.chunks(4) {
+        let v0 = val(chunk[0])?;
+        let v1 = val(chunk[1])?;
+        match chunk.len() {
+            2 => {
+                if (v1 & 0x0F) != 0 {
+                    return Err(invalid());
+                }
+                out.push(((v0 << 2) | (v1 >> 4)) as u8);
+            }
+            3 => {
+                let v2 = val(chunk[2])?;
+                if (v2 & 0x03) != 0 {
+                    return Err(invalid());
+                }
+                out.push(((v0 << 2) | (v1 >> 4)) as u8);
+                out.push((((v1 & 0x0F) << 4) | (v2 >> 2)) as u8);
+            }
+            4 => {
+                let v2 = val(chunk[2])?;
+                let v3 = val(chunk[3])?;
+                out.push(((v0 << 2) | (v1 >> 4)) as u8);
+                out.push((((v1 & 0x0F) << 4) | (v2 >> 2)) as u8);
+                out.push((((v2 & 0x03) << 6) | v3) as u8);
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(out)
+}
+
+fn b64url_list(items: &[String]) -> Result<Vec<Vec<u8>>, Failure> {
+    items.iter().map(|s| b64url_decode(s)).collect()
+}
+
+fn passkey_candidates(list: proto::PasskeyCandidates) -> Answer {
+    Answer::PasskeyCandidates {
+        candidates: list
+            .candidates
+            .into_iter()
+            .take(MAX_LOGINS)
+            .map(|c| message::PasskeyCandidate {
+                id: hex(&c.item_id),
+                credential_id: b64url_encode(&c.credential_id),
+                rp_id: c.rp_id,
+                rp_name: c.rp_name,
+                user_handle: b64url_encode(&c.user_handle),
+                user_name: c.user_name,
+                user_display_name: c.user_display_name,
+                cose_algorithm: c.cose_algorithm,
+            })
+            .collect(),
+    }
+}
+
 fn parse_id(text: &str) -> Result<Vec<u8>, Failure> {
     let invalid = || Failure::new("BadRequest", "an item identifier is 32 hexadecimal digits");
     if text.len() != 32 || !text.is_ascii() {
@@ -112,6 +212,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                     running: false,
                     unlocked: false,
                     totp: false,
+                    passkey: false,
                 });
             }
             let status = match daemon.call(request::Body::Status(proto::Status {})) {
@@ -123,6 +224,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                         running: false,
                         unlocked: false,
                         totp: false,
+                        passkey: false,
                     });
                 }
                 Err(failure) => return Err(failure),
@@ -140,6 +242,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 running: true,
                 unlocked: state(proto::Domain::Password).unlocked,
                 totp: state(proto::Domain::Totp).available,
+                passkey: state(proto::Domain::Passkey).available,
             })
         }
         Request::Find { origin, top } => {
@@ -251,6 +354,105 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
             };
             match daemon.call(request::Body::BridgeUpdate(update))? {
                 response::Body::Done(_) => Ok(Answer::Done {}),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::PasskeyCreate {
+            origin,
+            top,
+            rp_id,
+            rp_name,
+            user_handle,
+            user_name,
+            user_display_name,
+            algorithms,
+            exclude_credential_ids,
+            client_data_hash,
+        } => {
+            let user_handle = b64url_decode(&user_handle)?;
+            let exclude_credential_ids = b64url_list(&exclude_credential_ids)?;
+            let client_data_hash = b64url_decode(&client_data_hash)?;
+            // Windows Hello verifies the user for every passkey creation.
+            let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
+                .map_err(|error| Failure::from_client(&error))?;
+            let create = proto::PasskeyCreate {
+                origin,
+                top_origin: top,
+                rp_id,
+                rp_name,
+                user_handle,
+                user_name,
+                user_display_name,
+                algorithms,
+                exclude_credential_ids,
+                client_data_hash,
+            };
+            match daemon.call(request::Body::PasskeyCreate(create))? {
+                response::Body::PasskeyCreated(created) => Ok(Answer::PasskeyCreated {
+                    item: hex(&created.item_id),
+                    credential_id: b64url_encode(&created.credential_id),
+                    public_key_spki: b64url_encode(&created.public_key_spki),
+                    public_key_cose: b64url_encode(&created.public_key_cose),
+                    cose_algorithm: created.cose_algorithm,
+                    authenticator_data: b64url_encode(&created.authenticator_data),
+                    attestation_object: b64url_encode(&created.attestation_object),
+                }),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::PasskeyList {
+            origin,
+            top,
+            rp_id,
+            allow_credential_ids,
+        } => {
+            let allow_credential_ids = b64url_list(&allow_credential_ids)?;
+            let list = proto::PasskeyList {
+                origin,
+                top_origin: top,
+                rp_id,
+                allow_credential_ids,
+            };
+            match daemon.call(request::Body::PasskeyList(list))? {
+                response::Body::PasskeyCandidates(candidates) => Ok(passkey_candidates(candidates)),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::PasskeyGet {
+            origin,
+            top,
+            rp_id,
+            client_data_hash,
+            allow_credential_ids,
+            credential_id,
+        } => {
+            let client_data_hash = b64url_decode(&client_data_hash)?;
+            let allow_credential_ids = b64url_list(&allow_credential_ids)?;
+            let credential_id = if credential_id.is_empty() {
+                Vec::new()
+            } else {
+                b64url_decode(&credential_id)?
+            };
+            // Windows Hello verifies the user for every passkey assertion.
+            let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
+                .map_err(|error| Failure::from_client(&error))?;
+            let get = proto::PasskeyGetAssertion {
+                origin,
+                top_origin: top,
+                rp_id,
+                client_data_hash,
+                allow_credential_ids,
+                credential_id,
+            };
+            match daemon.call(request::Body::PasskeyGetAssertion(get))? {
+                response::Body::PasskeyAssertion(assertion) => Ok(Answer::PasskeyAssertion {
+                    item: hex(&assertion.item_id),
+                    credential_id: b64url_encode(&assertion.credential_id),
+                    user_handle: b64url_encode(&assertion.user_handle),
+                    authenticator_data: b64url_encode(&assertion.authenticator_data),
+                    signature: b64url_encode(&assertion.signature),
+                }),
+                response::Body::PasskeyCandidates(candidates) => Ok(passkey_candidates(candidates)),
                 _ => Err(unexpected()),
             }
         }
@@ -375,5 +577,22 @@ mod tests {
         assert!(parse_id("").is_err());
         assert!(parse_id(&"g".repeat(32)).is_err());
         assert!(parse_id(&"é".repeat(16)).is_err());
+    }
+
+    #[test]
+    fn base64url_round_trips_and_rejects_malformed() {
+        for bytes in [
+            &[][..],
+            &[0][..],
+            &[0xfb, 0xff][..],
+            &[0xfb, 0xff, 0xfe][..],
+            b"hello passkey world",
+        ] {
+            let encoded = b64url_encode(bytes);
+            assert_eq!(b64url_decode(&encoded).unwrap(), bytes);
+        }
+        for bad in ["a", "abc=", "ab+c", "ab/c", "Zh"] {
+            assert!(b64url_decode(bad).is_err(), "{bad:?}");
+        }
     }
 }
