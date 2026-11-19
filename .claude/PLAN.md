@@ -277,6 +277,7 @@ docs/    threat-model.md  adr/  spec/
 - **保留（所有者の判断、2026-11-16）**: Windows Hello でパスワードのドメインも開けるようにすること（実機確認の後に所有者から提案）。案: 端末ごとのオプトイン（既定はオフ。オンにするにはマスターパスワード）。Windows へのサインイン後の最初の解錠と、14 日ごとにマスターパスワードを求める。マスターパスワードとこの設定の変更にもマスターパスワードを求める。他の端末には同期しない。代償: その端末では Windows Hello（PIN でも通る）だけでパスワードと TOTP の両方が開き、原則③の独立性が弱まる（G5 と、TPM のある端末での G9 は保たれる）。進めるなら ADR を書き、`crypto.md` §6 のスロット表（ハードウェアのスロットを P にも）と脅威モデル §5.3 を改める。
 
 ### Phase 5: パスキーエンジン（原則④）
+> 2026-11-19: 全タスク完了（実装と自動テスト）。完了条件「`webauthn.io` で登録・認証、端末間同期」は、Playwright Chromium + 実バイナリ（`zp-vaultd` サンドボックス・`zp-syncd` LAN 同期・`zp-nmh`・開発版拡張・ソフトウェア鍵ストア）で、単体端末の `https://webauthn.io/` 登録・認証・施錠後再認証（`e2e/webauthn.e2e.mjs`）と、PC 2 台相当（2 金庫・2 ブラウザ）での PC A `https://webauthn.io/` 登録 → LAN ペアリング・暗号文同期 → PC B 施錠状態から `https://webauthn.io/` 認証（`e2e/passkey-sync.e2e.mjs --webauthn-io`）が通ることを確認。**未確認（実機で確かめること）**: 利用者自身のブラウザ + Windows Hello 保護金庫で `webauthn.io` 登録・認証時に Windows Hello 確認画面が前面に出ること、および物理 PC 2 台間での実機パスキー同期。Android での認証は計画どおり Phase 6（P6-05）で確認。
 - [x] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
   - 決定: `passkey` クレート群は採用せず、監査済み暗号プリミティブ（`p256`、`ed25519-dalek`、`sha2`）と `ciborium` の上に `zp-passkey` を自作する（[ADR-0010](../docs/adr/0010-passkey-engine.md)）。ライセンス（MIT OR Apache-2.0）と保守状況は問題ないが、`async` 前提、`coset::CoseKey` の `Zeroize` 非対応、依存ツリーと暗号クレート世代の重複、Phase 6 モバイルの `clientDataHash` 直接入力との整合を踏まえて判断。ES256/EdDSA の同期可能パスキー（attestation `none`、`signCount = 0`、UV=生体認証）をスコープとし、仕様初版を `docs/spec/passkey.md` に記録。
 - [x] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
@@ -289,7 +290,12 @@ docs/    threat-model.md  adr/  spec/
   - 実装: `zp-nmh` に `passkey_create` / `passkey_list` / `passkey_get`（base64url、登録・認証時は鍵エージェントを起動）を追加。拡張に `passkey-main.content.ts`（`MAIN` world、`document_start`、`navigator.credentials.create/get` 仲介、`PublicKeyCredential` + `toJSON()` / `getPublicKey()` / `getAuthenticatorData()` / `getTransports()` 互換、`mediation === "conditional"` および非対象時はブラウザ認証器へフォールバック）、`passkey.content.ts`（`ISOLATED` world、閉じた Shadow DOM の確認・アカウント選択モーダル `passkey-prompt.ts`、`isTrusted` クリックのみ受付）、`background.ts`（`sender` 由来オリジンで `clientDataJSON` と `SHA-256` を生成してブリッジへ中継）を追加。権限は `nativeMessaging` のまま増加なし。
   - 確認: `bins/zp-nmh/tests/bridge.rs`（実デーモン・実ブリッジで登録・一覧・単一/複数認証・除外・クロスオリジン拒否）、拡張単体テスト（`passkey-codec.test.ts`、21 件）、Chrome MV3・Firefox MV2 両ビルド、`apps/extension/e2e/local.e2e.mjs`（ローカル WebAuthn 登録・Node `crypto.verify` での P-256 署名検証・施錠状態からの 1 ステップ認証・`SecurityError`/`InvalidStateError`/`NotAllowedError`・閉じた Shadow DOM 隔離）、および **`apps/extension/e2e/webauthn.e2e.mjs`（実サイト `https://webauthn.io/` での登録・認証・施錠後再認証がすべて通過）**。
   - **未確認（実機で確かめること）**: 利用者自身のブラウザ + Windows Hello 保護金庫で `webauthn.io` の登録・認証時に Windows Hello 確認画面が前面に出ること（自動 E2E はソフトウェア鍵ストアで検証）。
-- [ ] **P5-05** パスキーの端末間同期の検証（PC で登録 → Android で認証は P6 で確認、ここでは PC 2 台） （依存: P5-04）
+- [x] **P5-05** パスキーの端末間同期の検証（PC で登録 → Android で認証は P6 で確認、ここでは PC 2 台） （依存: P5-04）
+  - 確認（CI 常時実行）: `crates/zp-passkey/tests/sync.rs`（3 ケース）を追加。端末 A で ES256 / EdDSA パスキーを登録 → 端末 B が独自のマスターパスワードとハードウェア鍵ストアで参加（`Vault::grant` / `Vault::join`）→ 全ドメイン施錠のまま暗号文 op 同期 → 端末 B で Passkey ドメインのみ解錠して両アルゴリズムで署名し端末 A の登録公開鍵で検証、逆方向登録・同一 `(rp_id, user_handle)` 上書き置換後の旧クレデンシャル拒否、端末失効による VK-K ローテーション後の暗号文復号不可（`KeyGenerationUnavailable`）と残存端末の継続署名、復旧キット復元後の署名継続を確認。
+  - 確認（実バイナリ・LAN・2 ブラウザ E2E）: `apps/extension/e2e/passkey-sync.e2e.mjs` を追加。独立した 2 金庫（PC A / PC B）・実 `zp-vaultd`（サンドボックス）・実 `zp-syncd`（LAN mDNS + TCP + Noise）・実 `zp-nmh`・2 つの Chromium インスタンスで以下を確認（2026-11-19）:
+    1. ローカル RP モード: PC A でパスキー登録 → LAN ペアリング＋初回同期 → 施錠状態の PC B で認証・Node `crypto.verify` で P-256 署名検証 → PC B で別パスキー登録 → LAN `zp-cli sync` → PC A で認証・署名検証（全 4 ステップ通過）。
+    2. 実サイトモード（`--webauthn-io`）: PC A で `https://webauthn.io/` に登録 → LAN ペアリング＋同期 → 施錠状態の PC B で `https://webauthn.io/` にログイン成功（全 3 ステップ通過）。
+  - **未確認（実機で確かめること）**: 物理 PC 2 台 + Windows Hello 保護金庫＋インストール版拡張での `webauthn.io` 登録・同期・認証（自動 E2E は同一 PC 上の 2 金庫・ソフトウェア鍵ストアで検証）。Android での認証は P6-05 で確認。
 
 ### Phase 6: モバイル
 - [ ] **P6-01** `zp-ffi`: UniFFI で公開 API を確定（モバイルは単一プロセス内でコアを動かし、Android は `isolatedProcess` サービスに金庫を分離）（依存: G-01）
