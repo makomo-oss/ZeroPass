@@ -279,7 +279,9 @@ docs/    threat-model.md  adr/  spec/
 ### Phase 5: パスキーエンジン（原則④）
 - [x] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
   - 決定: `passkey` クレート群は採用せず、監査済み暗号プリミティブ（`p256`、`ed25519-dalek`、`sha2`）と `ciborium` の上に `zp-passkey` を自作する（[ADR-0010](../docs/adr/0010-passkey-engine.md)）。ライセンス（MIT OR Apache-2.0）と保守状況は問題ないが、`async` 前提、`coset::CoseKey` の `Zeroize` 非対応、依存ツリーと暗号クレート世代の重複、Phase 6 モバイルの `clientDataHash` 直接入力との整合を踏まえて判断。ES256/EdDSA の同期可能パスキー（attestation `none`、`signCount = 0`、UV=生体認証）をスコープとし、仕様初版を `docs/spec/passkey.md` に記録。
-- [ ] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
+- [x] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
+  - 実装: `zp-origin` に WebAuthn オリジン・RP ID 検証（`https` またはループバック `http`、公開サフィックス拒否、サブドメイン一致）を追加。`zp-passkey` に ES256（`p256`）/ EdDSA（`ed25519-dalek`）鍵生成（OS CSPRNG、PKCS #8 DER、`ZeroizeOnDrop`）、CTAP2 正準 CBOR の COSE 公開鍵・SPKI 公開鍵出力、VK-K ドメイン保管（`excludeCredentials` 検査・同一 `(rp_id, user_handle)` 置換・`allowCredentials` 検索）を実装し、`scripts/check-offline-deps.sh` の検査対象に追加。`zp-ipc`（要求 64〜65 `PasskeyCreate`/`PasskeyList`、応答 29〜30）と `zp-vaultd`（パスキーワーカーへ転送、拡張ブリッジからの作成は毎回生体認証で再解錠）を接続。
+  - 確認: `zp-origin` / `zp-passkey` / `zp-vaultd` の単体・統合テスト、および `bins/zp-cli/tests/isolation.rs`（実デーモンのプロセスメモリを走査し、フロント・TOTP ワーカーに VK-K とパスキー秘密鍵がなく、パスキーワーカーのみが VK-K を持ち、施錠後にどのプロセスにも残らないことを 5 回連続で確認）。作業中に `prost::encoding::bytes::merge` の一時 `Bytes` 確保で秘密バイトがヒープ残留する問題を発見し、`zp-vault::model` のデコードを直接コピーに修正。
 - [ ] **P5-03** `zp-passkey`: `makeCredential` / `getAssertion`（authenticatorData、attestation `none`、UV=生体認証、signCount 方針） — WebAuthn 適合テストベクタ（依存: P5-02）
 - [ ] **P5-04** 拡張: `navigator.credentials.create/get` の仲介とデーモン連携 — webauthn.io で登録・認証（依存: P5-03, P4-05）
 - [ ] **P5-05** パスキーの端末間同期の検証（PC で登録 → Android で認証は P6 で確認、ここでは PC 2 台） （依存: P5-04）

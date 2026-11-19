@@ -391,7 +391,33 @@ impl Front {
         ))
     }
 
-    fn dispatch(&self, backs: &mut Backs, request: request::Body) -> Reply {
+    /// Creates a passkey for the browser extension (`docs/spec/passkey.md` §1, §5).
+    /// The user is verified anew for every creation: the passkey domain is locked
+    /// and unlocked through the hardware key store even if it was already open.
+    fn bridge_passkey_create(&self, backs: &mut Backs, request: proto::PasskeyCreate) -> Reply {
+        // Validate origin and RP ID before asking the user for biometrics.
+        crate::passkey::resolve_rp_id(&request.origin, &request.top_origin, &request.rp_id)?;
+        if !self.engine.has_domain(DomainId::Passkey)? {
+            return Err(proto::Error::about(
+                ErrorCode::DomainUnavailable,
+                proto::Domain::Passkey,
+                "this vault keeps no passkeys",
+            ));
+        }
+        let Some(worker) = backs.worker(DomainId::Passkey) else {
+            return Err(bad_request("no passkey worker"));
+        };
+        if worker.unlocked(DomainId::Passkey) {
+            as_result(worker.call(request::Body::Lock(proto::Lock { domain: None })))?;
+        }
+        as_result(worker.call(request::Body::Unlock(proto::Unlock {
+            domain: proto::Domain::Passkey as i32,
+            master_password: String::new(),
+        })))?;
+        as_result(worker.call(request::Body::PasskeyCreate(request)))
+    }
+
+    fn dispatch(&self, backs: &mut Backs, role: Role, request: request::Body) -> Reply {
         use request::Body;
         match request {
             Body::Status(_) => self.status(backs),
@@ -435,6 +461,16 @@ impl Front {
             }
             Body::TotpCode(code) => self.route(backs, DomainId::Totp, Body::TotpCode(code)),
             Body::BridgeTotp(totp) => self.bridge_totp(backs, &totp),
+            Body::PasskeyCreate(create) => {
+                if role == Role::Bridge {
+                    self.bridge_passkey_create(backs, create)
+                } else {
+                    self.route(backs, DomainId::Passkey, Body::PasskeyCreate(create))
+                }
+            }
+            Body::PasskeyList(list) => {
+                self.route(backs, DomainId::Passkey, Body::PasskeyList(list))
+            }
             Body::CreateRecoveryKit(kit) => {
                 if self.engine.has_recovery_kit()? && !kit.replace {
                     return Err(proto::Error::new(
@@ -538,6 +574,8 @@ fn permitted(role: Role, request: &request::Body) -> bool {
                 | request::Body::BridgeSave(_)
                 | request::Body::BridgeUpdate(_)
                 | request::Body::BridgeCompare(_)
+                | request::Body::PasskeyCreate(_)
+                | request::Body::PasskeyList(_)
         ),
         // What this role may ask beyond the state of the vault is defined
         // together with the agent broker (P7-01).
@@ -561,7 +599,7 @@ impl Handler for Front {
             return denied();
         }
         let mut backs = self.backs();
-        self.dispatch(&mut backs, request)
+        self.dispatch(&mut backs, peer.role, request)
             .unwrap_or_else(response::Body::Error)
     }
 

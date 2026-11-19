@@ -289,13 +289,168 @@ impl Content {
     /// Parses decrypted content and checks that its kind belongs to `domain`, the
     /// domain of the row it was stored in.
     pub fn from_plaintext(plaintext: &[u8], domain: DomainId) -> Result<Self, VaultError> {
-        let mut record = ItemRecord::decode(plaintext).map_err(|_| VaultError::MalformedItem)?;
-        let content = record.content.take().ok_or(VaultError::MalformedItem)?;
+        // Decode `ItemRecord` directly so `bytes` fields (`TotpEntry.secret`,
+        // `PasskeyCredential.private_key`) are copied straight into their
+        // `ZeroizeOnDrop` `Vec<u8>` without `prost::encoding::bytes::merge`'s
+        // intermediate unzeroized `bytes::Bytes` allocation.
+        let content = decode_item_record(plaintext)?;
         if content.kind().domain() != domain {
             return Err(VaultError::MalformedItem);
         }
         Ok(content)
     }
+}
+
+/// Decodes a length-delimited byte slice from a protobuf buffer without
+/// allocating an intermediate `bytes::Bytes`.
+fn read_len_delimited<'a>(
+    wire_type: prost::encoding::WireType,
+    buf: &mut &'a [u8],
+) -> Result<&'a [u8], VaultError> {
+    if wire_type != prost::encoding::WireType::LengthDelimited {
+        return Err(VaultError::MalformedItem);
+    }
+    let len = prost::encoding::decode_varint(buf).map_err(|_| VaultError::MalformedItem)?;
+    let len = usize::try_from(len).map_err(|_| VaultError::MalformedItem)?;
+    if len > buf.len() {
+        return Err(VaultError::MalformedItem);
+    }
+    let (head, tail) = buf.split_at(len);
+    *buf = tail;
+    Ok(head)
+}
+
+fn replace_bytes(dst: &mut Vec<u8>, src: &[u8]) {
+    dst.zeroize();
+    dst.clear();
+    dst.reserve_exact(src.len());
+    dst.extend_from_slice(src);
+}
+
+fn replace_string(dst: &mut String, src: &[u8]) -> Result<(), VaultError> {
+    let text = core::str::from_utf8(src).map_err(|_| VaultError::MalformedItem)?;
+    dst.zeroize();
+    dst.clear();
+    dst.reserve_exact(text.len());
+    dst.push_str(text);
+    Ok(())
+}
+
+fn decode_item_record(mut buf: &[u8]) -> Result<Content, VaultError> {
+    let ctx = prost::encoding::DecodeContext::default();
+    let mut content: Option<Content> = None;
+    while !buf.is_empty() {
+        let (tag, wire_type) =
+            prost::encoding::decode_key(&mut buf).map_err(|_| VaultError::MalformedItem)?;
+        match tag {
+            1 => {
+                let slice = read_len_delimited(wire_type, &mut buf)?;
+                let mut login = match content.take() {
+                    Some(Content::Login(existing)) => existing,
+                    _ => Login::default(),
+                };
+                login.merge(slice).map_err(|_| VaultError::MalformedItem)?;
+                content = Some(Content::Login(login));
+            }
+            2 => {
+                let slice = read_len_delimited(wire_type, &mut buf)?;
+                let mut note = match content.take() {
+                    Some(Content::SecureNote(existing)) => existing,
+                    _ => SecureNote::default(),
+                };
+                note.merge(slice).map_err(|_| VaultError::MalformedItem)?;
+                content = Some(Content::SecureNote(note));
+            }
+            3 => {
+                let slice = read_len_delimited(wire_type, &mut buf)?;
+                let mut totp = match content.take() {
+                    Some(Content::Totp(existing)) => existing,
+                    _ => TotpEntry::default(),
+                };
+                merge_totp(&mut totp, slice)?;
+                content = Some(Content::Totp(totp));
+            }
+            4 => {
+                let slice = read_len_delimited(wire_type, &mut buf)?;
+                let mut passkey = match content.take() {
+                    Some(Content::Passkey(existing)) => existing,
+                    _ => PasskeyCredential::default(),
+                };
+                merge_passkey(&mut passkey, slice)?;
+                content = Some(Content::Passkey(passkey));
+            }
+            _ => prost::encoding::skip_field(wire_type, tag, &mut buf, ctx.clone())
+                .map_err(|_| VaultError::MalformedItem)?,
+        }
+    }
+    content.ok_or(VaultError::MalformedItem)
+}
+
+fn merge_totp(out: &mut TotpEntry, mut buf: &[u8]) -> Result<(), VaultError> {
+    let ctx = prost::encoding::DecodeContext::default();
+    while !buf.is_empty() {
+        let (tag, wire_type) =
+            prost::encoding::decode_key(&mut buf).map_err(|_| VaultError::MalformedItem)?;
+        match tag {
+            1 => replace_string(&mut out.issuer, read_len_delimited(wire_type, &mut buf)?)?,
+            2 => replace_string(&mut out.account, read_len_delimited(wire_type, &mut buf)?)?,
+            3 => replace_bytes(&mut out.secret, read_len_delimited(wire_type, &mut buf)?),
+            4 => {
+                prost::encoding::int32::merge(wire_type, &mut out.algorithm, &mut buf, ctx.clone())
+                    .map_err(|_| VaultError::MalformedItem)?
+            }
+            5 => prost::encoding::uint32::merge(wire_type, &mut out.digits, &mut buf, ctx.clone())
+                .map_err(|_| VaultError::MalformedItem)?,
+            6 => prost::encoding::uint32::merge(wire_type, &mut out.period, &mut buf, ctx.clone())
+                .map_err(|_| VaultError::MalformedItem)?,
+            7 => replace_bytes(
+                &mut out.login_item_id,
+                read_len_delimited(wire_type, &mut buf)?,
+            ),
+            _ => prost::encoding::skip_field(wire_type, tag, &mut buf, ctx.clone())
+                .map_err(|_| VaultError::MalformedItem)?,
+        }
+    }
+    Ok(())
+}
+
+fn merge_passkey(out: &mut PasskeyCredential, mut buf: &[u8]) -> Result<(), VaultError> {
+    let ctx = prost::encoding::DecodeContext::default();
+    while !buf.is_empty() {
+        let (tag, wire_type) =
+            prost::encoding::decode_key(&mut buf).map_err(|_| VaultError::MalformedItem)?;
+        match tag {
+            1 => replace_string(&mut out.rp_id, read_len_delimited(wire_type, &mut buf)?)?,
+            2 => replace_string(&mut out.rp_name, read_len_delimited(wire_type, &mut buf)?)?,
+            3 => replace_bytes(
+                &mut out.user_handle,
+                read_len_delimited(wire_type, &mut buf)?,
+            ),
+            4 => replace_string(&mut out.user_name, read_len_delimited(wire_type, &mut buf)?)?,
+            5 => replace_string(
+                &mut out.user_display_name,
+                read_len_delimited(wire_type, &mut buf)?,
+            )?,
+            6 => replace_bytes(
+                &mut out.credential_id,
+                read_len_delimited(wire_type, &mut buf)?,
+            ),
+            7 => replace_bytes(
+                &mut out.private_key,
+                read_len_delimited(wire_type, &mut buf)?,
+            ),
+            8 => prost::encoding::sint32::merge(
+                wire_type,
+                &mut out.cose_algorithm,
+                &mut buf,
+                ctx.clone(),
+            )
+            .map_err(|_| VaultError::MalformedItem)?,
+            _ => prost::encoding::skip_field(wire_type, tag, &mut buf, ctx.clone())
+                .map_err(|_| VaultError::MalformedItem)?,
+        }
+    }
+    Ok(())
 }
 
 /// The top-level message stored inside an item envelope.

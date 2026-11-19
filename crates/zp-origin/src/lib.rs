@@ -30,6 +30,37 @@ pub enum OriginError {
     Scheme,
 }
 
+/// Why a WebAuthn relying party identifier was refused for an origin
+/// (`docs/spec/passkey.md` §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpIdError {
+    /// Passkeys require `https` or a loopback `http` origin.
+    InsecureOrigin,
+    /// The relying party identifier is not a valid host name.
+    Malformed,
+    /// The relying party identifier is not a valid domain for this origin
+    /// (different site, or a public suffix itself).
+    NotAllowed,
+}
+
+impl core::fmt::Display for RpIdError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RpIdError::InsecureOrigin => {
+                f.write_str("passkeys require an https origin (or http on localhost)")
+            }
+            RpIdError::Malformed => {
+                f.write_str("the relying party identifier is not a valid host name")
+            }
+            RpIdError::NotAllowed => {
+                f.write_str("the relying party identifier does not match this origin")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RpIdError {}
+
 impl core::fmt::Display for OriginError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -126,6 +157,47 @@ impl Origin {
         }
     }
 
+    /// Whether passkeys may be created or used on this origin: `https`, or
+    /// `http` on a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local
+    /// development and testing (`docs/spec/passkey.md` §3).
+    pub fn is_passkey_origin(&self) -> bool {
+        if self.https {
+            return true;
+        }
+        matches!(self.host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+            || self.host.ends_with(".localhost")
+    }
+
+    /// Validates a WebAuthn relying party identifier (`rpId`) against this
+    /// origin and returns the canonical ASCII lower-case RP ID
+    /// (`docs/spec/passkey.md` §3).
+    ///
+    /// When `rp_id` is `None` or empty, this origin's host is used.
+    pub fn validate_rp_id(&self, rp_id: Option<&str>) -> Result<String, RpIdError> {
+        if !self.is_passkey_origin() {
+            return Err(RpIdError::InsecureOrigin);
+        }
+        let Some(raw) = rp_id.filter(|value| !value.is_empty()) else {
+            return Ok(self.host.clone());
+        };
+        let normalized = parse_rp_id(raw)?;
+        if normalized == self.host {
+            return Ok(normalized);
+        }
+        if !self.is_domain() {
+            return Err(RpIdError::NotAllowed);
+        }
+        let suffix = format!(".{normalized}");
+        if !self.host.ends_with(&suffix) {
+            return Err(RpIdError::NotAllowed);
+        }
+        // Reject public suffixes (such as `com`, `co.uk`, `github.io`).
+        if psl::domain_str(&normalized).is_none() {
+            return Err(RpIdError::NotAllowed);
+        }
+        Ok(normalized)
+    }
+
     /// How well the URL a login was saved with matches this page, if at all.
     /// A URL without a scheme is taken as `https`.
     pub fn matches(&self, saved: &str) -> Option<Match> {
@@ -184,6 +256,44 @@ impl core::fmt::Display for Origin {
             write!(f, "{scheme}://{}:{}", self.host, self.port)
         }
     }
+}
+
+/// Parses and validates a bare WebAuthn RP ID (ASCII host name without scheme,
+/// port, path, or trailing dot).
+fn parse_rp_id(raw: &str) -> Result<String, RpIdError> {
+    if raw.is_empty()
+        || !raw.is_ascii()
+        || raw.starts_with('.')
+        || raw.ends_with('.')
+        || raw.contains("..")
+        || raw.bytes().any(|b| {
+            b.is_ascii_control()
+                || b.is_ascii_whitespace()
+                || matches!(b, b'/' | b'?' | b'#' | b'@')
+        })
+    {
+        return Err(RpIdError::Malformed);
+    }
+    let url = Url::parse(&format!("https://{raw}")).map_err(|_| RpIdError::Malformed)?;
+    if url.port().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(RpIdError::Malformed);
+    }
+    let host = match url.host().ok_or(RpIdError::Malformed)? {
+        Host::Domain(domain) => domain.to_ascii_lowercase(),
+        Host::Ipv4(address) => address.to_string(),
+        Host::Ipv6(address) => format!("[{address}]"),
+    };
+    // Require exact canonical match (rejects shorthand IPv4 like `127.1`, etc.).
+    if host != raw.to_ascii_lowercase() {
+        return Err(RpIdError::Malformed);
+    }
+    Ok(host)
 }
 
 #[cfg(test)]
@@ -392,5 +502,108 @@ mod tests {
         assert!(!top.same_site(&page("https://evil.net")));
         assert!(!page("https://alice.github.io").same_site(&page("https://bob.github.io")));
         assert!(page("http://localhost:1").same_site(&page("http://localhost:2")));
+    }
+
+    #[test]
+    fn passkey_rp_id_matches_origin_or_registrable_ancestor() {
+        let login = page("https://login.example.com");
+        assert_eq!(login.validate_rp_id(None), Ok("login.example.com".into()));
+        assert_eq!(
+            login.validate_rp_id(Some("")),
+            Ok("login.example.com".into())
+        );
+        assert_eq!(
+            login.validate_rp_id(Some("login.example.com")),
+            Ok("login.example.com".into())
+        );
+        assert_eq!(
+            login.validate_rp_id(Some("Example.COM")),
+            Ok("example.com".into())
+        );
+        assert_eq!(
+            page("https://a.b.example.co.uk").validate_rp_id(Some("example.co.uk")),
+            Ok("example.co.uk".into())
+        );
+        assert_eq!(
+            page("https://sub.alice.github.io").validate_rp_id(Some("alice.github.io")),
+            Ok("alice.github.io".into())
+        );
+        assert_eq!(
+            page("http://localhost:3000").validate_rp_id(Some("localhost")),
+            Ok("localhost".into())
+        );
+        assert_eq!(
+            page("http://127.0.0.1:8080").validate_rp_id(None),
+            Ok("127.0.0.1".into())
+        );
+        assert_eq!(
+            page("http://[::1]:8080").validate_rp_id(Some("[::1]")),
+            Ok("[::1]".into())
+        );
+    }
+
+    #[test]
+    fn passkey_rp_id_rejects_insecure_cross_site_public_suffix_and_malformed() {
+        // Non-loopback http is forbidden.
+        assert_eq!(
+            page("http://example.com").validate_rp_id(Some("example.com")),
+            Err(RpIdError::InsecureOrigin)
+        );
+        assert_eq!(
+            page("http://192.168.1.1").validate_rp_id(None),
+            Err(RpIdError::InsecureOrigin)
+        );
+
+        // Public suffixes and unrelated/sibling/child domains are refused.
+        let login = page("https://login.example.com");
+        for disallowed in [
+            "com",
+            "other.com",
+            "notexample.com",
+            "sub.login.example.com",
+            "www.example.com",
+        ] {
+            assert_eq!(
+                login.validate_rp_id(Some(disallowed)),
+                Err(RpIdError::NotAllowed),
+                "{disallowed}"
+            );
+        }
+        assert_eq!(
+            page("https://app.example.co.uk").validate_rp_id(Some("co.uk")),
+            Err(RpIdError::NotAllowed)
+        );
+        assert_eq!(
+            page("https://alice.github.io").validate_rp_id(Some("github.io")),
+            Err(RpIdError::NotAllowed)
+        );
+        assert_eq!(
+            page("https://alice.github.io").validate_rp_id(Some("bob.github.io")),
+            Err(RpIdError::NotAllowed)
+        );
+        assert_eq!(
+            page("https://192.168.1.1").validate_rp_id(Some("192.168.1.2")),
+            Err(RpIdError::NotAllowed)
+        );
+
+        // Malformed RP IDs: scheme, port, path, trailing dot, unicode, spaces.
+        for bad in [
+            "https://example.com",
+            "example.com:443",
+            "example.com/path",
+            "example.com.",
+            ".example.com",
+            "a..example.com",
+            "user@example.com",
+            "example.com ",
+            "\u{0435}xample.com",
+            "127.1",
+        ] {
+            assert_eq!(
+                login.validate_rp_id(Some(bad)),
+                Err(RpIdError::Malformed),
+                "{bad:?}"
+            );
+        }
     }
 }

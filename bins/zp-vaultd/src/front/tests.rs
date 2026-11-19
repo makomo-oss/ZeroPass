@@ -842,3 +842,236 @@ fn the_bridge_saves_compares_and_updates_logins_of_the_page() {
         ErrorCode::Denied as i32
     );
 }
+
+#[test]
+fn passkeys_are_created_listed_and_isolated_in_the_passkey_worker() {
+    let fixture = fixture(KeyStoreChoice::InsecureSoftware);
+    fixture.create();
+
+    let create_req = |origin: &str, rp_id: &str, user_handle: &[u8], exclude: Vec<Vec<u8>>| {
+        request::Body::PasskeyCreate(proto::PasskeyCreate {
+            origin: origin.into(),
+            top_origin: String::new(),
+            rp_id: rp_id.into(),
+            rp_name: "Example".into(),
+            user_handle: user_handle.to_vec(),
+            user_name: "alice@example.com".into(),
+            user_display_name: "Alice".into(),
+            algorithms: vec![zp_passkey::COSE_ALG_ES256, zp_passkey::COSE_ALG_EDDSA],
+            exclude_credential_ids: exclude,
+            client_data_hash: Vec::new(),
+        })
+    };
+
+    let response::Body::PasskeyCreated(created) = fixture
+        .call(create_req(
+            "https://login.example.com",
+            "example.com",
+            b"alice-id",
+            Vec::new(),
+        ))
+        .unwrap()
+    else {
+        panic!("not PasskeyCreated");
+    };
+    assert_eq!(created.item_id.len(), 16);
+    assert_eq!(created.credential_id.len(), zp_passkey::CREDENTIAL_ID_LEN);
+    assert_eq!(created.cose_algorithm, zp_passkey::COSE_ALG_ES256);
+    assert!(!created.public_key_spki.is_empty());
+    assert!(!created.public_key_cose.is_empty());
+
+    // Listed via PasskeyList from another subdomain of the same RP.
+    let response::Body::PasskeyCandidates(found) = fixture
+        .call(request::Body::PasskeyList(proto::PasskeyList {
+            origin: "https://app.example.com".into(),
+            top_origin: String::new(),
+            rp_id: "example.com".into(),
+            allow_credential_ids: Vec::new(),
+        }))
+        .unwrap()
+    else {
+        panic!("not PasskeyCandidates");
+    };
+    assert_eq!(found.candidates.len(), 1);
+    assert_eq!(found.candidates[0].credential_id, created.credential_id);
+    assert_eq!(found.candidates[0].user_name, "alice@example.com");
+
+    // Excluded credential ID is rejected with CredentialExcluded.
+    assert_eq!(
+        fixture.code(create_req(
+            "https://login.example.com",
+            "example.com",
+            b"bob-id",
+            vec![created.credential_id.clone()],
+        )),
+        ErrorCode::CredentialExcluded
+    );
+
+    // Unsupported algorithm list is rejected with UnsupportedAlgorithm.
+    let unsupported = request::Body::PasskeyCreate(proto::PasskeyCreate {
+        origin: "https://login.example.com".into(),
+        top_origin: String::new(),
+        rp_id: "example.com".into(),
+        rp_name: "Example".into(),
+        user_handle: b"bob-id".to_vec(),
+        user_name: "bob".into(),
+        user_display_name: "Bob".into(),
+        algorithms: vec![-257],
+        exclude_credential_ids: Vec::new(),
+        client_data_hash: Vec::new(),
+    });
+    assert_eq!(fixture.code(unsupported), ErrorCode::UnsupportedAlgorithm);
+
+    // Cross-site RP ID and insecure http origin are denied.
+    assert_eq!(
+        fixture.code(create_req(
+            "https://evil.test",
+            "example.com",
+            b"u1",
+            Vec::new()
+        )),
+        ErrorCode::Denied
+    );
+    assert_eq!(
+        fixture.code(create_req(
+            "http://example.com",
+            "example.com",
+            b"u1",
+            Vec::new()
+        )),
+        ErrorCode::Denied
+    );
+
+    // GetItem returns only public metadata (no private key, no credential ID).
+    let response::Body::Item(item) = fixture.call(get(&created.item_id)).unwrap() else {
+        panic!("not Item");
+    };
+    assert!(matches!(
+        item.content,
+        Some(proto::item::Content::Passkey(ref info))
+            if info.rp_id == "example.com" && info.user_name == "alice@example.com"
+    ));
+
+    // Locking Passkey domain locks passkey ops even when Password is unlocked.
+    fixture
+        .call(request::Body::Lock(proto::Lock {
+            domain: Some(D::Passkey as i32),
+        }))
+        .unwrap();
+    assert!(fixture.unlocked(D::Password));
+    assert!(!fixture.unlocked(D::Passkey));
+    let locked_err = fixture
+        .call(request::Body::PasskeyList(proto::PasskeyList {
+            origin: "https://example.com".into(),
+            top_origin: String::new(),
+            rp_id: String::new(),
+            allow_credential_ids: Vec::new(),
+        }))
+        .unwrap_err();
+    assert_eq!(locked_err.code, ErrorCode::Locked as i32);
+    assert_eq!(locked_err.domain, Some(D::Passkey as i32));
+
+    // Sync role is refused.
+    assert_eq!(
+        fixture
+            .call_as(
+                Role::Sync,
+                request::Body::PasskeyList(proto::PasskeyList {
+                    origin: "https://example.com".into(),
+                    top_origin: String::new(),
+                    rp_id: String::new(),
+                    allow_credential_ids: Vec::new(),
+                })
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Denied as i32
+    );
+
+    // Unlock Passkey and delete item.
+    fixture.unlock(D::Passkey, "").unwrap();
+    fixture
+        .call(request::Body::DeleteItem(proto::DeleteItem {
+            item_id: created.item_id,
+        }))
+        .unwrap();
+    assert!(fixture.list(D::Passkey, "").is_empty());
+}
+
+#[test]
+fn bridge_passkey_create_verifies_the_user_every_time_and_checks_origin() {
+    use std::sync::atomic::Ordering;
+
+    use crate::port::testing::FakeAgent;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::new(5));
+    let port: Arc<dyn crate::port::KeyAgentPort> = agent.clone();
+    let fixture = Fixture {
+        front: Front::local(
+            dir.path().join("test.zpvault"),
+            KeyStoreChoice::Platform,
+            Some(port),
+        ),
+        _dir: dir,
+    };
+    fixture.create();
+
+    let make = |origin: &str, top: &str, rp_id: &str, handle: &[u8]| {
+        request::Body::PasskeyCreate(proto::PasskeyCreate {
+            origin: origin.into(),
+            top_origin: top.into(),
+            rp_id: rp_id.into(),
+            rp_name: "Example".into(),
+            user_handle: handle.to_vec(),
+            user_name: "alice".into(),
+            user_display_name: "Alice".into(),
+            algorithms: vec![zp_passkey::COSE_ALG_ES256],
+            exclude_credential_ids: Vec::new(),
+            client_data_hash: Vec::new(),
+        })
+    };
+
+    // Passkey domain is already unlocked, yet each bridge creation asks the user again.
+    assert!(fixture.unlocked(D::Passkey));
+    let before = agent.prompts.load(Ordering::SeqCst);
+    for round in 1..=2 {
+        let handle = [round as u8; 8];
+        let reply = fixture
+            .call_as(
+                Role::Bridge,
+                make("https://example.com", "", "example.com", &handle),
+            )
+            .unwrap();
+        assert!(matches!(reply, response::Body::PasskeyCreated(_)));
+        assert_eq!(agent.prompts.load(Ordering::SeqCst), before + round);
+    }
+
+    // Cancelling the prompt refuses creation.
+    agent.user_present.store(false, Ordering::SeqCst);
+    let err = fixture
+        .call_as(
+            Role::Bridge,
+            make("https://example.com", "", "example.com", b"u3"),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::UserCancelled as i32);
+    agent.user_present.store(true, Ordering::SeqCst);
+
+    // Invalid RP ID or cross-site frame is denied without prompting the user.
+    let prompts = agent.prompts.load(Ordering::SeqCst);
+    for bad in [
+        make("https://evil.test", "", "example.com", b"u4"),
+        make(
+            "https://example.com",
+            "https://evil.test",
+            "example.com",
+            b"u4",
+        ),
+        make("https://alice.github.io", "", "github.io", b"u4"),
+    ] {
+        let err = fixture.call_as(Role::Bridge, bad).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Denied as i32);
+    }
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), prompts);
+}
