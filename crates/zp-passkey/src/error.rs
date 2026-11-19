@@ -32,6 +32,10 @@ pub enum PasskeyError {
     #[error("no matching passkey found")]
     CredentialNotFound,
 
+    /// More than one stored passkey matched and no specific credential ID was chosen.
+    #[error("multiple passkeys match this relying party; select one")]
+    MultipleCredentials,
+
     /// Stored key material could not be decoded or did not match its algorithm.
     #[error("stored passkey key material is malformed")]
     MalformedKey,

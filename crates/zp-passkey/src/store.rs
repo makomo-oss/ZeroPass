@@ -202,7 +202,6 @@ pub fn find_credentials(
 
 /// Loads a stored passkey credential for signing inside `zp-passkey`.
 /// Not exposed outside this crate so private key material cannot escape.
-#[allow(dead_code, reason = "used by getAssertion in P5-03")]
 pub(crate) fn load_for_signing(
     vault: &mut Vault,
     rp_id: &str,

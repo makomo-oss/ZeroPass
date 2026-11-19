@@ -149,10 +149,10 @@ pub enum ErrorCode {
 /// One request from a client to the daemon.
 #[derive(Clone, PartialEq, Message)]
 pub struct Request {
-    /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
+    /// The request. Tags 48–63 and 67–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -266,6 +266,9 @@ pub mod request {
         /// Passkey: lists passkey candidates matching an origin and RP ID.
         #[prost(message, tag = "65")]
         PasskeyList(super::PasskeyList),
+        /// Passkey: signs a WebAuthn assertion (`getAssertion`) in the passkey worker.
+        #[prost(message, tag = "66")]
+        PasskeyGetAssertion(super::PasskeyGetAssertion),
         /// Makes an encrypted export of the whole vault (`docs/spec/export.md`).
         #[prost(message, tag = "18")]
         ExportVault(super::ExportVault),
@@ -878,7 +881,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub body: Option<response::Body>,
 }
@@ -968,9 +971,13 @@ pub mod response {
         /// Answer to `PasskeyCreate`.
         #[prost(message, tag = "29")]
         PasskeyCreated(super::PasskeyCreated),
-        /// Answer to `PasskeyList`.
+        /// Answer to `PasskeyList` (or `PasskeyGetAssertion` when multiple
+        /// credentials match and none was selected).
         #[prost(message, tag = "30")]
         PasskeyCandidates(super::PasskeyCandidates),
+        /// Answer to `PasskeyGetAssertion`.
+        #[prost(message, tag = "31")]
+        PasskeyAssertion(super::PasskeyAssertion),
         /// Answer to `BridgeFind`.
         #[prost(message, tag = "24")]
         BridgeLogins(super::BridgeLogins),
@@ -1636,6 +1643,12 @@ pub struct PasskeyCreated {
     /// Chosen COSE algorithm (`-7` = ES256, `-8` = EdDSA).
     #[prost(sint32, tag = "5")]
     pub cose_algorithm: i32,
+    /// Raw WebAuthn `authenticatorData` bytes (with attested credential data).
+    #[prost(bytes = "vec", tag = "6")]
+    pub authenticator_data: Vec<u8>,
+    /// CBOR-encoded `"none"` `attestationObject`.
+    #[prost(bytes = "vec", tag = "7")]
+    pub attestation_object: Vec<u8>,
 }
 
 /// Lists stored passkeys matching an origin and RP ID.
@@ -1691,6 +1704,52 @@ pub struct PasskeyCandidate {
     /// COSE algorithm (`-7` = ES256, `-8` = EdDSA).
     #[prost(sint32, tag = "8")]
     pub cose_algorithm: i32,
+}
+
+/// Signs a WebAuthn assertion (`getAssertion`) inside the passkey worker.
+///
+/// If `credential_id` is empty and multiple credentials match, the daemon
+/// answers with [`PasskeyCandidates`] so the caller can let the user pick one.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyGetAssertion {
+    /// The page's origin (`scheme://host[:port]`).
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// Requested relying party ID; empty to default to `origin`'s host.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// SHA-256 hash of `clientDataJSON` (32 bytes).
+    #[prost(bytes = "vec", tag = "4")]
+    pub client_data_hash: Vec<u8>,
+    /// Optional `allowCredentials` filter; empty for discoverable credentials.
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub allow_credential_ids: Vec<Vec<u8>>,
+    /// Specific credential ID chosen by the user; empty to auto-select a single match.
+    #[prost(bytes = "vec", tag = "6")]
+    pub credential_id: Vec<u8>,
+}
+
+/// Answer to [`PasskeyGetAssertion`]. Never contains private key material.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyAssertion {
+    /// Vault item identifier (16 bytes).
+    #[prost(bytes = "vec", tag = "1")]
+    pub item_id: Vec<u8>,
+    /// WebAuthn credential identifier.
+    #[prost(bytes = "vec", tag = "2")]
+    pub credential_id: Vec<u8>,
+    /// Opaque user handle.
+    #[prost(bytes = "vec", tag = "3")]
+    pub user_handle: Vec<u8>,
+    /// 37-byte `authenticatorData` (`UP|UV|BE|BS`, `signCount=0`).
+    #[prost(bytes = "vec", tag = "4")]
+    pub authenticator_data: Vec<u8>,
+    /// Signature over `authenticator_data || client_data_hash`.
+    #[prost(bytes = "vec", tag = "5")]
+    pub signature: Vec<u8>,
 }
 
 redacted_debug!(
