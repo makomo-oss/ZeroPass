@@ -62,13 +62,16 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 
 | `type` | 引数 | 応答 | 金庫デーモンへの要求 |
 |---|---|---|---|
-| `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか） | `Status` |
+| `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか）、`passkey`（パスキーのドメインがあるか） | `Status` |
 | `find` | `origin`、`top`（タブの最上位のフレームのオリジン） | `logins`: `id`、`title`、`username`、`match`（`exact` / `site`）。**パスワードは含まない** | `BridgeFind` |
 | `fill` | `origin`、`top`、`item`（ログインの ID） | `username`、`password` | `BridgeFill` |
 | `totp` | `origin`、`top`、`item`（ログインの ID） | `code`（Windows Hello が尋ねる） | `BridgeTotp` |
 | `compare` | `origin`、`top`、`username`、`password` | `item`（そのページの、その利用者名のログイン。なければ空）、`same`（パスワードも同じか） | `BridgeCompare` |
 | `save` | `origin`、`top`、`title`、`username`、`password` | `item`（新しいログインの ID） | `BridgeSave` |
 | `update` | `origin`、`top`、`item`、`password` | — | `BridgeUpdate` |
+| `passkey_create` | `origin`、`top`、`rp_id`、`rp_name`、`user_handle`、`user_name`、`user_display_name`、`algorithms`、`exclude_credential_ids`、`client_data_hash`（バイナリは base64url） | `item`、`credential_id`、`public_key_spki`、`public_key_cose`、`cose_algorithm`、`authenticator_data`、`attestation_object`（Windows Hello が尋ねる） | `PasskeyCreate` |
+| `passkey_list` | `origin`、`top`、`rp_id`、`allow_credential_ids` | `candidates`（公開メタデータのみ。秘密鍵なし） | `PasskeyList` |
+| `passkey_get` | `origin`、`top`、`rp_id`、`client_data_hash`、`allow_credential_ids`、`credential_id` | 署名結果（`item`、`credential_id`、`user_handle`、`authenticator_data`、`signature`）または複数候補時の `candidates`（Windows Hello が尋ねる） | `PasskeyGetAssertion` |
 | `open_app` | — | — | （なし。デスクトップアプリを起動する） |
 
 - エラーの `code` は IPC のエラーコード（`ipc.md` §4.2。`Locked`、`NoVault` など）か、ブリッジのもの（`NotRunning`: 金庫デーモンが動いていない、`BadRequest`）。

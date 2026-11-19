@@ -394,3 +394,125 @@ fn the_extension_saves_compares_updates_and_gets_one_time_codes() {
         "{found}"
     );
 }
+
+#[test]
+fn the_extension_creates_lists_and_signs_passkeys() {
+    others_are_built();
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("passkey.zpvault");
+    let _daemon = Daemon(&vault);
+    let soft = "--insecure-software-keystore";
+    cli_with(&vault, soft, &["init"], &[PASSWORD, PASSWORD]);
+
+    let origin = "https://webauthn.io";
+    let hash_32 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 32 zero bytes in base64url
+    let mut bridge = Bridge::start(&vault, &[CHROME]);
+
+    let status = bridge.ask(json!({ "type": "status" }));
+    assert_eq!(status["passkey"], json!(true), "{status}");
+
+    // Create first passkey (alice).
+    let created = bridge.ask(json!({
+        "type": "passkey_create",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "rp_name": "webauthn.io",
+        "user_handle": "YWxpY2U",
+        "user_name": "alice",
+        "user_display_name": "Alice",
+        "algorithms": [-7, -8],
+        "exclude_credential_ids": [],
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(created["ok"], json!(true), "{created}");
+    assert_eq!(created["cose_algorithm"], json!(-7));
+    let cred_id = created["credential_id"].as_str().unwrap().to_owned();
+    assert!(!created["attestation_object"].as_str().unwrap().is_empty());
+    assert!(!created["authenticator_data"].as_str().unwrap().is_empty());
+    assert!(!created["public_key_spki"].as_str().unwrap().is_empty());
+
+    // List matches on the same origin.
+    let listed = bridge.ask(json!({
+        "type": "passkey_list",
+        "origin": origin,
+        "rp_id": "webauthn.io"
+    }));
+    assert_eq!(
+        listed["candidates"].as_array().unwrap().len(),
+        1,
+        "{listed}"
+    );
+    assert_eq!(listed["candidates"][0]["credential_id"], json!(cred_id));
+
+    // Excluded credential ID is rejected with CredentialExcluded.
+    let excluded = bridge.ask(json!({
+        "type": "passkey_create",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "rp_name": "webauthn.io",
+        "user_handle": "Ym9i",
+        "user_name": "bob",
+        "user_display_name": "Bob",
+        "algorithms": [-7],
+        "exclude_credential_ids": [cred_id],
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(error_code(&excluded), "CredentialExcluded", "{excluded}");
+
+    // Single-credential assertion signs directly.
+    let assertion = bridge.ask(json!({
+        "type": "passkey_get",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(assertion["ok"], json!(true), "{assertion}");
+    assert_eq!(assertion["credential_id"], json!(cred_id));
+    assert_eq!(assertion["user_handle"], json!("YWxpY2U"));
+    assert!(!assertion["signature"].as_str().unwrap().is_empty());
+
+    // Add a second passkey (bob); get without credential_id returns both candidates.
+    let created_bob = bridge.ask(json!({
+        "type": "passkey_create",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "rp_name": "webauthn.io",
+        "user_handle": "Ym9i",
+        "user_name": "bob",
+        "user_display_name": "Bob",
+        "algorithms": [-8],
+        "exclude_credential_ids": [],
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(created_bob["cose_algorithm"], json!(-8), "{created_bob}");
+    let bob_cred_id = created_bob["credential_id"].as_str().unwrap().to_owned();
+
+    let multi = bridge.ask(json!({
+        "type": "passkey_get",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(multi["candidates"].as_array().unwrap().len(), 2, "{multi}");
+
+    // Selecting bob signs with bob's credential.
+    let bob_assert = bridge.ask(json!({
+        "type": "passkey_get",
+        "origin": origin,
+        "rp_id": "webauthn.io",
+        "client_data_hash": hash_32,
+        "credential_id": bob_cred_id
+    }));
+    assert_eq!(bob_assert["ok"], json!(true), "{bob_assert}");
+    assert_eq!(bob_assert["credential_id"], json!(bob_cred_id));
+    assert_eq!(bob_assert["user_handle"], json!("Ym9i"));
+
+    // Cross-origin RP ID is denied.
+    let evil = bridge.ask(json!({
+        "type": "passkey_get",
+        "origin": "https://evil.test",
+        "rp_id": "webauthn.io",
+        "client_data_hash": hash_32
+    }));
+    assert_eq!(error_code(&evil), "Denied", "{evil}");
+}

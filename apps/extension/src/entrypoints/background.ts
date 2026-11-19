@@ -7,6 +7,7 @@ import { defineBackground } from "wxt/utils/define-background";
 
 import { Bridge } from "../lib/bridge";
 import { originsOf, type Sender } from "../lib/origins";
+import { buildClientDataJson, sha256Base64Url } from "../lib/passkey-codec";
 import {
   stateOf,
   type Ask,
@@ -15,6 +16,10 @@ import {
   type FindAnswer,
   type Login,
   type Order,
+  type PasskeyCandidate,
+  type PasskeyCreateAnswer,
+  type PasskeyGetAnswer,
+  type PasskeyListAnswer,
   type Proposal,
   type TotpAnswer,
 } from "../lib/protocol";
@@ -87,6 +92,100 @@ async function totp(origin: string, top: string, item: string): Promise<TotpAnsw
   } catch (error) {
     const { code, message } = failed(error);
     return { ok: false, state: stateOf(code), message };
+  }
+}
+
+async function passkeyList(
+  origin: string,
+  top: string,
+  rpId: string,
+  allowCredentialIds: string[],
+): Promise<PasskeyListAnswer> {
+  try {
+    const reply = await bridge.ask({
+      type: "passkey_list",
+      origin,
+      top,
+      rp_id: rpId,
+      allow_credential_ids: allowCredentialIds,
+    });
+    return { ok: true, candidates: (reply.candidates as PasskeyCandidate[]) ?? [] };
+  } catch (error) {
+    const { code, message } = failed(error);
+    return { ok: false, code, message };
+  }
+}
+
+async function passkeyCreate(
+  origin: string,
+  top: string,
+  ask: Extract<Ask, { kind: "passkey_create" }>,
+): Promise<PasskeyCreateAnswer> {
+  try {
+    const crossOrigin = top !== "" && top !== origin;
+    const { jsonBytes, jsonB64 } = buildClientDataJson("webauthn.create", ask.challenge, origin, crossOrigin);
+    const clientDataHash = await sha256Base64Url(jsonBytes);
+    const reply = await bridge.ask({
+      type: "passkey_create",
+      origin,
+      top,
+      rp_id: ask.rpId,
+      rp_name: ask.rpName,
+      user_handle: ask.userHandle,
+      user_name: ask.userName,
+      user_display_name: ask.userDisplayName,
+      algorithms: ask.algorithms,
+      exclude_credential_ids: ask.excludeCredentialIds,
+      client_data_hash: clientDataHash,
+    });
+    return {
+      ok: true,
+      credentialId: String(reply.credential_id ?? ""),
+      clientDataJson: jsonB64,
+      attestationObject: String(reply.attestation_object ?? ""),
+      authenticatorData: String(reply.authenticator_data ?? ""),
+      publicKeySpki: String(reply.public_key_spki ?? ""),
+      coseAlgorithm: Number(reply.cose_algorithm ?? -7),
+    };
+  } catch (error) {
+    const { code, message } = failed(error);
+    return { ok: false, code, message };
+  }
+}
+
+async function passkeyGet(
+  origin: string,
+  top: string,
+  ask: Extract<Ask, { kind: "passkey_get" }>,
+): Promise<PasskeyGetAnswer> {
+  try {
+    const crossOrigin = top !== "" && top !== origin;
+    const { jsonBytes, jsonB64 } = buildClientDataJson("webauthn.get", ask.challenge, origin, crossOrigin);
+    const clientDataHash = await sha256Base64Url(jsonBytes);
+    const reply = await bridge.ask({
+      type: "passkey_get",
+      origin,
+      top,
+      rp_id: ask.rpId,
+      client_data_hash: clientDataHash,
+      allow_credential_ids: ask.allowCredentialIds,
+      credential_id: ask.credentialId,
+    });
+    if (Array.isArray(reply.candidates)) {
+      return { ok: true, kind: "candidates", candidates: reply.candidates as PasskeyCandidate[] };
+    }
+    return {
+      ok: true,
+      kind: "assertion",
+      credentialId: String(reply.credential_id ?? ""),
+      clientDataJson: jsonB64,
+      authenticatorData: String(reply.authenticator_data ?? ""),
+      signature: String(reply.signature ?? ""),
+      userHandle: String(reply.user_handle ?? ""),
+    };
+  } catch (error) {
+    const { code, message } = failed(error);
+    return { ok: false, code, message };
   }
 }
 
@@ -167,6 +266,21 @@ async function handle(ask: Ask, sender: Sender & { id?: string }): Promise<unkno
       const origins = sender.tab ? originsOf(sender) : null;
       if (!origins) return { ok: false, state: "unsupported", message: "not a web page" } satisfies TotpAnswer;
       return totp(origins.origin, origins.top, ask.item);
+    }
+    case "passkey_list": {
+      const origins = sender.tab ? originsOf(sender) : null;
+      if (!origins) return { ok: false, code: "Denied", message: "not a web page" } satisfies PasskeyListAnswer;
+      return passkeyList(origins.origin, origins.top, ask.rpId, ask.allowCredentialIds);
+    }
+    case "passkey_create": {
+      const origins = sender.tab ? originsOf(sender) : null;
+      if (!origins) return { ok: false, code: "Denied", message: "not a web page" } satisfies PasskeyCreateAnswer;
+      return passkeyCreate(origins.origin, origins.top, ask);
+    }
+    case "passkey_get": {
+      const origins = sender.tab ? originsOf(sender) : null;
+      if (!origins) return { ok: false, code: "Denied", message: "not a web page" } satisfies PasskeyGetAnswer;
+      return passkeyGet(origins.origin, origins.top, ask);
     }
     case "typed_username": {
       const tab = sender.tab?.id;

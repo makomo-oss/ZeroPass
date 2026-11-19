@@ -18,6 +18,7 @@ export interface BridgeStatus {
   running: boolean;
   unlocked: boolean;
   totp: boolean;
+  passkey?: boolean;
 }
 
 /** What the extension can do for a page. */
@@ -31,6 +32,18 @@ export type PageState =
   | "cancelled"
   | "error";
 
+/** A stored passkey matching a page. Never contains private key material. */
+export interface PasskeyCandidate {
+  id: string;
+  credential_id: string;
+  rp_id: string;
+  rp_name: string;
+  user_handle: string;
+  user_name: string;
+  user_display_name: string;
+  cose_algorithm: number;
+}
+
 /** Asked by a content script or the popup, answered by the background. */
 export type Ask =
   | { kind: "find" }
@@ -43,7 +56,55 @@ export type Ask =
   | { kind: "open_app" }
   | { kind: "status" }
   | { kind: "find_for_tab"; tab: number }
-  | { kind: "fill_tab"; tab: number; item: string };
+  | { kind: "fill_tab"; tab: number; item: string }
+  | { kind: "passkey_list"; rpId: string; allowCredentialIds: string[] }
+  | {
+      kind: "passkey_create";
+      rpId: string;
+      rpName: string;
+      userHandle: string;
+      userName: string;
+      userDisplayName: string;
+      challenge: string;
+      algorithms: number[];
+      excludeCredentialIds: string[];
+    }
+  | {
+      kind: "passkey_get";
+      rpId: string;
+      challenge: string;
+      allowCredentialIds: string[];
+      credentialId: string;
+    };
+
+export type PasskeyListAnswer =
+  | { ok: true; candidates: PasskeyCandidate[] }
+  | { ok: false; code: string; message: string };
+
+export type PasskeyCreateAnswer =
+  | {
+      ok: true;
+      credentialId: string;
+      clientDataJson: string;
+      attestationObject: string;
+      authenticatorData: string;
+      publicKeySpki: string;
+      coseAlgorithm: number;
+    }
+  | { ok: false; code: string; message: string };
+
+export type PasskeyGetAnswer =
+  | {
+      ok: true;
+      kind: "assertion";
+      credentialId: string;
+      clientDataJson: string;
+      authenticatorData: string;
+      signature: string;
+      userHandle: string;
+    }
+  | { ok: true; kind: "candidates"; candidates: PasskeyCandidate[] }
+  | { ok: false; code: string; message: string };
 
 /** A login the extension offers to save or update. No secret. */
 export interface Proposal {
