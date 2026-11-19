@@ -148,17 +148,17 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | 番号 | 用途 | 定義するタスク |
 |---|---|---|
 | 48〜63 | 承認要求（Agent Broker の一時許可） | P7-01 |
-| 66〜79 | パスキーの今後の要求（`PasskeyGetAssertion` 等） | P5-03 |
+| 67〜79 | パスキーの今後の要求 | — |
 | 106〜111 | 拡張ブリッジの今後の要求 | — |
 
-使用中の番号: 要求 1〜19（§4.2）、32〜39（§10）、40〜45（§11）、64〜65（`passkey.md` §5）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）、27〜28（`export.md`）、29〜30（`passkey.md` §5）。
+使用中の番号: 要求 1〜19（§4.2）、32〜39（§10）、40〜45（§11）、64〜66（`passkey.md` §5）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）、27〜28（`export.md`）、29〜31（`passkey.md` §5）。
 
 ## 5. 役割
 
 | 役割 | この版で呼べる要求 |
 |---|---|
 | UI | すべて |
-| 拡張ブリッジ | `Hello`、`Status`、`BridgeFind`・`BridgeFill`・`BridgeTotp`・`BridgeSave`・`BridgeUpdate`・`BridgeCompare`（`extension.md` §4）、`PasskeyCreate`・`PasskeyList`（`passkey.md` §5。オリジン検証と毎回の生体認証付き）。一覧・項目の取得・解錠はできない |
+| 拡張ブリッジ | `Hello`、`Status`、`BridgeFind`・`BridgeFill`・`BridgeTotp`・`BridgeSave`・`BridgeUpdate`・`BridgeCompare`（`extension.md` §4）、`PasskeyCreate`・`PasskeyList`・`PasskeyGetAssertion`（`passkey.md` §5。オリジン検証と毎回の生体認証付き）。一覧・項目の取得・解錠はできない |
 | Agent Broker | `Hello`、`Status`（残りは P7-01 で定める） |
 | 同期 | `Hello`、`Status`、同期の要求（§10） |
 | 鍵エージェント | `Hello`、`KeyAgentAttach`（§13）だけ |

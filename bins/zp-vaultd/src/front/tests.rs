@@ -859,7 +859,7 @@ fn passkeys_are_created_listed_and_isolated_in_the_passkey_worker() {
             user_display_name: "Alice".into(),
             algorithms: vec![zp_passkey::COSE_ALG_ES256, zp_passkey::COSE_ALG_EDDSA],
             exclude_credential_ids: exclude,
-            client_data_hash: Vec::new(),
+            client_data_hash: vec![0x11; 32],
         })
     };
 
@@ -879,6 +879,37 @@ fn passkeys_are_created_listed_and_isolated_in_the_passkey_worker() {
     assert_eq!(created.cose_algorithm, zp_passkey::COSE_ALG_ES256);
     assert!(!created.public_key_spki.is_empty());
     assert!(!created.public_key_cose.is_empty());
+    assert!(!created.authenticator_data.is_empty());
+    assert!(!created.attestation_object.is_empty());
+
+    // Sign a WebAuthn assertion through the passkey worker and verify it.
+    let auth_hash = [0x22u8; 32];
+    let response::Body::PasskeyAssertion(assertion) = fixture
+        .call(request::Body::PasskeyGetAssertion(
+            proto::PasskeyGetAssertion {
+                origin: "https://app.example.com".into(),
+                top_origin: String::new(),
+                rp_id: "example.com".into(),
+                client_data_hash: auth_hash.to_vec(),
+                allow_credential_ids: Vec::new(),
+                credential_id: Vec::new(),
+            },
+        ))
+        .unwrap()
+    else {
+        panic!("not PasskeyAssertion");
+    };
+    assert_eq!(assertion.credential_id, created.credential_id);
+    assert_eq!(assertion.user_handle, b"alice-id");
+    zp_passkey::verify_assertion(
+        "example.com",
+        zp_passkey::Algorithm::Es256,
+        &created.public_key_spki,
+        &auth_hash,
+        &assertion.authenticator_data,
+        &assertion.signature,
+    )
+    .unwrap();
 
     // Listed via PasskeyList from another subdomain of the same RP.
     let response::Body::PasskeyCandidates(found) = fixture
@@ -918,7 +949,7 @@ fn passkeys_are_created_listed_and_isolated_in_the_passkey_worker() {
         user_display_name: "Bob".into(),
         algorithms: vec![-257],
         exclude_credential_ids: Vec::new(),
-        client_data_hash: Vec::new(),
+        client_data_hash: vec![0x11; 32],
     });
     assert_eq!(fixture.code(unsupported), ErrorCode::UnsupportedAlgorithm);
 
@@ -1028,24 +1059,91 @@ fn bridge_passkey_create_verifies_the_user_every_time_and_checks_origin() {
             user_display_name: "Alice".into(),
             algorithms: vec![zp_passkey::COSE_ALG_ES256],
             exclude_credential_ids: Vec::new(),
-            client_data_hash: Vec::new(),
+            client_data_hash: vec![0x33; 32],
         })
     };
 
     // Passkey domain is already unlocked, yet each bridge creation asks the user again.
     assert!(fixture.unlocked(D::Passkey));
     let before = agent.prompts.load(Ordering::SeqCst);
+    let mut cred_ids = Vec::new();
     for round in 1..=2 {
         let handle = [round as u8; 8];
-        let reply = fixture
+        let response::Body::PasskeyCreated(created) = fixture
             .call_as(
                 Role::Bridge,
                 make("https://example.com", "", "example.com", &handle),
             )
-            .unwrap();
-        assert!(matches!(reply, response::Body::PasskeyCreated(_)));
+            .unwrap()
+        else {
+            panic!("not PasskeyCreated");
+        };
+        cred_ids.push(created.credential_id);
         assert_eq!(agent.prompts.load(Ordering::SeqCst), before + round);
     }
+
+    // Bridge getAssertion also asks the user anew; with 2 matching accounts and
+    // no credential_id chosen, it returns PasskeyCandidates so the user can pick.
+    let before_get = agent.prompts.load(Ordering::SeqCst);
+    let response::Body::PasskeyCandidates(multi) = fixture
+        .call_as(
+            Role::Bridge,
+            request::Body::PasskeyGetAssertion(proto::PasskeyGetAssertion {
+                origin: "https://example.com".into(),
+                top_origin: String::new(),
+                rp_id: "example.com".into(),
+                client_data_hash: vec![0x44; 32],
+                allow_credential_ids: Vec::new(),
+                credential_id: Vec::new(),
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected PasskeyCandidates for multiple accounts");
+    };
+    assert_eq!(multi.candidates.len(), 2);
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), before_get + 1);
+
+    // Selecting one credential ID signs with it after verifying the user again.
+    let response::Body::PasskeyAssertion(assertion) = fixture
+        .call_as(
+            Role::Bridge,
+            request::Body::PasskeyGetAssertion(proto::PasskeyGetAssertion {
+                origin: "https://example.com".into(),
+                top_origin: String::new(),
+                rp_id: "example.com".into(),
+                client_data_hash: vec![0x44; 32],
+                allow_credential_ids: Vec::new(),
+                credential_id: cred_ids[0].clone(),
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected PasskeyAssertion");
+    };
+    assert_eq!(assertion.credential_id, cred_ids[0]);
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), before_get + 2);
+
+    // Malformed client_data_hash is rejected without prompting.
+    let prompts_before_bad_hash = agent.prompts.load(Ordering::SeqCst);
+    let err = fixture
+        .call_as(
+            Role::Bridge,
+            request::Body::PasskeyGetAssertion(proto::PasskeyGetAssertion {
+                origin: "https://example.com".into(),
+                top_origin: String::new(),
+                rp_id: "example.com".into(),
+                client_data_hash: vec![0x44; 16],
+                allow_credential_ids: Vec::new(),
+                credential_id: cred_ids[0].clone(),
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadRequest as i32);
+    assert_eq!(
+        agent.prompts.load(Ordering::SeqCst),
+        prompts_before_bad_hash
+    );
 
     // Cancelling the prompt refuses creation.
     agent.user_present.store(false, Ordering::SeqCst);

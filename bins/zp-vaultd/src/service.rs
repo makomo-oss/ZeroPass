@@ -731,6 +731,10 @@ impl Service {
                 self.holds(DomainId::Passkey)?;
                 crate::passkey::list(self.vault(state)?, &request)
             }
+            Body::PasskeyGetAssertion(request) => {
+                self.holds(DomainId::Passkey)?;
+                crate::passkey::get_assertion(self.vault(state)?, &request)
+            }
             // These start a relay and do not arrive here.
             Body::PairAdmit(_) | Body::PairJoin(_) => {
                 Err(bad_request("this request needs a relay"))

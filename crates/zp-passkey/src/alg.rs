@@ -154,7 +154,6 @@ pub fn public_key_from_pkcs8(
 /// - `Es256`: signs `SHA-256(data)` with P-256 ECDSA, low-S normalized, encoded
 ///   as ASN.1 DER (the WebAuthn wire format).
 /// - `EdDsa`: signs `data` with Ed25519 (raw 64-byte signature).
-#[allow(dead_code, reason = "used by getAssertion in P5-03")]
 pub(crate) fn sign_raw(
     algorithm: Algorithm,
     pkcs8_der: &[u8],
