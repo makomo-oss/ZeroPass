@@ -11,4 +11,11 @@ ignore = [
     # `glib` 0.18: an unsound iterator over GVariant strings (VariantStrIter).
     # Linux only, via the GTK 3 stack that Tauri uses; not used by ZeroPass.
     "RUSTSEC-2024-0429",
+    # `chrono` is unmaintained. It is in Cargo.lock only as an optional
+    # dependency of `serde_with` (through Tauri) that no build enables:
+    # `cargo tree -i chrono --edges all --target all --all-features` finds
+    # nothing. cargo-audit reads every entry of the lock file; cargo-deny
+    # checks the dependency graph and does not report it, so deny.toml needs
+    # no entry.
+    "RUSTSEC-2026-0543",
 ]
