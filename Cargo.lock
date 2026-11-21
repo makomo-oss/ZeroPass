@@ -6345,6 +6345,7 @@ dependencies = [
  "zeroize",
  "zp-client",
  "zp-ipc",
+ "zp-passkey",
 ]
 
 [[package]]

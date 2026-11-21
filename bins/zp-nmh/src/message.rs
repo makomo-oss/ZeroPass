@@ -92,6 +92,41 @@ pub(crate) enum Request {
         item: String,
         password: Secret,
     },
+    /// Makes a passkey for the page (`docs/spec/extension.md` §11); Windows
+    /// Hello asks. Bytes are base64url.
+    PasskeyCreate {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        rp_id: String,
+        #[serde(default)]
+        rp_name: String,
+        user_id: String,
+        #[serde(default)]
+        user_name: String,
+        #[serde(default)]
+        user_display_name: String,
+        challenge: String,
+        #[serde(default)]
+        algorithms: Vec<i32>,
+        #[serde(default)]
+        exclude: Vec<String>,
+    },
+    /// Signs for the page with one of its passkeys; Windows Hello asks,
+    /// except for the passkey picked from the choices of the same request.
+    PasskeyGet {
+        origin: String,
+        #[serde(default)]
+        top: String,
+        #[serde(default)]
+        rp_id: String,
+        challenge: String,
+        #[serde(default)]
+        allow: Vec<String>,
+        #[serde(default)]
+        chosen: String,
+    },
     /// Start the desktop application.
     OpenApp,
 }
@@ -122,6 +157,8 @@ pub(crate) enum Answer {
         running: bool,
         unlocked: bool,
         totp: bool,
+        /// Whether the vault keeps passkeys (has the passkey domain).
+        passkeys: bool,
     },
     Logins {
         logins: Vec<Login>,
@@ -144,7 +181,37 @@ pub(crate) enum Answer {
     Saved {
         item: String,
     },
+    /// A new passkey, as the page receives it. Bytes are base64url.
+    PasskeyCreated {
+        credential_id: String,
+        client_data_json: String,
+        attestation_object: String,
+        authenticator_data: String,
+        public_key: String,
+        algorithm: i32,
+    },
+    /// An assertion, as the page receives it. Bytes are base64url.
+    PasskeyAssertion {
+        credential_id: String,
+        client_data_json: String,
+        authenticator_data: String,
+        signature: String,
+        user_handle: String,
+    },
+    /// Several passkeys fit: the user picks one.
+    PasskeyChoices {
+        choices: Vec<PasskeyChoice>,
+    },
     Done {},
+}
+
+/// A passkey the user may pick. No secret.
+#[derive(Serialize)]
+pub(crate) struct PasskeyChoice {
+    /// The credential identifier, base64url.
+    pub(crate) credential_id: String,
+    pub(crate) user_name: String,
+    pub(crate) display_name: String,
 }
 
 fn secret<S: serde::Serializer>(

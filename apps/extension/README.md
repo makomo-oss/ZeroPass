@@ -1,6 +1,7 @@
 # ZeroPass browser extension
 
-Fills the logins of the ZeroPass vault into web pages. Built with
+Fills the logins of the ZeroPass vault into web pages, and makes and uses
+passkeys kept in the vault. Built with
 [WXT](https://wxt.dev/) and TypeScript: Manifest V3 for Chrome and Edge,
 Manifest V2 for Firefox. How it works and what it guards against:
 [`docs/spec/extension.md`](../../docs/spec/extension.md).
@@ -13,6 +14,11 @@ logins belong to the page, by the origin the browser reports.
   request's origin from the browser (`sender`).
 - `src/entrypoints/content.ts` — finds login fields, shows the matching
   logins under the field (closed shadow DOM), fills the one the user picks.
+- `src/entrypoints/webauthn.content.ts` — in the page's own world:
+  answers `navigator.credentials.create` / `.get` through ZeroPass when the
+  user wants it, otherwise leaves them to the browser.
+- `src/entrypoints/passkeys.content.ts` — the extension's side of a passkey
+  request: the dialog (closed shadow DOM), the request to ZeroPass.
 - `src/entrypoints/popup/` — the toolbar popup.
 - `src/lib/` — field detection, filling, visibility, origins (unit-tested).
 
@@ -46,7 +52,9 @@ bridge for that browser under `HKCU` while they run and remove it after.
 
 ```sh
 node e2e/local.e2e.mjs                 # pages served locally (also in CI)
+node e2e/passkeys.e2e.mjs              # passkeys, checked by @simplewebauthn/server (also in CI)
 node e2e/sites.e2e.mjs --offscreen     # login pages of well-known sites
+node e2e/webauthn-io.e2e.mjs --offscreen  # a passkey on https://webauthn.io
 ```
 
 `sites.e2e.mjs` opens each site's login page, clicks the user-name (or

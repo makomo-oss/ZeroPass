@@ -3,9 +3,9 @@
 - 版: 0.1（ドラフト）
 - 関連: [ADR-0004](../adr/0004-process-architecture.md)、[脅威モデル](../threat-model.md) §4（境界 B2・B3）、T6、`docs/spec/ipc.md` §5
 - 実装: `apps/extension`（拡張）、`bins/zp-nmh`（拡張ブリッジ）、`crates/zp-origin`（オリジンの照合）、`bins/zp-vaultd`（拡張ブリッジの要求）
-- タスク: P4-04（本書の §1〜§5）、P4-05（§6・§7）、P4-06（§8・§9）
+- タスク: P4-04（本書の §1〜§5）、P4-05（§6・§7）、P4-06（§8・§9）、P5-04（§11）
 
-ブラウザ拡張は、ページのログインフォームに金庫のログインを入力する。拡張は秘密を持たず、入力の瞬間にだけ、拡張ブリッジ `zp-nmh` を通じて金庫デーモンに 1 件ずつ尋ねる。
+ブラウザ拡張は、ページのログインフォームに金庫のログインを入力し、ページのためにパスキーを作って使う（§11）。拡張は秘密を持たず、入力の瞬間にだけ、拡張ブリッジ `zp-nmh` を通じて金庫デーモンに 1 件ずつ尋ねる。
 
 ```
 Web ページ ⇄ content script ⇄ 拡張の background ⇄（Native Messaging, stdio）⇄ zp-nmh ⇄（IPC, 拡張ブリッジの役割）⇄ zp-vaultd
@@ -62,16 +62,19 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 
 | `type` | 引数 | 応答 | 金庫デーモンへの要求 |
 |---|---|---|---|
-| `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか） | `Status` |
+| `status` | — | `vault`（金庫があるか）、`running`（デーモンが動いているか）、`unlocked`（パスワードのドメイン）、`totp`（TOTP のドメインがあるか）、`passkeys`（パスキーのドメインがあるか） | `Status` |
 | `find` | `origin`、`top`（タブの最上位のフレームのオリジン） | `logins`: `id`、`title`、`username`、`match`（`exact` / `site`）。**パスワードは含まない** | `BridgeFind` |
 | `fill` | `origin`、`top`、`item`（ログインの ID） | `username`、`password` | `BridgeFill` |
 | `totp` | `origin`、`top`、`item`（ログインの ID） | `code`（Windows Hello が尋ねる） | `BridgeTotp` |
 | `compare` | `origin`、`top`、`username`、`password` | `item`（そのページの、その利用者名のログイン。なければ空）、`same`（パスワードも同じか） | `BridgeCompare` |
 | `save` | `origin`、`top`、`title`、`username`、`password` | `item`（新しいログインの ID） | `BridgeSave` |
 | `update` | `origin`、`top`、`item`、`password` | — | `BridgeUpdate` |
+| `passkey_create` | `origin`、`top`、`rp_id`、`rp_name`、`user_id`、`user_name`、`user_display_name`、`challenge`、`algorithms`（COSE の番号、好みの順）、`exclude`（ID の一覧） | `credential_id`、`client_data_json`、`attestation_object`、`authenticator_data`、`public_key`、`algorithm`（Windows Hello が尋ねる） | `PasskeyCreate`（`passkey.md` §9） |
+| `passkey_get` | `origin`、`top`、`rp_id`、`challenge`、`allow`（ID の一覧）、`chosen`（選んだ候補の ID。なければ空） | `credential_id`、`client_data_json`、`authenticator_data`、`signature`、`user_handle`、または `choices`（`credential_id`、`user_name`、`display_name`）（Windows Hello が尋ねる。選んだ候補の送り直しを除く） | `PasskeyGet` |
 | `open_app` | — | — | （なし。デスクトップアプリを起動する） |
 
 - エラーの `code` は IPC のエラーコード（`ipc.md` §4.2。`Locked`、`NoVault` など）か、ブリッジのもの（`NotRunning`: 金庫デーモンが動いていない、`BadRequest`）。
+- パスキーの要求のバイト列（チャレンジ、ユーザーハンドル、クレデンシャル ID、署名など）は base64url（パディングなし）で書く。ブラウザの `PublicKeyCredential.toJSON()` と同じ。
 - ブリッジは金庫デーモンを起動しない（ブラウザが Native Messaging のホストをジョブに入れ、ホストの終了とともに子プロセスを終わらせることがあるため）。動いていなければ `NotRunning` を返し、拡張は利用者に ZeroPass を開くよう案内する（`open_app`）。
 - 1 つのメッセージの上限は、ブラウザへは 1 MiB（Chrome の上限）、ブリッジへは 64 KiB とする（超えたら終了する）。
 
@@ -159,3 +162,60 @@ Native Messaging の形式（4 バイトのネイティブエンディアンの�
 - 開発版の拡張 ID は公開鍵から導かれるので、同じ公開鍵を持つ展開した拡張は同じ ID になる。ストアの ID（P8-03）では、ストアが ID を管理する。
 - 乗っ取られたブリッジは、`BridgeTotp` で TOTP のドメインを何度でも施錠させ、Windows Hello の確認画面を出させることができる。コードを得るには利用者の承認が要るが、承認を繰り返し求められる（利用者が慣れて承認してしまう）おそれはある。
 - 送信の検出は推測である。パスワードの欄に値があるときに押されたボタンを送信とみなす（表示の切り替えらしいボタンは除く）ので、送信の前に提案が出たり、送信を見逃したりすることがある。提案は利用者が選んだときだけ保存・更新する。
+- パスキーについては §11.5。
+
+## 11. パスキー（P5-04）
+
+ページが `navigator.credentials.create` / `.get` でパスキーを求めたとき、利用者が選べば ZeroPass が答える。選ばなければ、ブラウザ自身の WebAuthn（ほかのパスキーのプロバイダ、セキュリティキー、スマートフォン）が答える。認証器の仕様は `passkey.md`。
+
+### 11.1 仕組み
+
+```
+ページ ─ navigator.credentials ─▶ ページの世界のスクリプト（webauthn.content.ts）
+        ─ window.postMessage ─▶ content script（passkeys.content.ts。ダイアログ）
+        ─ runtime.sendMessage ─▶ background（オリジンは sender から）─▶ zp-nmh ─▶ zp-vaultd
+```
+
+- **ページの世界のスクリプト**: すべてのフレームで、ページのスクリプトより前に（`document_start`、`world: "MAIN"`）`CredentialsContainer.prototype` の `create` と `get` を置き換える。`publicKey` のない要求、条件付きの仲介（`mediation: "conditional"`、パスキーの自動入力）と `silent` は、元の関数に渡す。それ以外は、要求を JSON（バイト列は base64url）にして、同じフレームの content script に `window.postMessage` で渡す。content script が 2 秒以内に受け取らなければ、ブラウザに任せる。
+- **content script**: 同じウィンドウ（`event.source === window`）からのメッセージだけを受け取る。別のフレームや別のウィンドウからの要求は無視する。1 フレームに 1 つずつ扱い、扱っている間の次の要求には `NotAllowedError` を返す。
+- **background**: 要求のオリジンを `sender` から得て（§1）、ブリッジの `passkey_create` / `passkey_get` を呼ぶ。ページや content script が名乗るオリジンは使わない。
+- 結果は、ページの世界のスクリプトが `PublicKeyCredential` の形のオブジェクト（`PublicKeyCredential.prototype` を継ぐ。`rawId`、`response`（`AuthenticatorAttestationResponse` / `AuthenticatorAssertionResponse` を継ぐ）、`getClientExtensionResults()`、`toJSON()`、`authenticatorAttachment: "platform"`、`getTransports()` は `["internal"]`）にしてページに返す。
+
+### 11.2 ブラウザに任せるもの
+
+ZeroPass は何も表示せず、元の関数がそのまま答える。
+
+- ZeroPass が動いていない、金庫がない、パスキーのドメインがない（`status` の `passkeys`）。
+- 作成で、`authenticatorAttachment` が `cross-platform`、または `pubKeyCredParams` に ES256・EdDSA がない（空なら ES256 で作る）。
+- 最上位のフレームとオリジンが違うフレーム（同じサイトでも。ログインの入力より狭い）。
+- 条件付きの仲介と `silent`。
+
+### 11.3 ダイアログ
+
+ページの右上に、閉じた Shadow DOM のダイアログを出す。ボタンは `isTrusted` のクリックだけを受け付ける（ページはダイアログの中を読めず、押せない）。
+
+1. **提案**: 作成なら「Save a passkey for <RP>?」（アカウント名つき）、署名なら「Sign in to <RP> with a passkey?」。「Save in ZeroPass」/「Use ZeroPass」、「Use another device or key」（ブラウザに任せる）、「Cancel」（`NotAllowedError`）。
+2. **Windows Hello の待ち**: ZeroPass を選ぶと、ブリッジが鍵エージェントを起動し（`ipc.md` §13.2）、金庫デーモンが Windows Hello で利用者を確かめる。この間、ダイアログに取り消しのボタンは置かない（Hello で承認したものは、必ずページに届ける）。
+3. **選択**: 候補が複数なら、アカウント名と表示名の一覧を出す。選んだものは、同じ要求に `chosen` を添えて送り直す（もう一度は尋ねない。`passkey.md` §9.2）。
+4. **結果**: 作成・署名できればダイアログを閉じてページに返す。できなければ、次のとおり。
+
+| ブリッジのエラー | ページへ |
+|---|---|
+| `UserCancelled` | すぐに `NotAllowedError` |
+| `Denied` | すぐに `SecurityError` |
+| `CredentialExcluded` | 「ZeroPass already keeps a passkey of this account」と示し、閉じたら `InvalidStateError` |
+| `ItemNotFound` | 「ZeroPass has no passkey for <RP>」と示し、ブラウザに任せるか `NotAllowedError` |
+| そのほか | 理由を示し、ブラウザに任せるか `NotAllowedError` |
+
+- ページが `AbortSignal` で取り消せば、ページの世界のスクリプトはすぐに `AbortError`（`signal.reason`）で終え、ダイアログを閉じる。Windows Hello の後に届いた結果は捨てる。
+
+### 11.4 拡張（WebAuthn extensions）
+
+- `credProps` を求められれば `{ rk: true }` を返す（すべて発見可能なクレデンシャル）。ほかの拡張は無視し、結果に含めない。
+
+### 11.5 限界
+
+- **Firefox**: ページの世界のスクリプトには、`content_scripts` の `world: "MAIN"` に対応した Firefox が要る。対応していない版では置き換えが効かず、ブラウザ自身の WebAuthn が答える（害はない）。Firefox では確かめていない。
+- **パスキーの自動入力**（条件付きの仲介）には加わらない。ZeroPass のパスキーは、ページの「パスキーでサインイン」などのボタン（モーダルの要求）から使う。
+- **ページの世界**: 置き換えたスクリプトはページと同じ世界で動くので、ページのスクリプトはそれを見たり、さらに置き換えたりできる。できるのは、そのページ自身の要求（そのページの RP のパスキー）に関わることだけで、ほかのサイトのパスキーには触れられない（オリジンはブラウザが決め、照合は金庫デーモンが行う）。
+- 乗っ取られた拡張とブリッジの限界は §10 と同じ（オリジンを偽れば、別のサイトのパスキーで署名させられる。署名のたびに Windows Hello が利用者を確かめることは変わらない）。
