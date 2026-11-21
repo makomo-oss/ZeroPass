@@ -842,3 +842,199 @@ fn the_bridge_saves_compares_and_updates_logins_of_the_page() {
         ErrorCode::Denied as i32
     );
 }
+
+#[test]
+fn passkeys_are_made_and_used_through_the_bridge_with_the_user_each_time() {
+    use std::sync::atomic::Ordering;
+
+    use crate::port::testing::FakeAgent;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::new(9));
+    let port: Arc<dyn crate::port::KeyAgentPort> = agent.clone();
+    let fixture = Fixture {
+        front: Front::local(
+            dir.path().join("test.zpvault"),
+            KeyStoreChoice::Platform,
+            Some(port),
+        ),
+        _dir: dir,
+    };
+    fixture.create();
+    let prompts = || agent.prompts.load(Ordering::SeqCst);
+    let bridge = |request: request::Body| fixture.call_as(Role::Bridge, request);
+    let code = |reply: Reply| ErrorCode::try_from(reply.err().unwrap().code).unwrap();
+    let create = |user: &[u8], name: &str| proto::PasskeyCreate {
+        origin: "https://login.example.com".into(),
+        top_origin: String::new(),
+        rp_id: "example.com".into(),
+        rp_name: "Example".into(),
+        user_handle: user.to_vec(),
+        user_name: name.into(),
+        user_display_name: name.into(),
+        challenge: b"registration challenge".to_vec(),
+        algorithms: vec![-7],
+        exclude: Vec::new(),
+    };
+    let get = |chosen: &[u8]| proto::PasskeyGet {
+        origin: "https://login.example.com".into(),
+        top_origin: String::new(),
+        rp_id: "example.com".into(),
+        challenge: b"sign-in challenge".to_vec(),
+        allow: Vec::new(),
+        chosen: chosen.to_vec(),
+    };
+    let created = |reply: Reply| match reply.unwrap() {
+        response::Body::PasskeyCreated(created) => created,
+        other => panic!("not created: {other:?}"),
+    };
+    let asserted = |reply: Reply| match reply.unwrap() {
+        response::Body::PasskeyAssertion(assertion) => assertion,
+        other => panic!("not an assertion: {other:?}"),
+    };
+
+    // Made in the passkey worker, after the user was asked: the domain was
+    // open (the vault was just made), yet the user is asked.
+    assert!(fixture.unlocked(D::Passkey));
+    let before = prompts();
+    let alice = created(bridge(request::Body::PasskeyCreate(create(
+        b"alice", "alice",
+    ))));
+    assert_eq!(prompts(), before + 1);
+    assert_eq!(alice.algorithm, -7);
+    let listed = fixture.list(D::Passkey, "");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        (listed[0].title.as_str(), listed[0].username.as_str()),
+        ("example.com", "alice")
+    );
+
+    // Signed with it, after the user was asked again.
+    let assertion = asserted(bridge(request::Body::PasskeyGet(get(&[]))));
+    assert_eq!(prompts(), before + 2);
+    assert_eq!(assertion.credential_id, alice.credential_id);
+    assert_eq!(assertion.user_handle, b"alice");
+    assert!(zp_passkey::authenticator::verify(
+        &alice.public_key,
+        &assertion.authenticator_data,
+        &assertion.client_data_json,
+        &assertion.signature
+    ));
+
+    // Two accounts: the user is asked, chooses, and is not asked again for
+    // that request; another request asks again.
+    let bob = created(bridge(request::Body::PasskeyCreate(create(b"bob", "bob"))));
+    let asked = prompts();
+    let response::Body::PasskeyChoices(choices) =
+        bridge(request::Body::PasskeyGet(get(&[]))).unwrap()
+    else {
+        panic!("a choice");
+    };
+    assert_eq!(prompts(), asked + 1);
+    let names: Vec<&str> = choices
+        .choices
+        .iter()
+        .map(|c| c.user_name.as_str())
+        .collect();
+    assert_eq!(names, ["alice", "bob"]);
+    let picked = asserted(bridge(request::Body::PasskeyGet(get(&bob.credential_id))));
+    assert_eq!(prompts(), asked + 1, "the pick is not asked again");
+    assert_eq!(picked.user_handle, b"bob");
+    let again = asserted(bridge(request::Body::PasskeyGet(get(&bob.credential_id))));
+    assert_eq!(again.user_handle, b"bob");
+    assert_eq!(prompts(), asked + 2, "the choice is used up");
+    // A pick for another challenge is a new request: asked.
+    bridge(request::Body::PasskeyGet(get(&[]))).unwrap();
+    let other = proto::PasskeyGet {
+        challenge: b"another challenge".to_vec(),
+        ..get(&alice.credential_id)
+    };
+    let before_other = prompts();
+    asserted(bridge(request::Body::PasskeyGet(other)));
+    assert_eq!(prompts(), before_other + 1);
+
+    // The user says no: nothing is made or signed.
+    agent.user_present.store(false, Ordering::SeqCst);
+    assert_eq!(
+        code(bridge(request::Body::PasskeyCreate(create(
+            b"carol", "carol"
+        )))),
+        ErrorCode::UserCancelled
+    );
+    assert_eq!(
+        code(bridge(request::Body::PasskeyGet(get(&[])))),
+        ErrorCode::UserCancelled
+    );
+    agent.user_present.store(true, Ordering::SeqCst);
+
+    // What cannot succeed is refused before the user is asked.
+    let quiet = prompts();
+    let elsewhere = proto::PasskeyCreate {
+        origin: "https://example.com.evil.net".into(),
+        ..create(b"mallory", "mallory")
+    };
+    assert_eq!(
+        code(bridge(request::Body::PasskeyCreate(elsewhere))),
+        ErrorCode::Denied
+    );
+    let framed = proto::PasskeyGet {
+        top_origin: "https://evil.net".into(),
+        ..get(&[])
+    };
+    assert_eq!(
+        code(bridge(request::Body::PasskeyGet(framed))),
+        ErrorCode::Denied
+    );
+    let rsa = proto::PasskeyCreate {
+        algorithms: vec![-257],
+        ..create(b"dave", "dave")
+    };
+    assert_eq!(
+        code(bridge(request::Body::PasskeyCreate(rsa))),
+        ErrorCode::UnsupportedAlgorithm
+    );
+    assert_eq!(prompts(), quiet, "asked for nothing");
+
+    // An excluded credential, a site without passkeys.
+    let excluded = proto::PasskeyCreate {
+        exclude: vec![alice.credential_id.clone()],
+        ..create(b"alice-2", "alice")
+    };
+    assert_eq!(
+        code(bridge(request::Body::PasskeyCreate(excluded))),
+        ErrorCode::CredentialExcluded
+    );
+    let nothing = proto::PasskeyGet {
+        origin: "https://example.net".into(),
+        rp_id: String::new(),
+        ..get(&[])
+    };
+    assert_eq!(
+        code(bridge(request::Body::PasskeyGet(nothing))),
+        ErrorCode::ItemNotFound
+    );
+
+    // Neither the agent broker nor the sync daemon may, and the front itself
+    // cannot: it never holds the passkey domain.
+    for role in [Role::Broker, Role::Sync] {
+        assert_eq!(
+            ErrorCode::try_from(
+                fixture
+                    .call_as(role, request::Body::PasskeyGet(get(&[])))
+                    .err()
+                    .unwrap()
+                    .code
+            )
+            .unwrap(),
+            ErrorCode::Denied
+        );
+    }
+    let response::Body::Error(error) = fixture
+        .front
+        .engine
+        .serve(request::Body::PasskeyGet(get(&[])))
+    else {
+        panic!("the front answered");
+    };
+    assert_eq!(error.code, ErrorCode::Internal as i32);
+}

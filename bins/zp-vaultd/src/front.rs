@@ -28,6 +28,33 @@ const WORKED: [DomainId; 2] = [DomainId::Totp, DomainId::Passkey];
 /// clock decides, this only clears up.
 const OFFER_GRACE: Duration = Duration::from_secs(5);
 
+/// How long the user has to pick one of several passkeys without being asked
+/// again (`docs/spec/passkey.md` §9).
+const CHOICE_TIME: Duration = Duration::from_secs(120);
+
+/// A request for an assertion that found several passkeys, for which the
+/// user was just verified: the same request, with one of them picked, is
+/// signed without asking again. Nothing in it is secret.
+struct PendingChoice {
+    request: proto::PasskeyGet,
+    choices: Vec<Vec<u8>>,
+    expires: Instant,
+}
+
+impl PendingChoice {
+    /// Whether `request` is the pending one with one of its passkeys picked.
+    fn answered_by(&self, request: &proto::PasskeyGet) -> bool {
+        let pending = &self.request;
+        Instant::now() < self.expires
+            && request.origin == pending.origin
+            && request.top_origin == pending.top_origin
+            && request.rp_id == pending.rp_id
+            && request.challenge == pending.challenge
+            && request.allow == pending.allow
+            && self.choices.contains(&request.chosen)
+    }
+}
+
 /// The processes behind the front.
 struct Backs {
     totp: Box<dyn Back>,
@@ -35,6 +62,8 @@ struct Backs {
     /// The process that holds a pairing offer and the keys to hand over,
     /// until the offer is used or has expired.
     offer: Option<(Box<dyn Back>, Instant)>,
+    /// Passkeys the user is picking from, if any.
+    choice: Option<PendingChoice>,
 }
 
 impl Backs {
@@ -90,6 +119,7 @@ impl Front {
                 totp: spawner.back(Scope::Domain(DomainId::Totp)),
                 passkey: spawner.back(Scope::Domain(DomainId::Passkey)),
                 offer: None,
+                choice: None,
             }),
             agent,
             spawner,
@@ -154,13 +184,22 @@ impl Front {
     pub(crate) fn tick(&self) {
         self.engine.tick();
         // A request in progress holds the lock; the next tick will do.
-        if let Ok(mut backs) = self.backs.try_lock()
-            && backs
+        if let Ok(mut backs) = self.backs.try_lock() {
+            let now = Instant::now();
+            if backs
                 .offer
                 .as_ref()
-                .is_some_and(|(_, expires)| Instant::now() >= *expires)
-        {
-            backs.offer = None;
+                .is_some_and(|(_, expires)| now >= *expires)
+            {
+                backs.offer = None;
+            }
+            if backs
+                .choice
+                .as_ref()
+                .is_some_and(|choice| now >= choice.expires)
+            {
+                backs.choice = None;
+            }
         }
     }
 
@@ -183,8 +222,10 @@ impl Front {
     fn lock(&self, backs: &mut Backs, domain: Option<DomainId>) {
         let everything = request::Body::Lock(proto::Lock { domain: None });
         // Whatever is locked, a waiting pairing offer is withdrawn: its
-        // process holds the keys of every domain.
+        // process holds the keys of every domain. So is a pending choice of
+        // passkeys: the user is asked again.
         backs.offer = None;
+        backs.choice = None;
         if domain.is_none_or(|domain| domain == DomainId::Password) {
             self.engine.lock_all();
         }
@@ -347,22 +388,10 @@ impl Front {
     fn bridge_totp(&self, backs: &mut Backs, request: &proto::BridgeTotp) -> Reply {
         self.engine
             .bridge_check(&request.origin, &request.top_origin, &request.item_id)?;
-        if !self.engine.has_domain(DomainId::Totp)? {
-            return Err(proto::Error::new(
-                ErrorCode::DomainUnavailable,
-                "this vault keeps no one-time codes",
-            ));
-        }
+        self.verify_user(backs, DomainId::Totp)?;
         let Some(worker) = backs.worker(DomainId::Totp) else {
             return Err(bad_request("no TOTP worker"));
         };
-        if worker.unlocked(DomainId::Totp) {
-            as_result(worker.call(request::Body::Lock(proto::Lock { domain: None })))?;
-        }
-        as_result(worker.call(request::Body::Unlock(proto::Unlock {
-            domain: proto::Domain::Totp as i32,
-            master_password: String::new(),
-        })))?;
         let list = request::Body::ListItems(proto::ListItems {
             domain: proto::Domain::Totp as i32,
             query: String::new(),
@@ -389,6 +418,88 @@ impl Front {
             ErrorCode::ItemNotFound,
             "no one-time code is tied to that login",
         ))
+    }
+
+    /// Verifies the user anew for one use of a hardware-bound domain: the
+    /// domain is locked and unlocked through the hardware key store (Windows
+    /// Hello), even if it was open, so that the extension cannot use it
+    /// without the user.
+    fn verify_user(&self, backs: &mut Backs, domain: DomainId) -> Result<(), proto::Error> {
+        if !self.engine.has_domain(domain)? {
+            return Err(proto::Error::about(
+                ErrorCode::DomainUnavailable,
+                convert::domain_to_proto(domain),
+                format!(
+                    "this vault has no {} domain (it was created without a hardware key store)",
+                    convert::domain_name(domain)
+                ),
+            ));
+        }
+        let Some(worker) = backs.worker(domain) else {
+            return Err(bad_request("that domain has no worker"));
+        };
+        if worker.unlocked(domain) {
+            as_result(worker.call(request::Body::Lock(proto::Lock { domain: None })))?;
+        }
+        as_result(worker.call(request::Body::Unlock(proto::Unlock {
+            domain: convert::domain_to_proto(domain) as i32,
+            master_password: String::new(),
+        })))
+        .map(drop)
+    }
+
+    /// Makes a passkey for the page (`docs/spec/passkey.md` §9): checked
+    /// here first, so that the user is not asked for a request that cannot
+    /// succeed, then made in the passkey worker after the user is verified.
+    fn passkey_create(&self, backs: &mut Backs, create: proto::PasskeyCreate) -> Reply {
+        crate::passkey::check_create(&create)?;
+        backs.choice = None;
+        self.verify_user(backs, DomainId::Passkey)?;
+        self.route(
+            backs,
+            DomainId::Passkey,
+            request::Body::PasskeyCreate(create),
+        )
+    }
+
+    /// Signs for the page with one of its passkeys. The user is verified for
+    /// every request, except the one that answers a choice the user was just
+    /// verified for.
+    fn passkey_get(&self, backs: &mut Backs, get: proto::PasskeyGet) -> Reply {
+        crate::passkey::check_get(&get)?;
+        let answers = backs
+            .choice
+            .take()
+            .is_some_and(|choice| choice.answered_by(&get));
+        if !answers {
+            self.verify_user(backs, DomainId::Passkey)?;
+        }
+        let mut reply = self.route(
+            backs,
+            DomainId::Passkey,
+            request::Body::PasskeyGet(get.clone()),
+        );
+        if answers && matches!(&reply, Err(error) if error.code == ErrorCode::Locked as i32) {
+            // The domain locked itself while the user chose: ask again.
+            self.verify_user(backs, DomainId::Passkey)?;
+            reply = self.route(
+                backs,
+                DomainId::Passkey,
+                request::Body::PasskeyGet(get.clone()),
+            );
+        }
+        if let Ok(response::Body::PasskeyChoices(choices)) = &reply {
+            backs.choice = Some(PendingChoice {
+                request: get,
+                choices: choices
+                    .choices
+                    .iter()
+                    .map(|choice| choice.credential_id.clone())
+                    .collect(),
+                expires: Instant::now() + CHOICE_TIME,
+            });
+        }
+        reply
     }
 
     fn dispatch(&self, backs: &mut Backs, request: request::Body) -> Reply {
@@ -435,6 +546,8 @@ impl Front {
             }
             Body::TotpCode(code) => self.route(backs, DomainId::Totp, Body::TotpCode(code)),
             Body::BridgeTotp(totp) => self.bridge_totp(backs, &totp),
+            Body::PasskeyCreate(create) => self.passkey_create(backs, create),
+            Body::PasskeyGet(get) => self.passkey_get(backs, get),
             Body::CreateRecoveryKit(kit) => {
                 if self.engine.has_recovery_kit()? && !kit.replace {
                     return Err(proto::Error::new(
@@ -538,6 +651,8 @@ fn permitted(role: Role, request: &request::Body) -> bool {
                 | request::Body::BridgeSave(_)
                 | request::Body::BridgeUpdate(_)
                 | request::Body::BridgeCompare(_)
+                | request::Body::PasskeyCreate(_)
+                | request::Body::PasskeyGet(_)
         ),
         // What this role may ask beyond the state of the vault is defined
         // together with the agent broker (P7-01).

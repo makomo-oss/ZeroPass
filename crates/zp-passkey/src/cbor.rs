@@ -1,5 +1,5 @@
 //! A writer for the few CBOR values WebAuthn needs (RFC 8949): integers, byte
-//! strings, and maps of definite length.
+//! and text strings, and maps of definite length.
 //!
 //! The authenticator only ever writes CBOR, never reads it, and always in the
 //! same shapes (a COSE key, an attestation object). The caller writes map
@@ -10,6 +10,7 @@
 const UNSIGNED: u8 = 0;
 const NEGATIVE: u8 = 1;
 const BYTES: u8 = 2;
+const TEXT: u8 = 3;
 const MAP: u8 = 5;
 
 /// Builds a CBOR encoding.
@@ -59,6 +60,13 @@ impl Cbor {
         self
     }
 
+    /// A text string.
+    pub(crate) fn text(&mut self, text: &str) -> &mut Self {
+        self.head(TEXT, text.len() as u64);
+        self.0.extend_from_slice(text.as_bytes());
+        self
+    }
+
     /// The start of a map of `entries` key-value pairs; the keys and values
     /// follow, in order.
     pub(crate) fn map(&mut self, entries: usize) -> &mut Self {
@@ -100,6 +108,9 @@ mod tests {
             hex(&Cbor::new().bytes(&[1, 2, 3, 4]).finish()),
             "4401020304"
         );
+        assert_eq!(hex(&Cbor::new().text("").finish()), "60");
+        assert_eq!(hex(&Cbor::new().text("IETF").finish()), "6449455446");
+        assert_eq!(hex(&Cbor::new().text("ü").finish()), "62c3bc");
         assert_eq!(hex(&Cbor::new().map(0).finish()), "a0");
         let map = Cbor::new().map(2).int(1).int(2).int(3).int(4).finish();
         assert_eq!(hex(&map), "a201020304");
@@ -109,5 +120,9 @@ mod tests {
     fn long_strings_get_a_longer_head() {
         assert_eq!(&Cbor::new().bytes(&[0; 24]).finish()[..2], [0x58, 24]);
         assert_eq!(&Cbor::new().bytes(&[0; 256]).finish()[..3], [0x59, 1, 0]);
+        assert_eq!(
+            &Cbor::new().text(&"a".repeat(300)).finish()[..3],
+            [0x79, 1, 44]
+        );
     }
 }

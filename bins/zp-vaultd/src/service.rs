@@ -723,6 +723,16 @@ impl Service {
             Body::BridgeCompare(request) => crate::bridge::compare(self.vault(state)?, &request),
             Body::BridgeSave(request) => crate::bridge::save(self.vault(state)?, &request),
             Body::BridgeUpdate(request) => crate::bridge::update(self.vault(state)?, &request),
+            // Only where the passkey domain may be: the private keys are
+            // decrypted nowhere else.
+            Body::PasskeyCreate(request) => {
+                self.holds(DomainId::Passkey)?;
+                crate::passkey::create(self.vault(state)?, &request)
+            }
+            Body::PasskeyGet(request) => {
+                self.holds(DomainId::Passkey)?;
+                crate::passkey::get(self.vault(state)?, &request)
+            }
             // These start a relay and do not arrive here.
             Body::PairAdmit(_) | Body::PairJoin(_) => {
                 Err(bad_request("this request needs a relay"))
