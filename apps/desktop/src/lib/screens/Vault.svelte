@@ -19,6 +19,7 @@
   import LoginView from "../components/LoginView.svelte";
   import NoteEditor from "../components/NoteEditor.svelte";
   import NoteView from "../components/NoteView.svelte";
+  import Passkeys from "../components/Passkeys.svelte";
   import Settings from "../components/Settings.svelte";
   import { userActive } from "../activity";
   import { byTitle, filterItems, hostOf } from "../search";
@@ -36,7 +37,7 @@
     onchanged: () => void;
   } = $props();
 
-  type Section = "logins" | "notes" | "codes" | "generator" | "devices" | "settings";
+  type Section = "logins" | "notes" | "codes" | "passkeys" | "generator" | "devices" | "settings";
   let section = $state<Section>("logins");
   let all: Summary[] = $state([]);
   let query = $state("");
@@ -146,6 +147,7 @@
     { id: "logins", label: "Logins" },
     { id: "notes", label: "Secure notes" },
     { id: "codes", label: "One-time codes" },
+    { id: "passkeys", label: "Passkeys" },
     { id: "generator", label: "Password generator" },
     { id: "devices", label: "Devices" },
     { id: "settings", label: "Settings" },
@@ -243,6 +245,8 @@
 
     {#if section === "codes"}
       <Codes domain={domainState(status, "totp")} {logins} {onchanged} />
+    {:else if section === "passkeys"}
+      <Passkeys domain={domainState(status, "passkey")} {onchanged} />
     {:else if section === "generator"}
       <div class="generator">
         <h2>Password generator</h2>

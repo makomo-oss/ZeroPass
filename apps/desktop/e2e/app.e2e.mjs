@@ -158,6 +158,17 @@ try {
     await shot("4-codes");
   });
 
+  await step("passkeys show only after unlocking their domain", async () => {
+    await page.getByRole("button", { name: /^Passkeys/ }).click();
+    const hide = button("Hide passkeys");
+    await hide.or(button("Show passkeys")).first().waitFor();
+    if (await hide.isVisible()) await hide.click();
+    await button("Show passkeys").click();
+    await page.getByText("No passkeys yet.").waitFor();
+    await button("Hide passkeys").click();
+    await button("Show passkeys").waitFor();
+  });
+
   await step("the generator follows its options", async () => {
     await page.getByRole("button", { name: /^Password generator/ }).click();
     await page.getByLabel("a–z", { exact: true }).uncheck();
