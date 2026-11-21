@@ -277,7 +277,9 @@ docs/    threat-model.md  adr/  spec/
 - **保留（所有者の判断、2026-11-16）**: Windows Hello でパスワードのドメインも開けるようにすること（実機確認の後に所有者から提案）。案: 端末ごとのオプトイン（既定はオフ。オンにするにはマスターパスワード）。Windows へのサインイン後の最初の解錠と、14 日ごとにマスターパスワードを求める。マスターパスワードとこの設定の変更にもマスターパスワードを求める。他の端末には同期しない。代償: その端末では Windows Hello（PIN でも通る）だけでパスワードと TOTP の両方が開き、原則③の独立性が弱まる（G5 と、TPM のある端末での G9 は保たれる）。進めるなら ADR を書き、`crypto.md` §6 のスロット表（ハードウェアのスロットを P にも）と脅威モデル §5.3 を改める。
 
 ### Phase 5: パスキーエンジン（原則④）
-- [ ] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
+- [x] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
+  - **決定（2026-11-22）: 自作**（[ADR-0010](../docs/adr/0010-passkey-engine.md)）。passkey-rs 0.6.0 は MIT/Apache-2.0 で保管先（`CredentialStore`）も差し替えられるが、秘密鍵を消去されない型（`coset::CoseKey`）で受け渡し、API が非同期で、金庫デーモンに 57 個の新しい依存（公開サフィックスリストの二重化、使わない CTAP2・ML-DSA を含む）が入る。ZeroPass に要るのは ES256・EdDSA、attestation `none`、発見可能なクレデンシャルだけなので、`p256`・`ed25519-dalek` の上に自作し、W3C の Level 3 のテストベクタで確かめる。
+  - 同じ ADR で決めたこと: 署名カウンタは常に 0、BE は 1・BS は別の端末があるときだけ 1、作成・認証のたびに Windows Hello、RP ID はページのホストか公開サフィックスでない親ドメイン、関連オリジンと条件付きの仲介（パスキーの自動入力）は範囲外。
 - [ ] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
 - [ ] **P5-03** `zp-passkey`: `makeCredential` / `getAssertion`（authenticatorData、attestation `none`、UV=生体認証、signCount 方針） — WebAuthn 適合テストベクタ（依存: P5-02）
 - [ ] **P5-04** 拡張: `navigator.credentials.create/get` の仲介とデーモン連携 — webauthn.io で登録・認証（依存: P5-03, P4-05）
