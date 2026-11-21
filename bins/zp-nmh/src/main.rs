@@ -7,6 +7,7 @@
 //! the password of one of them. It holds no secret between requests and has
 //! no network connection.
 
+mod base64url;
 mod frame;
 mod message;
 
@@ -92,6 +93,16 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Bytes the extension sent as base64url.
+fn bytes(text: &str) -> Result<Vec<u8>, Failure> {
+    base64url::decode(text).ok_or_else(|| {
+        Failure::new(
+            "BadRequest",
+            "bytes are written in base64url without padding",
+        )
+    })
+}
+
 fn parse_id(text: &str) -> Result<Vec<u8>, Failure> {
     let invalid = || Failure::new("BadRequest", "an item identifier is 32 hexadecimal digits");
     if text.len() != 32 || !text.is_ascii() {
@@ -112,6 +123,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                     running: false,
                     unlocked: false,
                     totp: false,
+                    passkeys: false,
                 });
             }
             let status = match daemon.call(request::Body::Status(proto::Status {})) {
@@ -123,6 +135,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                         running: false,
                         unlocked: false,
                         totp: false,
+                        passkeys: false,
                     });
                 }
                 Err(failure) => return Err(failure),
@@ -140,6 +153,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 running: true,
                 unlocked: state(proto::Domain::Password).unlocked,
                 totp: state(proto::Domain::Totp).available,
+                passkeys: state(proto::Domain::Passkey).available,
             })
         }
         Request::Find { origin, top } => {
@@ -251,6 +265,88 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
             };
             match daemon.call(request::Body::BridgeUpdate(update))? {
                 response::Body::Done(_) => Ok(Answer::Done {}),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::PasskeyCreate {
+            origin,
+            top,
+            rp_id,
+            rp_name,
+            user_id,
+            user_name,
+            user_display_name,
+            challenge,
+            algorithms,
+            exclude,
+        } => {
+            let create = proto::PasskeyCreate {
+                origin,
+                top_origin: top,
+                rp_id,
+                rp_name,
+                user_handle: bytes(&user_id)?,
+                user_name,
+                user_display_name,
+                challenge: bytes(&challenge)?,
+                algorithms,
+                exclude: exclude
+                    .iter()
+                    .map(|id| bytes(id))
+                    .collect::<Result<_, _>>()?,
+            };
+            // Windows Hello asks the user for every passkey (§9).
+            let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
+                .map_err(|error| Failure::from_client(&error))?;
+            match daemon.call(request::Body::PasskeyCreate(create))? {
+                response::Body::PasskeyCreated(created) => Ok(Answer::PasskeyCreated {
+                    credential_id: base64url::encode(&created.credential_id),
+                    client_data_json: base64url::encode(&created.client_data_json),
+                    attestation_object: base64url::encode(&created.attestation_object),
+                    authenticator_data: base64url::encode(&created.authenticator_data),
+                    public_key: base64url::encode(&created.public_key),
+                    algorithm: created.algorithm,
+                }),
+                _ => Err(unexpected()),
+            }
+        }
+        Request::PasskeyGet {
+            origin,
+            top,
+            rp_id,
+            challenge,
+            allow,
+            chosen,
+        } => {
+            let get = proto::PasskeyGet {
+                origin,
+                top_origin: top,
+                rp_id,
+                challenge: bytes(&challenge)?,
+                allow: allow.iter().map(|id| bytes(id)).collect::<Result<_, _>>()?,
+                chosen: bytes(&chosen)?,
+            };
+            let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
+                .map_err(|error| Failure::from_client(&error))?;
+            match daemon.call(request::Body::PasskeyGet(get))? {
+                response::Body::PasskeyAssertion(assertion) => Ok(Answer::PasskeyAssertion {
+                    credential_id: base64url::encode(&assertion.credential_id),
+                    client_data_json: base64url::encode(&assertion.client_data_json),
+                    authenticator_data: base64url::encode(&assertion.authenticator_data),
+                    signature: base64url::encode(&assertion.signature),
+                    user_handle: base64url::encode(&assertion.user_handle),
+                }),
+                response::Body::PasskeyChoices(choices) => Ok(Answer::PasskeyChoices {
+                    choices: choices
+                        .choices
+                        .into_iter()
+                        .map(|choice| message::PasskeyChoice {
+                            credential_id: base64url::encode(&choice.credential_id),
+                            user_name: choice.user_name,
+                            display_name: choice.user_display_name,
+                        })
+                        .collect(),
+                }),
                 _ => Err(unexpected()),
             }
         }

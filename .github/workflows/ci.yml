@@ -114,10 +114,16 @@ jobs:
         run: cargo build --locked -p zp-nmh -p zp-vaultd -p zp-cli -p zp-keyagent
       # The real extension in Chromium, the real bridge (registered for the
       # test browser), the real vault daemon in its sandbox; pages served
-      # locally. The sites test needs the internet and is run by hand.
+      # locally. The sites and webauthn.io tests need the internet and are
+      # run by hand.
       - name: Fill pages through the extension
         working-directory: apps/extension
         run: node e2e/local.e2e.mjs
+      # Passkeys made and used through the extension, checked by an
+      # independent relying-party library.
+      - name: Passkeys through the extension
+        working-directory: apps/extension
+        run: node e2e/passkeys.e2e.mjs
 
   desktop-e2e:
     name: desktop application end to end (windows)

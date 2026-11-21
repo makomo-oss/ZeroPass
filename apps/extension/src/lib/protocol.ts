@@ -1,6 +1,9 @@
 // The messages between the parts of the extension, and between the extension
 // and the bridge zp-nmh (docs/spec/extension.md §3.3).
 
+import type { AssertedCredential, CreatedCredential, CreateRequest, GetRequest } from "./webauthn-json";
+import type { PasskeyChoiceView } from "./passkey-dialog";
+
 /** The bridge's name (docs/spec/extension.md §3.1). */
 export const NATIVE_HOST = "io.github.makomo_oss.zeropass";
 
@@ -18,6 +21,8 @@ export interface BridgeStatus {
   running: boolean;
   unlocked: boolean;
   totp: boolean;
+  /** Whether the vault keeps passkeys. */
+  passkeys: boolean;
 }
 
 /** What the extension can do for a page. */
@@ -43,7 +48,20 @@ export type Ask =
   | { kind: "open_app" }
   | { kind: "status" }
   | { kind: "find_for_tab"; tab: number }
-  | { kind: "fill_tab"; tab: number; item: string };
+  | { kind: "fill_tab"; tab: number; item: string }
+  | { kind: "passkey_status" }
+  | { kind: "passkey_create"; request: CreateRequest }
+  | { kind: "passkey_get"; request: GetRequest; chosen: string };
+
+/** Whether ZeroPass can take passkey requests now. */
+export interface PasskeyStatus {
+  available: boolean;
+}
+
+/** How a passkey request went at ZeroPass. Nothing secret. */
+export type PasskeyReply =
+  | { ok: true; created?: CreatedCredential; asserted?: AssertedCredential; choices?: PasskeyChoiceView[] }
+  | { ok: false; code: string; message: string };
 
 /** A login the extension offers to save or update. No secret. */
 export interface Proposal {

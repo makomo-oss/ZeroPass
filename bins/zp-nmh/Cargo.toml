@@ -20,3 +20,4 @@ zp-ipc = { version = "0.0.0", path = "../../crates/zp-ipc" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+zp-passkey = { version = "0.0.0", path = "../../crates/zp-passkey" }

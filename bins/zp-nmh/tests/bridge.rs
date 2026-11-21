@@ -394,3 +394,105 @@ fn the_extension_saves_compares_updates_and_gets_one_time_codes() {
         "{found}"
     );
 }
+
+/// Reads the bridge's base64url.
+fn unbase64url(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut bits = 0u32;
+    let mut count = 0;
+    let mut out = Vec::new();
+    for symbol in text.bytes() {
+        let value = ALPHABET.iter().position(|&c| c == symbol).unwrap();
+        bits = bits << 6 | u32::try_from(value).unwrap();
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            out.push(u8::try_from(bits >> count & 0xff).unwrap());
+        }
+    }
+    out
+}
+
+fn field(reply: &Value, name: &str) -> Vec<u8> {
+    unbase64url(
+        reply[name]
+            .as_str()
+            .unwrap_or_else(|| panic!("no {name}: {reply}")),
+    )
+}
+
+#[test]
+fn the_extension_makes_and_uses_passkeys_of_the_page() {
+    others_are_built();
+    let temp = tempfile::tempdir().unwrap();
+    let vault = temp.path().join("passkeys.zpvault");
+    let _daemon = Daemon(&vault);
+    // The development key store stands in for Windows Hello.
+    cli_with(
+        &vault,
+        "--insecure-software-keystore",
+        &["init"],
+        &[PASSWORD, PASSWORD],
+    );
+    let mut bridge = Bridge::start(&vault, &[CHROME]);
+    let status = bridge.ask(json!({ "type": "status" }));
+    assert_eq!(status["passkeys"], json!(true), "{status}");
+
+    let origin = "https://login.example.com";
+    let created = bridge.ask(json!({
+        "type": "passkey_create", "origin": origin, "rp_id": "example.com", "rp_name": "Example",
+        "user_id": "YWxpY2U", "user_name": "alice", "user_display_name": "Alice",
+        "challenge": "cmVnaXN0cmF0aW9uLWNoYWxsZW5nZQ", "algorithms": [-7]
+    }));
+    assert_eq!(created["ok"], json!(true), "{created}");
+    assert_eq!(created["algorithm"], json!(-7));
+    let public_key = field(&created, "public_key");
+    let client_data = String::from_utf8(field(&created, "client_data_json")).unwrap();
+    assert!(
+        client_data.contains(r#""type":"webauthn.create""#)
+            && client_data.contains(r#""origin":"https://login.example.com""#),
+        "{client_data}"
+    );
+    let object = field(&created, "attestation_object");
+    assert!(object.starts_with(b"\xa3\x63fmt\x64none"));
+
+    let signed = bridge.ask(json!({
+        "type": "passkey_get", "origin": origin, "rp_id": "example.com",
+        "challenge": "c2lnbi1pbi1jaGFsbGVuZ2U"
+    }));
+    assert_eq!(signed["ok"], json!(true), "{signed}");
+    assert_eq!(signed["credential_id"], created["credential_id"]);
+    assert_eq!(field(&signed, "user_handle"), b"alice");
+    assert!(zp_passkey::authenticator::verify(
+        &public_key,
+        &field(&signed, "authenticator_data"),
+        &field(&signed, "client_data_json"),
+        &field(&signed, "signature"),
+    ));
+
+    // Another site may neither use example.com's passkeys nor name it.
+    let phishing = bridge.ask(json!({
+        "type": "passkey_get", "origin": "https://example.com.evil.net", "rp_id": "example.com",
+        "challenge": "AQ"
+    }));
+    assert_eq!(error_code(&phishing), "Denied");
+    let own = bridge.ask(json!({
+        "type": "passkey_get", "origin": "https://example.com.evil.net", "challenge": "AQ"
+    }));
+    assert_eq!(error_code(&own), "ItemNotFound");
+    let framed = bridge.ask(json!({
+        "type": "passkey_get", "origin": origin, "top": "https://evil.net",
+        "rp_id": "example.com", "challenge": "AQ"
+    }));
+    assert_eq!(error_code(&framed), "Denied");
+    let malformed = bridge.ask(json!({
+        "type": "passkey_get", "origin": origin, "challenge": "not base64url!"
+    }));
+    assert_eq!(error_code(&malformed), "BadRequest");
+    let excluded = bridge.ask(json!({
+        "type": "passkey_create", "origin": origin, "rp_id": "example.com",
+        "user_id": "YWxpY2UtMg", "user_name": "alice", "challenge": "AQ",
+        "exclude": [created["credential_id"]]
+    }));
+    assert_eq!(error_code(&excluded), "CredentialExcluded");
+}
