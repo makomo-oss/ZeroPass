@@ -83,7 +83,9 @@ try {
             type: "public-key",
             id: Uint8Array.from(atob(id.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
           }));
-          const credential = await navigator.credentials.create({ publicKey });
+          const controller = new AbortController();
+          if (extra.abortAfter) setTimeout(() => controller.abort(), extra.abortAfter);
+          const credential = await navigator.credentials.create({ publicKey, signal: controller.signal });
           return {
             ok: true,
             json: credential.toJSON(),
@@ -218,7 +220,10 @@ try {
   }, () => shot("choose"));
 
   await step("the user may leave a request to the browser", async () => {
-    // A virtual authenticator stands in for the browser's own passkeys.
+    // A virtual authenticator stands in for the browser's own passkeys. On
+    // some machines (the CI's Windows Server) the browser shows its own
+    // prompt instead and waits: the page then gives up after a while, and
+    // the browser's AbortError shows the request was the browser's.
     const cdp = await context.newCDPSession(page);
     await cdp.send("WebAuthn.enable");
     const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
@@ -233,12 +238,17 @@ try {
     });
     try {
       const { options, verify } = await register("carol");
-      const pending = create(options);
+      const pending = create(options, { abortAfter: 8000 });
       await press("native");
+      await page.waitForFunction(() => document.querySelector("zeropass-passkey") === null, null, { timeout: 5000 });
       const result = await pending;
-      expect(result.ok, `the browser's create failed: ${result.name}: ${result.message}`);
-      const { verified, registrationInfo } = await verify(result.json);
-      expect(verified && registrationInfo.aaguid !== ZEROPASS_AAGUID, "the passkey was not the browser's");
+      if (result.ok) {
+        const { verified, registrationInfo } = await verify(result.json);
+        expect(verified && registrationInfo.aaguid !== ZEROPASS_AAGUID, "the passkey was not the browser's");
+      } else {
+        expect(result.name === "AbortError", `the browser's create failed: ${result.name}: ${result.message}`);
+        console.log("  (the browser did not use the virtual authenticator; its request was aborted)");
+      }
       expect(passkeysInVault() === 2, "ZeroPass kept the browser's passkey");
     } finally {
       await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId }).catch(() => {});
