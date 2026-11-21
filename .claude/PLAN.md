@@ -280,7 +280,10 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P5-01** `passkey` クレート群の評価（ライセンス・保守状況・CredentialStore 差し替え可否）→ 採用 or 自作を ADR 化（依存: G-01）
   - **決定（2026-11-22）: 自作**（[ADR-0010](../docs/adr/0010-passkey-engine.md)）。passkey-rs 0.6.0 は MIT/Apache-2.0 で保管先（`CredentialStore`）も差し替えられるが、秘密鍵を消去されない型（`coset::CoseKey`）で受け渡し、API が非同期で、金庫デーモンに 57 個の新しい依存（公開サフィックスリストの二重化、使わない CTAP2・ML-DSA を含む）が入る。ZeroPass に要るのは ES256・EdDSA、attestation `none`、発見可能なクレデンシャルだけなので、`p256`・`ed25519-dalek` の上に自作し、W3C の Level 3 のテストベクタで確かめる。
   - 同じ ADR で決めたこと: 署名カウンタは常に 0、BE は 1・BS は別の端末があるときだけ 1、作成・認証のたびに Windows Hello、RP ID はページのホストか公開サフィックスでない親ドメイン、関連オリジンと条件付きの仲介（パスキーの自動入力）は範囲外。
-- [ ] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
+- [x] **P5-02** `zp-passkey`: クレデンシャル生成・保管（VK-K ドメイン、秘密鍵は `zp-vaultd` のパスキーワーカー外に出さない）（依存: P5-01, P3-04）
+  - 実装: `crates/zp-passkey`（`docs/spec/passkey.md` §1〜§3）。`key`: ES256（`p256`、RFC 6979）と EdDSA（`ed25519-dalek`）の鍵、PKCS #8 DER での保存、COSE_Key と SubjectPublicKeyInfo の公開鍵、署名と検証。秘密鍵は消去される型でだけ持つ。`credential`: 新しいクレデンシャル（乱数 16 バイトの ID）、RP ID と `allowCredentials` による検索、同じ RP ID とユーザーハンドルのものの置き換え。CBOR は書くだけの小さな実装（`ciborium` を入れない）。金庫のアイテムの形（`PasskeyCredential`）は Phase 1 のまま変えていない。
+  - 確認: 単体テスト（アルゴリズムの選択、PKCS #8 の往復、署名と改ざんの検出、別のアルゴリズムの鍵を拒む、P-256 の COSE_Key が W3C の Level 3 §16.2 のテストベクタと一致、CBOR が RFC 8949 付録 A の例と一致）、`tests/store.rs`（実際の金庫ファイルで、パスキーのドメインに入る、RP ごと・アカウントごと、別の RP の ID では見つからない、パスキーのドメインが施錠されていればパスワードのドメインを開けても読めない、ファイルに秘密鍵・公開鍵・クレデンシャル ID・RP ID が平文で出ない）。
+  - 金庫デーモンのパスキーワーカーでの使用（＝秘密鍵がワーカーの外に出ないこと）は、作成と署名の要求とともに P5-03 で組み込む。
 - [ ] **P5-03** `zp-passkey`: `makeCredential` / `getAssertion`（authenticatorData、attestation `none`、UV=生体認証、signCount 方針） — WebAuthn 適合テストベクタ（依存: P5-02）
 - [ ] **P5-04** 拡張: `navigator.credentials.create/get` の仲介とデーモン連携 — webauthn.io で登録・認証（依存: P5-03, P4-05）
 - [ ] **P5-05** パスキーの端末間同期の検証（PC で登録 → Android で認証は P6 で確認、ここでは PC 2 台） （依存: P5-04）
