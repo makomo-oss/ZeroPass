@@ -229,6 +229,7 @@ export const devices = {
   join: (code: string, name: string, password: string) =>
     invoke<Joined>("join_vault", { code, name, password }),
   defaultName: () => invoke<string>("default_device_name"),
+  resetLocalVault: () => invoke<void>("reset_local_vault"),
 };
 
 export type ImportPreview =

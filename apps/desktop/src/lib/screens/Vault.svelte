@@ -28,12 +28,15 @@
     info,
     onlock,
     onchanged,
+    onreset,
   }: {
     status: Status;
     info: AppInfo | null;
     onlock: () => void;
     /** The state of the vault may have changed: ask again. */
     onchanged: () => void;
+    /** The local vault was reset so this device can pair anew. */
+    onreset: () => void;
   } = $props();
 
   type Section = "logins" | "notes" | "codes" | "generator" | "devices" | "settings";
@@ -249,7 +252,7 @@
         <Generator />
       </div>
     {:else if section === "devices"}
-      <Devices {onchanged} />
+      <Devices thisDeviceId={status.device_id} {onchanged} {onreset} />
     {:else if section === "settings"}
       <Settings {status} {info} {onchanged} />
     {:else if mode === "new"}

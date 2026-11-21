@@ -822,3 +822,23 @@ fn init_creates_the_folder_of_a_new_vault() {
     assert!(err.contains("no vault file"), "{err}");
     assert!(!missing.parent().unwrap().exists());
 }
+
+#[test]
+fn join_replace_requires_confirmation_and_keeps_vault_on_decline() {
+    let cli = Cli::new();
+    cli.ok(&["init"], &[PASSWORD, PASSWORD]);
+    let login_id = added_id(&cli.ok(
+        &["add", "login", "--title", "KeepMe"],
+        &[PASSWORD, "keep-secret"],
+    ));
+
+    // Without --replace, join refuses to overwrite an existing vault.
+    let err = cli.fails(&["join"], &[]);
+    assert!(err.contains("already exists"), "{err}");
+
+    // With --replace, declining keeps the existing vault untouched.
+    let err = cli.fails(&["join", "--replace"], &["n"]);
+    assert!(err.contains("nothing was changed"), "{err}");
+    let kept = cli.ok(&["get", &login_id, "--reveal"], &[PASSWORD]);
+    assert!(kept.contains("keep-secret"), "{kept}");
+}

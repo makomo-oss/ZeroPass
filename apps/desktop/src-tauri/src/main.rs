@@ -178,6 +178,7 @@ fn main() {
             devices::pair_cancel,
             devices::join_vault,
             devices::default_device_name,
+            devices::reset_local_vault,
             transfer::import_choose,
             transfer::import_confirm,
             transfer::import_cancel,

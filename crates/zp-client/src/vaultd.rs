@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use zp_ipc::proto::{self, request};
 use zp_ipc::{Client, DAEMON_NAME, DAEMON_SANDBOX, DaemonPolicy, Endpoint, IpcError};
 use zp_sandbox::Access;
 use zp_vault::VaultError;
@@ -162,4 +163,15 @@ pub fn open(vault: &Path, choice: KeyStoreChoice, start: Start) -> Result<Client
 pub fn wait_until_stopped(vault: &Path) -> Result<()> {
     zp_ipc::wait_until_closed(&Endpoint::for_vault(vault)?, STOP_TIMEOUT);
     Ok(())
+}
+
+/// Stops the vault daemon of `vault` if it is running. Returns whether it was.
+pub fn stop(vault: &Path) -> Result<bool> {
+    let Some(mut client) = connect(vault, KeyStoreChoice::None, Start::Never)? else {
+        return Ok(false);
+    };
+    client.call(request::Body::Shutdown(proto::Shutdown {}))?;
+    drop(client);
+    wait_until_stopped(vault)?;
+    Ok(true)
 }

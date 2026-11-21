@@ -147,20 +147,46 @@ pub(super) fn sync(vault_path: &Path, seconds: u64, out: &mut impl Write) -> Cli
 /// `join`: creates this device's vault file by joining an existing vault with a
 /// pairing code. The vault daemon creates the file from what the other device
 /// grants; this process only carries the bytes.
+///
+/// With `replace`, confirms and removes an existing local vault file first so
+/// that a previously revoked device can pair again with a new device identifier
+/// and new keys.
 pub(super) fn join(
     choice: KeyStoreChoice,
     vault_path: &Path,
     name: Option<String>,
+    replace: bool,
     out: &mut impl Write,
 ) -> CliResult<()> {
-    if vault_path.exists() {
-        return Err(VaultError::AlreadyExists.into());
-    }
+    let replacing = if vault_path.exists() {
+        if !replace {
+            return Err(VaultError::AlreadyExists.into());
+        }
+        true
+    } else {
+        false
+    };
     let input = Input::new();
+    if replacing {
+        let prompt = format!(
+            "Delete the local vault at {} and join as a new device? [y/N] ",
+            vault_path.display()
+        );
+        let confirmed = matches!(
+            input.line(&prompt)?,
+            Some(answer) if answer.trim().eq_ignore_ascii_case("y")
+        );
+        if !confirmed {
+            return Err("nothing was changed".into());
+        }
+    }
     // The password first: the code is short-lived.
     let password = input.new_master_password()?;
     let code = input.secret("Pairing code shown on the other device: ")?;
     let name = name.unwrap_or_else(default_device_name);
+    if replacing {
+        zp_client::reset_local_vault(vault_path)?;
+    }
     let joined = pairing::join(vault_path, choice, &code, &name, &password)?;
 
     writeln!(out, "joined vault {} as \"{name}\"", hex(&joined.vault_id))?;

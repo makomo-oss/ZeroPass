@@ -113,3 +113,91 @@ pub(crate) fn sibling(name: &str) -> Result<PathBuf> {
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     Ok(std::env::current_exe()?.with_file_name(file))
 }
+
+/// Removes a file if it exists, retrying briefly when a just-stopped daemon on
+/// Windows is still releasing its handle.
+fn remove_file_if_present(path: &std::path::Path) -> Result<()> {
+    const RETRIES: usize = 40;
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+    for attempt in 0..=RETRIES {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt < RETRIES && should_retry_remove(&error) => {
+                std::thread::sleep(DELAY);
+            }
+            Err(error) => {
+                return Err(Error::message(format!(
+                    "cannot remove {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn should_retry_remove(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(32 | 33))
+}
+
+/// Stops the sync and vault daemons of `vault` and deletes the local vault
+/// file and its SQLite / development-keystore sidecar files, so this device
+/// can pair again with a fresh device identifier and new keys.
+///
+/// Only the exact vault path and its sidecar files (`-journal`, `-wal`, `-shm`,
+/// `.devkey`) are removed; unrelated files in the directory are untouched.
+pub fn reset_local_vault(vault: &std::path::Path) -> Result<()> {
+    // Stop the sync daemon first so it does not reconnect while the vault
+    // daemon is shutting down.
+    let _ = syncd::stop(vault)?;
+    let _ = vaultd::stop(vault)?;
+
+    let sidecar = |suffix: &str| {
+        let mut os = vault.as_os_str().to_owned();
+        os.push(suffix);
+        PathBuf::from(os)
+    };
+    for path in [
+        vault.to_path_buf(),
+        sidecar("-journal"),
+        sidecar("-wal"),
+        sidecar("-shm"),
+        dev_key_path(vault),
+    ] {
+        remove_file_if_present(&path)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_local_vault_removes_only_vault_and_sidecar_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vault = dir.path().join("vault.zpvault");
+        let journal = dir.path().join("vault.zpvault-journal");
+        let wal = dir.path().join("vault.zpvault-wal");
+        let shm = dir.path().join("vault.zpvault-shm");
+        let devkey = dir.path().join("vault.devkey");
+        let unrelated = dir.path().join("keep.txt");
+
+        for path in [&vault, &journal, &wal, &shm, &devkey, &unrelated] {
+            std::fs::write(path, b"test").expect("write");
+        }
+
+        reset_local_vault(&vault).expect("reset");
+
+        for removed in [&vault, &journal, &wal, &shm, &devkey] {
+            assert!(!removed.exists(), "{} should be removed", removed.display());
+        }
+        assert!(unrelated.exists(), "unrelated files must stay untouched");
+
+        // Idempotent when already gone.
+        reset_local_vault(&vault).expect("second reset");
+    }
+}

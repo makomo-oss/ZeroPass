@@ -4,15 +4,18 @@
 
   let {
     vaultPath,
+    startInJoin = false,
     oncreated,
     onjoined,
   }: {
     vaultPath: string;
+    startInJoin?: boolean;
     oncreated: (status: Status) => void;
     onjoined: () => void;
   } = $props();
 
-  let joining = $state(false);
+  let joinChoice: boolean | null = $state(null);
+  let joining = $derived(joinChoice ?? startInJoin);
 
   let password = $state("");
   let again = $state("");
@@ -48,7 +51,7 @@
 <main class="center">
   {#if joining}
   <div class="card panel">
-    <Join {onjoined} oncancel={() => (joining = false)} />
+    <Join {onjoined} oncancel={() => (joinChoice = false)} />
   </div>
   {:else}
   <form class="card panel" onsubmit={create}>
@@ -108,7 +111,7 @@
     <button class="button primary" type="submit" disabled={!ready}>
       Create vault
     </button>
-    <button class="button ghost" type="button" onclick={() => (joining = true)} disabled={busy}>
+    <button class="button ghost" type="button" onclick={() => (joinChoice = true)} disabled={busy}>
       Join a vault from another device instead
     </button>
     <p class="muted small path" title={vaultPath}>{vaultPath}</p>

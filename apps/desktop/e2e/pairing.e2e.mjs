@@ -104,13 +104,57 @@ try {
   });
 
   await step("the first device revokes the second", async () => {
-    const { page, button } = a;
+    const { page } = a;
     await page.getByRole("button", { name: /^Devices/ }).click();
     const row = page.getByRole("row", { name: /Second PC/ });
     await row.getByRole("button", { name: "Revoke" }).click();
     await row.getByRole("button", { name: "Revoke" }).click();
     await page.getByText(/was revoked and the vault keys were replaced/).waitFor({ timeout: 30_000 });
     await row.getByRole("cell", { name: "Revoked" }).waitFor();
+  });
+
+  await step("the revoked device resets its local vault and re-pairs with a new device ID", async () => {
+    // First device creates a new login after revocation (under rotated key epoch 2)
+    // and offers a fresh pairing code.
+    await a.page.getByRole("button", { name: /^Logins/ }).click();
+    await a.page.getByTitle("New login").click();
+    await a.page.getByLabel("Title").fill("After revocation");
+    await a.page.locator("input[type=password]").fill("post-revoke-password");
+    await a.button("Save").click();
+    await a.page.getByRole("heading", { name: "After revocation" }).waitFor();
+
+    await a.page.getByRole("button", { name: /^Devices/ }).click();
+    await a.button("Add a device").click();
+    const shown = a.page.getByLabel("pairing code");
+    await shown.waitFor({ timeout: 30_000 });
+    const newCode = ((await shown.textContent()) ?? "").trim();
+    expect(newCode.length > 20, `the new code is ${newCode}`);
+
+    // Second device resets its local vault from Devices -> enters Join screen directly.
+    await b.page.getByRole("button", { name: /^Devices/ }).click();
+    await b.button("Reset local vault and re-pair").click();
+    await b.button("Delete and re-pair").click();
+    await b.page.getByRole("heading", { name: "Join a vault" }).waitFor({ timeout: 30_000 });
+
+    await b.page.getByLabel("Pairing code").fill(newCode);
+    await b.page.getByLabel(/^This device's name/).fill("Second PC (re-paired)");
+    await b.page.getByLabel(/^Master password for this device/).fill(PASSWORD_B);
+    await b.page.getByLabel("Repeat the master password").fill(PASSWORD_B);
+    await b.button("Join").click();
+
+    // First device confirms the re-paired device.
+    await a.page.getByRole("heading", { name: "Add this device to the vault?" }).waitFor({ timeout: 60_000 });
+    await a.page.getByText("Second PC (re-paired)", { exact: true }).waitFor();
+    await a.button("Add the device").click();
+    await a.page.getByRole("heading", { name: "Device added" }).waitFor({ timeout: 60_000 });
+    await a.button("Close").click();
+
+    // Second device now holds the post-revocation login and shows 3 entries (1 revoked + 2 active).
+    await b.page.getByRole("button", { name: /^Logins/ }).waitFor({ timeout: 60_000 });
+    await b.page.locator("ul.items").getByText("After revocation").waitFor();
+    await b.page.getByRole("button", { name: /^Devices/ }).click();
+    await b.page.getByRole("cell", { name: /Second PC \(re-paired\)/ }).waitFor();
+    await b.page.getByRole("cell", { name: "Revoked" }).waitFor();
   });
 
   await step("neither page reported errors", async () => {
@@ -130,7 +174,7 @@ try {
       stdio: "ignore",
     });
   }
-  await sleep(500);
-  rmSync(dir, { recursive: true, force: true });
+  await sleep(1500);
+  rmSync(dir, { recursive: true, force: true, maxRetries: 24, retryDelay: 250 });
 }
 finish();
