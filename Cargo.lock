@@ -6210,6 +6210,7 @@ dependencies = [
  "clap",
  "qrcode",
  "rpassword",
+ "serde_json",
  "tempfile",
  "zeroize",
  "zp-client",
@@ -6217,6 +6218,7 @@ dependencies = [
  "zp-crypto",
  "zp-import",
  "zp-ipc",
+ "zp-passkey",
  "zp-sandbox",
  "zp-vault",
 ]
