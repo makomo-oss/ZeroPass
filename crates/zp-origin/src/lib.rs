@@ -100,6 +100,42 @@ impl Origin {
         &self.host
     }
 
+    /// Whether the page is served over `https`.
+    pub fn is_https(&self) -> bool {
+        self.https
+    }
+
+    /// The WebAuthn relying party identifier a page of this origin may use
+    /// (`docs/spec/passkey.md` §8): `requested`, or the host if it is empty,
+    /// when it is the host itself or a parent domain of it that is not a
+    /// public suffix (private section included, as browsers do). Only for
+    /// `https` pages, and for `http://localhost`, a secure context too; never
+    /// for an IP address. `None` if the page may not use it.
+    pub fn relying_party_id(&self, requested: &str) -> Option<String> {
+        if self.host == "localhost" {
+            let local = requested.is_empty() || requested.eq_ignore_ascii_case("localhost");
+            return local.then(|| "localhost".to_owned());
+        }
+        if !self.https || !self.is_domain() {
+            return None;
+        }
+        let rp_id = if requested.is_empty() {
+            self.host.clone()
+        } else {
+            domain_name(requested)?
+        };
+        let site = self.site()?;
+        let below = |parent: &str| {
+            self.host
+                .strip_suffix(parent)
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+        };
+        // The relying party is the host or one of its parents, and the site
+        // (the registrable domain) is that or one of its parents in turn: so
+        // the relying party is never a public suffix.
+        (below(&rp_id) && rp_id.ends_with(site) && rp_id.len() >= site.len()).then_some(rp_id)
+    }
+
     /// The registrable domain of the host (eTLD+1), if the host is a domain
     /// name below a public suffix.
     pub fn site(&self) -> Option<&str> {
@@ -171,6 +207,26 @@ impl Origin {
     /// The best match among the URLs of one login.
     pub fn best_match<'a>(&self, urls: impl IntoIterator<Item = &'a str>) -> Option<Match> {
         urls.into_iter().filter_map(|url| self.matches(url)).max()
+    }
+}
+
+/// A bare domain name as a page names it (for example a relying party
+/// identifier), in the ASCII form a browser compares: lower case, Punycode
+/// for international names. `None` for anything else: a port, a path,
+/// credentials, an address, a trailing dot.
+fn domain_name(text: &str) -> Option<String> {
+    let bare = !text.is_empty()
+        && !text.ends_with('.')
+        && !text.chars().any(|c| {
+            c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '@' | '?' | '#' | '[' | ']' | '%')
+        });
+    if !bare {
+        return None;
+    }
+    let url = Url::parse(&format!("https://{text}/")).ok()?;
+    match url.host()? {
+        Host::Domain(domain) if !domain.is_empty() => Some(domain.to_ascii_lowercase()),
+        _ => None,
     }
 }
 
@@ -392,5 +448,77 @@ mod tests {
         assert!(!top.same_site(&page("https://evil.net")));
         assert!(!page("https://alice.github.io").same_site(&page("https://bob.github.io")));
         assert!(page("http://localhost:1").same_site(&page("http://localhost:2")));
+    }
+
+    #[test]
+    fn a_page_may_use_its_host_or_a_parent_below_the_public_suffix_as_relying_party() {
+        let login = page("https://login.example.co.uk");
+        let rp = |origin: &Origin, requested: &str| origin.relying_party_id(requested);
+        assert_eq!(rp(&login, "").as_deref(), Some("login.example.co.uk"));
+        assert_eq!(
+            rp(&login, "login.example.co.uk").as_deref(),
+            Some("login.example.co.uk")
+        );
+        assert_eq!(
+            rp(&login, "example.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            rp(&login, "EXAMPLE.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        // Not a public suffix, not another site, not a child, not a lookalike.
+        for refused in [
+            "co.uk",
+            "uk",
+            "other.co.uk",
+            "evil.login.example.co.uk",
+            "gin.example.co.uk",
+            "xample.co.uk",
+            "example.co.uk.evil.net",
+        ] {
+            assert_eq!(rp(&login, refused), None, "{refused}");
+        }
+        // Anything but a bare domain name.
+        for malformed in [
+            "example.co.uk.",
+            "example.co.uk:443",
+            "https://example.co.uk",
+            "example.co.uk/",
+            "user@example.co.uk",
+            " example.co.uk",
+            "exam%70le.co.uk",
+        ] {
+            assert_eq!(rp(&login, malformed), None, "{malformed}");
+        }
+        // Users of shared hosting are not each other's relying party.
+        let alice = page("https://alice.github.io");
+        assert_eq!(rp(&alice, "").as_deref(), Some("alice.github.io"));
+        assert_eq!(rp(&alice, "github.io"), None);
+        // International names in their ASCII form.
+        let idn = page("https://login.xn--bcher-kva.de");
+        assert_eq!(rp(&idn, "BÜCHER.de").as_deref(), Some("xn--bcher-kva.de"));
+    }
+
+    #[test]
+    fn relying_parties_need_a_secure_page_with_a_domain_name() {
+        assert_eq!(page("http://example.com").relying_party_id(""), None);
+        assert_eq!(page("https://192.0.2.1").relying_party_id(""), None);
+        assert_eq!(
+            page("https://192.0.2.1").relying_party_id("192.0.2.1"),
+            None
+        );
+        assert_eq!(page("https://[::1]").relying_party_id(""), None);
+        assert_eq!(page("https://intranet").relying_party_id(""), None);
+        // A secure context for testing.
+        let local = page("http://localhost:8080");
+        assert_eq!(local.relying_party_id("").as_deref(), Some("localhost"));
+        assert_eq!(
+            local.relying_party_id("localhost").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(local.relying_party_id("example.com"), None);
+        assert!(page("https://example.com").is_https());
+        assert!(!local.is_https());
     }
 }

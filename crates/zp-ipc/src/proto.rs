@@ -135,6 +135,12 @@ pub enum ErrorCode {
     /// Sync data handed in was refused: malformed, not signed by a device of
     /// the vault, or against the rules of the sync protocol.
     SyncRejected = 19,
+    /// The vault already holds a passkey that the relying party excludes
+    /// (`docs/spec/passkey.md` §9).
+    CredentialExcluded = 20,
+    /// None of the signature algorithms the relying party accepts is one
+    /// ZeroPass makes passkeys with.
+    UnsupportedAlgorithm = 21,
 }
 
 // ---------------------------------------------------------------------------
@@ -144,10 +150,10 @@ pub enum ErrorCode {
 /// One request from a client to the daemon.
 #[derive(Clone, PartialEq, Message)]
 pub struct Request {
-    /// The request. Tags 32–79 are reserved (`docs/spec/ipc.md` §4.3).
+    /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -296,6 +302,14 @@ pub mod request {
         /// already in the vault.
         #[prost(message, tag = "105")]
         BridgeCompare(super::BridgeCompare),
+        /// Makes a passkey for a web page (`navigator.credentials.create`,
+        /// `docs/spec/passkey.md` §9). The user is verified anew.
+        #[prost(message, tag = "64")]
+        PasskeyCreate(super::PasskeyCreate),
+        /// Signs for a web page with one of its passkeys
+        /// (`navigator.credentials.get`). The user is verified anew.
+        #[prost(message, tag = "65")]
+        PasskeyGet(super::PasskeyGet),
         /// Key agent: offers the platform's hardware key store to the vault
         /// daemon. Starts a relay.
         #[prost(message, tag = "96")]
@@ -866,7 +880,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
     )]
     pub body: Option<response::Body>,
 }
@@ -962,6 +976,16 @@ pub mod response {
         /// Answer to `BridgeCompare`.
         #[prost(message, tag = "26")]
         BridgeComparison(super::BridgeComparison),
+        /// Answer to `PasskeyCreate`.
+        #[prost(message, tag = "29")]
+        PasskeyCreated(super::PasskeyCreated),
+        /// Answer to `PasskeyGet`: the assertion.
+        #[prost(message, tag = "30")]
+        PasskeyAssertion(super::PasskeyAssertion),
+        /// Answer to `PasskeyGet` when several passkeys fit and none was
+        /// picked.
+        #[prost(message, tag = "31")]
+        PasskeyChoices(super::PasskeyChoices),
         /// Relay of the key agent, downlink: something to ask the platform's
         /// hardware key store.
         #[prost(message, tag = "23")]
@@ -1557,6 +1581,139 @@ pub struct ItemCounts {
     /// Passkeys.
     #[prost(uint32, tag = "4")]
     pub passkeys: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Passkeys (`docs/spec/passkey.md` §9)
+// ---------------------------------------------------------------------------
+
+/// Makes a passkey for a web page and keeps it in the vault: what
+/// `navigator.credentials.create` asks. Nothing in it is secret.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCreate {
+    /// The page's origin, as the browser reported it.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// `rp.id`; empty for the page's host.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// `rp.name`.
+    #[prost(string, tag = "4")]
+    pub rp_name: String,
+    /// `user.id`: the user handle, 1 to 64 bytes.
+    #[prost(bytes = "vec", tag = "5")]
+    pub user_handle: Vec<u8>,
+    /// `user.name`.
+    #[prost(string, tag = "6")]
+    pub user_name: String,
+    /// `user.displayName`.
+    #[prost(string, tag = "7")]
+    pub user_display_name: String,
+    /// `challenge`.
+    #[prost(bytes = "vec", tag = "8")]
+    pub challenge: Vec<u8>,
+    /// The COSE algorithms of `pubKeyCredParams`, most preferred first.
+    #[prost(sint32, repeated, tag = "9")]
+    pub algorithms: Vec<i32>,
+    /// The credential identifiers of `excludeCredentials`.
+    #[prost(bytes = "vec", repeated, tag = "10")]
+    pub exclude: Vec<Vec<u8>>,
+}
+
+/// Signs for a web page with one of its passkeys: what
+/// `navigator.credentials.get` asks. Nothing in it is secret.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyGet {
+    /// The page's origin, as the browser reported it.
+    #[prost(string, tag = "1")]
+    pub origin: String,
+    /// The origin of the tab's top frame; empty for a top frame.
+    #[prost(string, tag = "2")]
+    pub top_origin: String,
+    /// `rpId`; empty for the page's host.
+    #[prost(string, tag = "3")]
+    pub rp_id: String,
+    /// `challenge`.
+    #[prost(bytes = "vec", tag = "4")]
+    pub challenge: Vec<u8>,
+    /// The credential identifiers of `allowCredentials`; empty for any
+    /// passkey of the relying party.
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub allow: Vec<Vec<u8>>,
+    /// The passkey the user picked among the [`PasskeyChoices`] of the same
+    /// request; empty if none.
+    #[prost(bytes = "vec", tag = "6")]
+    pub chosen: Vec<u8>,
+}
+
+/// Answer to [`PasskeyCreate`]: what the relying party receives. Never the
+/// private key.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyCreated {
+    /// The credential identifier.
+    #[prost(bytes = "vec", tag = "1")]
+    pub credential_id: Vec<u8>,
+    /// The client data JSON.
+    #[prost(bytes = "vec", tag = "2")]
+    pub client_data_json: Vec<u8>,
+    /// The attestation object ("none" attestation).
+    #[prost(bytes = "vec", tag = "3")]
+    pub attestation_object: Vec<u8>,
+    /// The authenticator data, also inside the attestation object.
+    #[prost(bytes = "vec", tag = "4")]
+    pub authenticator_data: Vec<u8>,
+    /// The public key, DER SubjectPublicKeyInfo.
+    #[prost(bytes = "vec", tag = "5")]
+    pub public_key: Vec<u8>,
+    /// The COSE algorithm of the key.
+    #[prost(sint32, tag = "6")]
+    pub algorithm: i32,
+}
+
+/// Answer to [`PasskeyGet`]: the assertion the relying party receives.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyAssertion {
+    /// The credential that signed.
+    #[prost(bytes = "vec", tag = "1")]
+    pub credential_id: Vec<u8>,
+    /// The client data JSON.
+    #[prost(bytes = "vec", tag = "2")]
+    pub client_data_json: Vec<u8>,
+    /// The authenticator data.
+    #[prost(bytes = "vec", tag = "3")]
+    pub authenticator_data: Vec<u8>,
+    /// The signature over the authenticator data and the client data hash.
+    #[prost(bytes = "vec", tag = "4")]
+    pub signature: Vec<u8>,
+    /// The credential's user handle.
+    #[prost(bytes = "vec", tag = "5")]
+    pub user_handle: Vec<u8>,
+}
+
+/// Answer to [`PasskeyGet`] when several passkeys of the relying party fit:
+/// the user picks one, and the same request comes again with it.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyChoices {
+    /// The passkeys, by account name.
+    #[prost(message, repeated, tag = "1")]
+    pub choices: Vec<PasskeyChoice>,
+}
+
+/// A passkey the user may pick.
+#[derive(Clone, PartialEq, Message)]
+pub struct PasskeyChoice {
+    /// The credential identifier.
+    #[prost(bytes = "vec", tag = "1")]
+    pub credential_id: Vec<u8>,
+    /// The account name.
+    #[prost(string, tag = "2")]
+    pub user_name: String,
+    /// The display name.
+    #[prost(string, tag = "3")]
+    pub user_display_name: String,
 }
 
 redacted_debug!(

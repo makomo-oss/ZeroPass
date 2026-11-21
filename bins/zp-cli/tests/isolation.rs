@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use zp_crypto::{InsecureSoftwareKeyStore, Password, Totp};
+use zp_crypto::{InsecureSoftwareKeyStore, Passkey, Password, Totp};
 use zp_vault::Vault;
 
 mod common;
@@ -109,9 +109,12 @@ fn the_keys_of_a_domain_are_only_in_the_process_of_that_domain() {
     assert!(kit.contains("Recovery key"), "{kit}");
     let code = cli(&vault, &["totp", &totp_id], &[]);
     assert_eq!(code.split_whitespace().next().unwrap().len(), 6, "{code}");
+    // The passkey domain too: passkeys are signed with where it is open.
+    cli(&vault, &["unlock", "passkey"], &[]);
     let status = cli(&vault, &["daemon", "status"], &[]);
     assert!(status.contains("password: unlocked"), "{status}");
     assert!(status.contains("totp:    unlocked"), "{status}");
+    assert!(status.contains("passkey: unlocked"), "{status}");
 
     // The keys, as this test can work them out from a copy of the vault file
     // and the development key store beside it.
@@ -122,8 +125,10 @@ fn the_keys_of_a_domain_are_only_in_the_process_of_that_domain() {
     let mut opened = Vault::open(&copy).unwrap();
     opened.unlock_password(PASSWORD).unwrap();
     opened.unlock_hardware::<Totp>(&store).unwrap();
+    opened.unlock_hardware::<Passkey>(&store).unwrap();
     let (_, password_key) = opened.export_slot_key::<Password>().unwrap();
     let (_, totp_key) = opened.export_slot_key::<Totp>().unwrap();
+    let (_, passkey_key) = opened.export_slot_key::<Passkey>().unwrap();
     drop(opened);
 
     let front = front_process(&vault);
@@ -150,6 +155,11 @@ fn the_keys_of_a_domain_are_only_in_the_process_of_that_domain() {
         !contains(front, TOTP_SEED_BASE32),
         "the TOTP seed as the client sent it is in the memory of the front process"
     );
+    // Nor of the passkey domain, which encrypts the passkeys' private keys.
+    assert!(
+        !contains(front, passkey_key.as_slice()),
+        "the passkey vault key is in the memory of the front process"
+    );
 
     // The TOTP vault key is in exactly one worker, which holds nothing of
     // the password domain.
@@ -165,11 +175,20 @@ fn the_keys_of_a_domain_are_only_in_the_process_of_that_domain() {
             "the password vault key is in a worker process"
         );
     }
+    // So is the passkey vault key, in another worker.
+    let passkey_holders: Vec<u32> = workers
+        .iter()
+        .copied()
+        .filter(|&worker| contains(worker, passkey_key.as_slice()))
+        .collect();
+    assert_eq!(passkey_holders.len(), 1, "workers: {workers:?}");
+    assert_ne!(passkey_holders, holders, "one worker holds both domains");
 
     // Locked, it is in none.
     cli(&vault, &["lock"], &[]);
     for process in workers.iter().chain([&front]) {
         assert!(!contains(*process, totp_key.as_slice()));
+        assert!(!contains(*process, passkey_key.as_slice()));
         assert!(!contains(*process, password_key.as_slice()));
     }
 }

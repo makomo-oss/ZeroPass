@@ -14,6 +14,7 @@ mod bridge;
 mod convert;
 mod front;
 mod pairing;
+mod passkey;
 mod port;
 mod service;
 mod sync;

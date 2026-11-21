@@ -6383,6 +6383,7 @@ dependencies = [
  "thiserror 2.0.21",
  "zeroize",
  "zp-crypto",
+ "zp-origin",
  "zp-vault",
 ]
 
@@ -6470,6 +6471,7 @@ dependencies = [
  "zp-ipc",
  "zp-origin",
  "zp-pairing",
+ "zp-passkey",
  "zp-sandbox",
  "zp-sync",
  "zp-vault",
