@@ -13,16 +13,26 @@
   import ConfirmButton from "./ConfirmButton.svelte";
   import Pairing from "./Pairing.svelte";
 
-  let { onchanged }: { onchanged: () => void } = $props();
+  let {
+    thisDeviceId,
+    onchanged,
+    onreset,
+  }: { thisDeviceId: string; onchanged: () => void; onreset: () => void } = $props();
 
-  let list: Device[] = $state([]);
-  let sync: SyncStatus | null = $state(null);
-  let report: SyncReport | null = $state(null);
+  let list = $state<Device[]>([]);
+  let sync = $state<SyncStatus | null>(null);
+  let report = $state<SyncReport | null>(null);
   let pairing = $state(false);
   let syncing = $state(false);
-  let revoking: string | null = $state(null);
+  let revoking = $state<string | null>(null);
+  let resetting = $state(false);
   let error = $state("");
   let notice = $state("");
+
+  let selfRevoked = $derived(
+    list.some((device) => device.id === thisDeviceId && device.state === "revoked") ||
+      (report !== null && report.results.some((result) => /revoked/i.test(result.error))),
+  );
 
   async function loadDevices() {
     try {
@@ -74,6 +84,20 @@
     }
   }
 
+  async function resetAndRepair() {
+    resetting = true;
+    error = "";
+    notice = "";
+    try {
+      await devices.resetLocalVault();
+      onreset();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      resetting = false;
+    }
+  }
+
   onMount(() => {
     void loadDevices();
     void loadSync();
@@ -82,6 +106,9 @@
   });
 
   function stateLabel(device: Device): string {
+    if (device.id === thisDeviceId && device.state === "revoked") {
+      return "This device (Revoked)";
+    }
     switch (device.state) {
       case "this":
         return "This device";
@@ -109,6 +136,25 @@
       }}
       onadded={() => void loadDevices()}
     />
+  {/if}
+
+  {#if selfRevoked}
+    <section class="card block revoked-banner" role="alert">
+      <p class="notice warn">
+        <strong>This device has been revoked</strong> and can no longer sync with your other
+        devices. To use this computer again, reset this local vault and pair it as a new device
+        with a new device ID and new keys.
+      </p>
+      <div>
+        <ConfirmButton
+          label={resetting ? "Resetting…" : "Reset and re-pair"}
+          question="Delete this local vault and join as a new device? Unsynced changes on this device will be lost."
+          confirmLabel="Delete and re-pair"
+          disabled={resetting || pairing}
+          onconfirm={() => void resetAndRepair()}
+        />
+      </div>
+    </section>
   {/if}
 
   <section class="card block">
@@ -199,6 +245,25 @@
     readable to it. Every part of the vault must be open: Windows Hello asks up
     to twice, once for your one-time codes and once for your passkeys.
   </p>
+
+  <section class="card block">
+    <h3>Re-pair this device</h3>
+    <p class="muted small">
+      If this device was revoked from another computer, or you want to replace
+      this local vault copy and join another device with a fresh device ID and
+      new keys, reset this device first. Any unsynced changes stored only on
+      this computer will be lost.
+    </p>
+    <div>
+      <ConfirmButton
+        label={resetting ? "Resetting…" : "Reset local vault and re-pair"}
+        question="Delete this local vault and join as a new device?"
+        confirmLabel="Delete and re-pair"
+        disabled={resetting || pairing}
+        onconfirm={() => void resetAndRepair()}
+      />
+    </div>
+  </section>
 </div>
 
 <style>

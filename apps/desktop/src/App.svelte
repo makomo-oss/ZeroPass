@@ -14,6 +14,7 @@
   let status: Status | null = $state(null);
   let info: AppInfo | null = $state(null);
   let failure = $state("");
+  let startInJoin = $state(false);
   let reportedReady = false;
   let polling = false;
 
@@ -44,6 +45,11 @@
     } finally {
       await refresh();
     }
+  }
+
+  async function afterReset() {
+    startInJoin = true;
+    await refresh();
   }
 
   onMount(() => {
@@ -92,13 +98,26 @@
 {:else if screen === "welcome"}
   <Welcome
     vaultPath={info?.vault_path ?? ""}
-    oncreated={(created) => (status = created)}
-    onjoined={() => void refresh()}
+    {startInJoin}
+    oncreated={(created) => {
+      startInJoin = false;
+      status = created;
+    }}
+    onjoined={() => {
+      startInJoin = false;
+      void refresh();
+    }}
   />
 {:else if screen === "unlock"}
-  <Unlock onunlocked={() => void refresh()} />
+  <Unlock onunlocked={() => void refresh()} onreset={() => void afterReset()} />
 {:else if screen === "vault" && status}
-  <Vault {status} {info} onlock={() => void lockAll()} onchanged={() => void refresh()} />
+  <Vault
+    {status}
+    {info}
+    onlock={() => void lockAll()}
+    onchanged={() => void refresh()}
+    onreset={() => void afterReset()}
+  />
 {/if}
 
 <style>

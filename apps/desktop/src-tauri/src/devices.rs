@@ -448,6 +448,34 @@ pub(crate) fn default_device_name() -> String {
     zp_client::default_device_name()
 }
 
+/// Stops the local daemons and removes this device's local vault file so that
+/// it can join a vault again with a fresh device identifier and new keys
+/// (for example after this device was revoked from another device).
+#[tauri::command]
+pub(crate) async fn reset_local_vault(app: AppHandle) -> CommandResult<()> {
+    blocking(app, |state| {
+        let pairing = &state.pairing;
+        pairing.cancelled.store(true, Ordering::Relaxed);
+        if let Some(sender) = pairing.answer_slot().take() {
+            let _ = sender.send(false);
+        }
+        if pairing.running.load(Ordering::SeqCst) {
+            return Err(CommandError::client(
+                "a pairing offer is still running; cancel it and wait until it finishes before resetting",
+            ));
+        }
+        *pairing
+            .progress
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = PairProgress::Idle;
+        state.daemon.disconnect();
+        state.sync_started.store(false, Ordering::SeqCst);
+        zp_client::reset_local_vault(state.daemon.vault())?;
+        Ok(())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

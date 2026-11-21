@@ -82,6 +82,10 @@ enum TopCommand {
         /// The name of this device, shown to the user of the other device.
         #[arg(long)]
         name: Option<String>,
+        /// Replace an existing local vault file (for example after this device
+        /// was revoked), pairing again with a fresh device identifier and new keys.
+        #[arg(long)]
+        replace: bool,
     },
     /// Open an interactive session; everything is locked when it ends.
     Shell,
@@ -519,7 +523,9 @@ fn run(cli: Cli) -> CliResult<()> {
     match cli.command {
         TopCommand::Init => init(choice, &vault_path, &mut out),
         TopCommand::Recover => recover(choice, &vault_path, &mut out),
-        TopCommand::Join { name } => nearby::join(choice, &vault_path, name, &mut out),
+        TopCommand::Join { name, replace } => {
+            nearby::join(choice, &vault_path, name, replace, &mut out)
+        }
         TopCommand::Shell => shell(choice, &vault_path, &mut out),
         TopCommand::Daemon { action } => daemon(choice, &vault_path, &action, &mut out),
         TopCommand::ClipboardClear { .. } => unreachable!("handled above"),

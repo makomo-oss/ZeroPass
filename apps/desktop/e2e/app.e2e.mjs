@@ -9,7 +9,7 @@
 // development-only software key store (no Windows Hello prompt), and the
 // daemon is stopped at the end.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -199,6 +199,15 @@ try {
     await page.getByRole("heading", { name: "ZeroPass is locked" }).waitFor();
   });
 
+  await step("resetting from the unlock screen removes the local vault and opens Join", async () => {
+    await button("Reset and re-pair with another device").click();
+    await button("Delete and re-pair").click();
+    await page.getByRole("heading", { name: "Join a vault" }).waitFor({ timeout: 30_000 });
+    expect(!existsSync(vault), "the vault file still exists after reset");
+    await button("Back").click();
+    await page.getByRole("heading", { name: "Create your vault" }).waitFor();
+  });
+
   await step("the page reported no errors (CSP or otherwise)", async () => {
     expect(consoleProblems.length === 0, consoleProblems.join("\n"));
   });
@@ -206,7 +215,7 @@ try {
   failed(error);
 } finally {
   await app?.close();
-  await sleep(500);
-  rmSync(dir, { recursive: true, force: true });
+  await sleep(1500);
+  rmSync(dir, { recursive: true, force: true, maxRetries: 24, retryDelay: 250 });
 }
 finish();

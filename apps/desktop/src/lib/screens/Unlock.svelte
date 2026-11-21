@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { api, errorMessage, isCommandError } from "../api";
+  import { api, devices, errorMessage, isCommandError } from "../api";
+  import ConfirmButton from "../components/ConfirmButton.svelte";
 
-  let { onunlocked }: { onunlocked: () => void } = $props();
+  let { onunlocked, onreset }: { onunlocked: () => void; onreset: () => void } = $props();
 
   let password = $state("");
   let busy = $state(false);
+  let resetting = $state(false);
   let error = $state("");
   let input: HTMLInputElement | undefined = $state();
 
@@ -14,7 +16,7 @@
 
   async function unlock(event: SubmitEvent) {
     event.preventDefault();
-    if (password.length === 0 || busy) return;
+    if (password.length === 0 || busy || resetting) return;
     busy = true;
     error = "";
     try {
@@ -32,6 +34,20 @@
       busy = false;
     }
   }
+
+  async function resetAndRepair() {
+    if (busy || resetting) return;
+    resetting = true;
+    error = "";
+    try {
+      await devices.resetLocalVault();
+      onreset();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      resetting = false;
+    }
+  }
 </script>
 
 <main class="center">
@@ -46,15 +62,24 @@
         type="password"
         autocomplete="current-password"
         bind:value={password}
-        disabled={busy}
+        disabled={busy || resetting}
       />
     </label>
     {#if error}
       <p class="notice error" role="alert">{error}</p>
     {/if}
-    <button class="button primary" type="submit" disabled={busy || password.length === 0}>
+    <button class="button primary" type="submit" disabled={busy || resetting || password.length === 0}>
       {busy ? "Unlocking…" : "Unlock"}
     </button>
+    <div class="repair">
+      <ConfirmButton
+        label={resetting ? "Resetting…" : "Reset and re-pair with another device"}
+        question="Delete this local vault and join as a new device? Unsynced changes on this device will be lost."
+        confirmLabel="Delete and re-pair"
+        disabled={busy || resetting}
+        onconfirm={() => void resetAndRepair()}
+      />
+    </div>
   </form>
 </main>
 
@@ -79,5 +104,10 @@
     height: 40px;
     border-radius: 10px;
     background: linear-gradient(135deg, #1e40af, #0e7490);
+  }
+
+  .repair {
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
   }
 </style>

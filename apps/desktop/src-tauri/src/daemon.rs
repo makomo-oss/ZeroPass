@@ -58,6 +58,12 @@ impl Daemon {
         &self.vault
     }
 
+    /// Drops any open IPC connection to the vault daemon (for example before
+    /// stopping the daemon to reset the local vault).
+    pub(crate) fn disconnect(&self) {
+        *self.client() = None;
+    }
+
     fn client(&self) -> MutexGuard<'_, Option<Client>> {
         self.client
             .lock()
