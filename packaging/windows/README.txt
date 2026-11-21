@@ -40,6 +40,12 @@ Browser extension (fills your logins into web pages):
     asks ZeroPass for that one login, and only if it belongs to the page.
     Unlock ZeroPass in the desktop application first.
 
+    Passkeys: when a site offers to create a passkey or to sign in with one,
+    ZeroPass asks whether to use it ("Save in ZeroPass" / "Use ZeroPass") or
+    to leave it to the browser ("Use another device or key"). Windows Hello
+    confirms every passkey. Passkeys sync to your other devices like
+    everything else; see them in the desktop application under "Passkeys".
+
 Uninstall: "Installed apps" > ZeroPass > Uninstall, or:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\ZeroPass\uninstall.ps1"
