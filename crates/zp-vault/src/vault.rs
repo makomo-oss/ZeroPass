@@ -372,7 +372,9 @@ impl Vault {
 
     /// The device signing key, taken from domain `D` if it is unlocked and has a
     /// slot for it.
-    fn signer_from<D: Domain>(&mut self) -> Result<Option<DeviceSigningKey>, VaultError> {
+    pub(crate) fn signer_from<D: Domain>(
+        &mut self,
+    ) -> Result<Option<DeviceSigningKey>, VaultError> {
         if !self.keys.is_unlocked(D::ID) || !self.store.has_device_key_slot(D::ID)? {
             return Ok(None);
         }
@@ -547,10 +549,21 @@ impl Vault {
         self.store.get_content(key, item_id)
     }
 
-    /// Lists every live item of domain `D`.
+    /// Lists the live items of domain `D`, leaving out those the keys held
+    /// here do not open (see [`Self::list_readable`]).
     pub fn list<D: Domain>(&mut self) -> Result<Vec<(ItemId, Content)>, VaultError> {
         let key = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
         self.store.list_items(key)
+    }
+
+    /// Like [`Self::list`], and how many live items of the domain the keys
+    /// held here do not open (written with a key another device made, which
+    /// has not reached this one: ADR-0011).
+    pub fn list_readable<D: Domain>(
+        &mut self,
+    ) -> Result<(Vec<(ItemId, Content)>, usize), VaultError> {
+        let key = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
+        self.store.list_readable_items(key)
     }
 
     /// The key domain a live item is stored in, or `None` if there is no such

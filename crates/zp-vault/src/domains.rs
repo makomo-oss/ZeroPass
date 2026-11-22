@@ -7,8 +7,9 @@
 //! that.
 
 use rusqlite::params;
-use zp_crypto::DomainId;
+use zp_crypto::{DomainId, HardwareBound, HardwareKeyStore, Password, VaultKey};
 
+use crate::keyslots::{PlainSlot, SlotKind};
 use crate::store::{get_meta, set_meta};
 use crate::{Store, Vault, VaultError};
 
@@ -76,5 +77,47 @@ impl Vault {
             }
         }
         Ok(at_risk)
+    }
+
+    /// Makes hardware-bound domain `D` on this device, for a vault that has it
+    /// nowhere (ADR-0011 §2): a new vault key of generation 1, wrapped by
+    /// `hardware` (which verifies the user), and a slot for the device signing
+    /// key. The domain is left unlocked.
+    ///
+    /// The password domain must be unlocked (it holds the device signing key).
+    /// Fails with [`VaultError::DomainPresent`] if this device has the domain,
+    /// and with [`VaultError::DomainElsewhere`] if other devices seem to have
+    /// it: then its keys are to be received from one of them.
+    pub fn set_up_domain<D: HardwareBound>(
+        &mut self,
+        hardware: &dyn HardwareKeyStore,
+    ) -> Result<(), VaultError> {
+        self.enforce_auto_lock();
+        if self.has_domain(D::ID)? {
+            return Err(VaultError::DomainPresent(D::ID));
+        }
+        if self.domain_elsewhere(D::ID)? {
+            return Err(VaultError::DomainElsewhere(D::ID));
+        }
+        let signer = self
+            .signer_from::<Password>()?
+            .ok_or(VaultError::Locked(DomainId::Password))?;
+        let vault_id = self.store.vault_id();
+        let key = VaultKey::<D>::generate()?;
+        // The user is verified here, before anything is written.
+        let blob = key.wrap_with_hardware(hardware, &vault_id)?;
+        self.store.write_slots(
+            None,
+            &[PlainSlot {
+                domain: D::ID,
+                kind: SlotKind::Hardware,
+                epoch: 1,
+                blob: &blob,
+            }],
+        )?;
+        self.store.add_device_key_slot(&signer, &key)?;
+        let ring = self.store.key_ring(key, 1)?;
+        self.keys.insert(ring, self.store.now_ms());
+        Ok(())
     }
 }

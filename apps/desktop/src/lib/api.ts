@@ -71,6 +71,8 @@ export const api = {
   status: () => invoke<Status>("status"),
   createVault: (password: string, withoutHardware = false) =>
     invoke<Status>("create_vault", { password, withoutHardware }),
+  /** Makes the one-time code or passkey domain on this device (ADR-0011). */
+  setUpDomain: (domain: DomainName) => invoke<Status>("set_up_domain", { domain }),
   unlock: (domain: DomainName, password?: string) =>
     invoke<void>("unlock", { domain, password: password ?? null }),
   lock: (domain?: DomainName) => invoke<void>("lock", { domain: domain ?? null }),
@@ -145,8 +147,17 @@ export interface Generated {
 
 export type CopyField = "password" | "username" | "note" | "code";
 
+/** The items of a domain, and how many this device cannot open yet. */
+export interface Listing {
+  items: Summary[];
+  /** Items written with keys that have not reached this device (ADR-0011). */
+  unreadable: number;
+}
+
 export const items = {
-  list: (domain: DomainName) => invoke<Summary[]>("list_items", { domain }),
+  list: (domain: DomainName) =>
+    invoke<Listing>("list_items", { domain }).then((listing) => listing.items),
+  listing: (domain: DomainName) => invoke<Listing>("list_items", { domain }),
   get: (id: string) => invoke<Details>("get_item", { id }),
   revealPassword: (id: string) => invoke<string>("reveal_password", { id }),
   copy: (id: string, field: CopyField) => invoke<void>("copy", { id, field }),

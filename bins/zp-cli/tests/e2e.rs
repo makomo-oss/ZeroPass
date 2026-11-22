@@ -378,6 +378,24 @@ fn without_a_hardware_key_store_the_totp_domain_is_unavailable() {
     // The password domain works as usual.
     let output = cli.run_with(false, &["add", "login", "--title", "x"], &[PASSWORD, "pw"]);
     assert!(output.success, "{}", output.stderr);
+
+    // ADR-0011: once a key store is there, the domain is set up on this
+    // device. (The development key store stands in for Windows Hello; the
+    // daemon is restarted with it.)
+    common::stop_daemon(&cli.vault);
+    let stdout = cli.ok(&["set-up", "totp"], &[PASSWORD]);
+    assert!(stdout.contains("the totp domain was set up"), "{stdout}");
+    let id = added_id(&cli.ok(&["add", "totp"], &[TOTP_URI]));
+    let code = cli.ok(&["totp", &id], &[]);
+    let digits = code.split_whitespace().next().unwrap_or_default();
+    assert!(
+        digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit()),
+        "{code}"
+    );
+    let stderr = cli.fails(&["set-up", "totp"], &[]);
+    assert!(stderr.contains("already has"), "{stderr}");
+    let stderr = cli.fails(&["set-up", "password"], &[]);
+    assert!(stderr.contains("only the totp and passkey"), "{stderr}");
 }
 
 #[test]

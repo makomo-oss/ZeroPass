@@ -135,7 +135,16 @@ impl Vault {
         if !self.has_domain(D::ID)? {
             return Ok(());
         }
-        for (id, content) in self.list::<D>()? {
+        // An export missing what this device cannot open would pass for a
+        // complete copy.
+        let (readable, unreadable) = self.list_readable::<D>()?;
+        if unreadable > 0 {
+            return Err(VaultError::KeysMissing {
+                domain: D::ID,
+                items: unreadable,
+            });
+        }
+        for (id, content) in readable {
             let mut item = ExportedItem {
                 item_id: id.as_bytes().to_vec(),
                 ..ExportedItem::default()

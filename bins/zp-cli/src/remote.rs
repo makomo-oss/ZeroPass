@@ -186,6 +186,27 @@ impl Remote {
         Ok(())
     }
 
+    /// `set-up`: makes the TOTP or passkey domain on this device (ADR-0011).
+    fn set_up(&mut self, domain: DomainId, out: &mut impl Write) -> CliResult<()> {
+        if domain == DomainId::Password {
+            return Err("only the totp and passkey domains are set up later".into());
+        }
+        // The password domain holds the device signing key.
+        self.ensure_unlocked(DomainId::Password)?;
+        self.with_key_agent()?;
+        let request = request::Body::SetUpDomain(proto::SetUpDomain {
+            domain: to_proto(domain) as i32,
+        });
+        // Refused if other devices seem to have the domain: the daemon says so.
+        self.call(request)?;
+        writeln!(
+            out,
+            "the {} domain was set up on this device",
+            domain_name(domain)
+        )?;
+        Ok(())
+    }
+
     /// `init`: creates the vault.
     pub(crate) fn init(
         &mut self,
@@ -380,7 +401,16 @@ impl Remote {
                     )?;
                 }
                 writeln!(out, "{} item(s)", items.items.len())?;
+                if items.unreadable > 0 {
+                    writeln!(
+                        out,
+                        "{} more cannot be opened on this device yet: another device wrote them \
+                        with keys that have not reached this one; get the keys from it",
+                        items.unreadable
+                    )?;
+                }
             }
+            Command::SetUp { domain } => self.set_up(DomainId::from(domain), out)?,
             Command::Totp { id, copy } => {
                 let request = request::Body::TotpCode(proto::TotpCode {
                     item_id: parse_id(&id)?.as_bytes().to_vec(),

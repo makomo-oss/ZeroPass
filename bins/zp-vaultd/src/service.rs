@@ -439,6 +439,46 @@ impl Service {
         self.status(state).map(response::Body::Status)
     }
 
+    /// `SetUpDomain`: makes the TOTP or passkey domain on this device, for a
+    /// vault that has it nowhere (ADR-0011 §2). Needs the password domain
+    /// (the device signing key) and the key store, which verifies the user.
+    fn set_up_domain(&self, state: &mut State, request: &proto::SetUpDomain) -> Reply {
+        self.whole()?;
+        let domain = convert::domain_from_proto(request.domain)?;
+        let vault = self.vault(state)?;
+        // What is wrong comes before Windows Hello asks.
+        if vault.has_domain(domain).map_err(vault_error)? {
+            return Err(vault_error(VaultError::DomainPresent(domain)));
+        }
+        if vault.domain_elsewhere(domain).map_err(vault_error)? {
+            return Err(vault_error(VaultError::DomainElsewhere(domain)));
+        }
+        let hardware = match self.hardware_or_why(true)? {
+            Ok(hardware) => hardware,
+            Err(why) => {
+                return Err(proto::Error::new(
+                    ErrorCode::HardwareUnavailable,
+                    format!(
+                        "the hardware key store cannot be used ({why}): set up Windows Hello \
+                        (a PIN) first"
+                    ),
+                ));
+            }
+        };
+        let vault = self.vault(state)?;
+        match domain {
+            DomainId::Totp => vault.set_up_domain::<Totp>(hardware.as_ref()),
+            DomainId::Passkey => vault.set_up_domain::<Passkey>(hardware.as_ref()),
+            DomainId::Password => {
+                return Err(bad_request(
+                    "only the TOTP and passkey domains are set up later",
+                ));
+            }
+        }
+        .map_err(vault_error)?;
+        self.status(state).map(response::Body::Status)
+    }
+
     fn recover_vault(&self, state: &mut State, request: &proto::RecoverVault) -> Reply {
         self.whole()?;
         if !self.path.exists() {
@@ -490,18 +530,20 @@ impl Service {
     }
 
     fn list_items(&self, state: &mut State, request: &proto::ListItems) -> Reply {
+        /// The items that match `query`, and how many the keys held here do
+        /// not open (ADR-0011).
         fn list<D: Domain>(
             vault: &mut Vault,
             query: &str,
-        ) -> Result<Vec<(ItemId, Content)>, VaultError> {
-            if query.is_empty() {
-                vault.list::<D>()
-            } else {
-                vault.search::<D>(query)
+        ) -> Result<(Vec<(ItemId, Content)>, usize), VaultError> {
+            let (mut items, unreadable) = vault.list_readable::<D>()?;
+            if !query.is_empty() {
+                items.retain(|(_, content)| content.matches(query));
             }
+            Ok((items, unreadable))
         }
         let vault = self.vault(state)?;
-        let mut items = match convert::domain_from_proto(request.domain)? {
+        let (mut items, unreadable) = match convert::domain_from_proto(request.domain)? {
             DomainId::Password => list::<Password>(vault, &request.query),
             DomainId::Totp => list::<Totp>(vault, &request.query),
             DomainId::Passkey => list::<Passkey>(vault, &request.query),
@@ -513,6 +555,7 @@ impl Service {
                 .iter()
                 .map(|(id, content)| convert::summary(*id, content))
                 .collect(),
+            unreadable: u32::try_from(unreadable).unwrap_or(u32::MAX),
         }))
     }
 
@@ -756,6 +799,7 @@ impl Service {
             Body::ImportExport(request) => self.import_export(state, &request),
             Body::ListDevices(_) => self.list_devices(state),
             Body::RevokeDevice(request) => self.revoke_device(state, &request),
+            Body::SetUpDomain(request) => self.set_up_domain(state, &request),
             Body::Shutdown(_) => {
                 if let Some(vault) = state.vault.as_mut() {
                     vault.lock_all();

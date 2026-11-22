@@ -76,6 +76,18 @@ pub(crate) fn vault_error(error: VaultError) -> proto::Error {
                 ),
             );
         }
+        VaultError::DomainElsewhere(domain) => {
+            return proto::Error::about(
+                ErrorCode::DomainElsewhere,
+                domain_to_proto(*domain),
+                message,
+            );
+        }
+        VaultError::DomainPresent(_) => ErrorCode::InvalidInput,
+        VaultError::KeysMissing { domain, .. }
+        | VaultError::KeyGenerationUnavailable { domain, .. } => {
+            return proto::Error::about(ErrorCode::KeysMissing, domain_to_proto(*domain), message);
+        }
         VaultError::WrongPassword => ErrorCode::WrongPassword,
         VaultError::WeakPassword => ErrorCode::WeakPassword,
         VaultError::NoRecoveryKit => ErrorCode::NoRecoveryKit,

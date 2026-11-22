@@ -1083,3 +1083,77 @@ fn without_windows_hello_a_vault_is_made_only_if_the_user_says_so() {
     // No other device has them either: they are to be made here later.
     assert!(status.domains.iter().all(|d| !d.elsewhere));
 }
+
+/// ADR-0011 §2: a vault made without Windows Hello gets its one-time code
+/// domain once Windows Hello is there; the worker serves it without asking
+/// again.
+#[test]
+fn a_domain_is_set_up_later_and_served_by_its_worker() {
+    use std::sync::atomic::Ordering;
+
+    use crate::port::testing::FakeAgent;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::new(4));
+    agent.available.store(false, Ordering::SeqCst);
+    let port: Arc<dyn crate::port::KeyAgentPort> = agent.clone();
+    let fixture = Fixture {
+        front: Front::local(
+            dir.path().join("test.zpvault"),
+            KeyStoreChoice::Platform,
+            Some(port),
+        ),
+        _dir: dir,
+    };
+    fixture
+        .call(request::Body::CreateVault(proto::CreateVault {
+            master_password: PASSWORD.into(),
+            without_hardware: true,
+        }))
+        .unwrap();
+    let set_up = |domain: D| {
+        request::Body::SetUpDomain(proto::SetUpDomain {
+            domain: domain as i32,
+        })
+    };
+    // Still no Windows Hello: nothing changes.
+    assert_eq!(
+        fixture.code(set_up(D::Totp)),
+        ErrorCode::HardwareUnavailable
+    );
+    agent.available.store(true, Ordering::SeqCst);
+    // The password domain holds the device signing key.
+    fixture.lock();
+    assert_eq!(fixture.code(set_up(D::Totp)), ErrorCode::Locked);
+    fixture.unlock(D::Password, PASSWORD).unwrap();
+    assert_eq!(fixture.code(set_up(D::Password)), ErrorCode::BadRequest);
+
+    let prompts = agent.prompts.load(Ordering::SeqCst);
+    let response::Body::Status(status) = fixture.call(set_up(D::Totp)).unwrap() else {
+        panic!("not a status");
+    };
+    assert!(
+        agent.prompts.load(Ordering::SeqCst) > prompts,
+        "Hello was not asked"
+    );
+    let totp = status.domains[1];
+    assert!(totp.available && totp.unlocked && !totp.elsewhere);
+    assert!(!status.domains[2].available);
+    assert_eq!(fixture.code(set_up(D::Totp)), ErrorCode::InvalidInput);
+
+    // The worker holds the new domain: a code without asking again.
+    let prompts = agent.prompts.load(Ordering::SeqCst);
+    let id = fixture.add(new_item::Content::Totp(proto::NewTotp {
+        otpauth_uri: TOTP_URI.into(),
+        login_id: None,
+    }));
+    let response::Body::TotpCode(code) = fixture
+        .call(request::Body::TotpCode(proto::TotpCode { item_id: id }))
+        .unwrap()
+    else {
+        panic!("not a code");
+    };
+    assert_eq!(code.code.len(), 6);
+    assert_eq!(agent.prompts.load(Ordering::SeqCst), prompts);
+    assert_eq!(fixture.list(D::Totp, "").len(), 1);
+}

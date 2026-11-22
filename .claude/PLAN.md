@@ -308,7 +308,9 @@ docs/    threat-model.md  adr/  spec/
 - [x] **P5-07** 防止策: Hello が使えなければ作成・参加を断る（明示すれば T・K なしで進む）、この端末が持たない T・K がほかにある兆しがあれば失効を断る、`Status` に兆し（`elsewhere`）（依存: P5-06）
   - 実装: `CreateVault`・`PairJoin` に `without_hardware`。プラットフォームの鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` で断る（`--no-hardware-keystore` で起動したデーモンは従来どおり）。参加で捨てた T・K を金庫ファイルに記録し、そのドメインのアイテム・履歴・鍵更新とあわせて「ほかにある兆し」とする（`Vault::domain_elsewhere`、`Status` の `elsewhere`）。`RevokeDevice` に `even_without_keys`、エラー `KEYS_AT_RISK`（22）。デスクトップは、作成・参加で Hello がなければ説明と「Windows Hello なしで続ける」、失効で警告と「それでも失効する」を出す。CLI は `--no-hardware-keystore` と `revoke --even-without-keys` を案内する。
   - 確認: `zp-vault` の `tests/domains.rs`（Hello なしで作った金庫には兆しがない、参加で捨てたドメインは兆しになり再オープン後も残る、別の端末が書いたアイテムが同期で届くと兆しになる）。金庫デーモンの単体テスト（Hello が使えなければ作成を断り、明示すれば T・K なしで作る。Hello なしで参加した端末は兆しを示し、PC の失効を `KEYS_AT_RISK` で断り、明示すれば失効できる）。
-- [ ] **P5-08** 後から作る: どの端末も T・K を持たない金庫で、Hello のある端末がドメインを作る。開けないアイテムを一覧で飛ばして件数を示す（依存: P5-07）
+- [x] **P5-08** 後から作る: どの端末も T・K を持たない金庫で、Hello のある端末がドメインを作る。開けないアイテムを一覧で飛ばして件数を示す（依存: P5-07）
+  - 実装: `Vault::set_up_domain`（新しい `VK` を世代 1 として作り、鍵ストアでラップしたスロットとデバイス署名鍵のスロットを加える。この端末が持っていれば `DomainPresent`、ほかにある兆しがあれば `DomainElsewhere`、パスワードのドメインが閉じていれば `Locked`）。IPC の要求 66 `SetUpDomain`（全体プロセスにはパスワードのドメインだけを渡し、作ったドメインはワーカーに渡す）、エラー `DOMAIN_ELSEWHERE`（23）・`KEYS_MISSING`（24）。一覧は、この端末の鍵で開けないアイテムを飛ばして件数（`Items.unreadable`）を返す（今までは 1 件でも開けないと一覧全体が失敗した）。暗号化エクスポートは、開けないアイテムがあれば `KEYS_MISSING` で作らない。デスクトップの「One-time codes」「Passkeys」は、ドメインがなければ理由と「Set up … on this PC」（ほかにある兆しがあれば、受け取るよう案内）、開けないものがあれば件数を示す。CLI は `zp-cli set-up totp|passkey`、`list` が開けない件数を示す。
+  - 確認: `zp-vault` の `tests/domains.rs`（Hello なしで作った金庫に後から作り、鍵ストアだけで開きマスターパスワードでは開かない、二重には作らない、パスワードのドメインが要る、ほかにある兆しがあれば作らない、2 台が別々に作ると相手のものは一覧から除いて数え、エクスポートは断る）。金庫デーモンの単体テスト（Hello が使えるまで作れない、パスワードのドメインが要る、作った TOTP のドメインをワーカーが尋ね直さずに使う）。`zp-cli` の e2e（`--no-hardware-keystore` で作った金庫に、開発用の鍵ストアで `set-up totp` → コードが出る）。
 - [ ] **P5-09** 後から受け取る: 登録済みの端末が、ペアリングのコードと渡す側の承認で T・K の鍵を受け取る（並行した鍵の取り込みを含む）（依存: P5-08）
 
 ### Phase 6: モバイル
