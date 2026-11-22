@@ -68,16 +68,36 @@ pub enum VaultError {
         "the device signing key is not available to the {0:?} domain; unlock the password domain together with it once"
     )]
     DeviceKeyUnavailable(zp_crypto::DomainId),
-    /// A version was written with a vault key generation this device does not
-    /// hold (yet): the key update travels with sync.
+    /// A version was written with a vault key this device does not hold (yet):
+    /// a key update travels with sync; a key another device made on its own
+    /// is received from that device (ADR-0011).
     #[error(
-        "generation {epoch} of the {domain:?} vault key has not reached this device; sync with another device"
+        "the {domain:?} vault key (generation {epoch}) that wrote this has not reached this device; sync, or get the keys from another device"
     )]
     KeyGenerationUnavailable {
         /// The domain of the key.
         domain: zp_crypto::DomainId,
         /// The missing generation.
         epoch: u32,
+    },
+    /// This device already has the domain.
+    #[error("this device already has the {0:?} domain")]
+    DomainPresent(zp_crypto::DomainId),
+    /// Other devices of the vault seem to have the domain: its keys are to be
+    /// received from one of them rather than made anew here (ADR-0011).
+    #[error(
+        "other devices of this vault seem to have the {0:?} domain; get its keys from one of them"
+    )]
+    DomainElsewhere(zp_crypto::DomainId),
+    /// Some items of the domain cannot be opened with the keys held here.
+    #[error(
+        "{items} item(s) of the {domain:?} domain cannot be opened on this device; get the keys from another device first"
+    )]
+    KeysMissing {
+        /// The domain.
+        domain: zp_crypto::DomainId,
+        /// How many items cannot be opened.
+        items: usize,
     },
     /// A device cannot revoke itself.
     #[error("a device cannot revoke itself; revoke it from another device")]

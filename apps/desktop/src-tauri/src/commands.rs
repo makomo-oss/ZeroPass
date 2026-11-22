@@ -157,6 +157,25 @@ pub(crate) async fn create_vault(
     .await
 }
 
+/// Makes the one-time code or passkey domain on this device, for a vault that
+/// has it nowhere (ADR-0011): Windows Hello asks. The password domain must be
+/// open.
+#[tauri::command]
+pub(crate) async fn set_up_domain(app: AppHandle, domain: String) -> CommandResult<Status> {
+    let domain = parse_domain(&domain)?;
+    blocking(app, move |state| {
+        let set_up = request::Body::SetUpDomain(proto::SetUpDomain {
+            domain: domain as i32,
+        });
+        status_of(
+            state
+                .daemon
+                .call_with_key_agent(Start::IfVaultExists, set_up)?,
+        )
+    })
+    .await
+}
+
 /// Unlocks a domain: the password domain with the master password, the
 /// others with Windows Hello.
 #[tauri::command]

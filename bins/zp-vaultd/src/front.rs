@@ -293,11 +293,25 @@ impl Front {
     /// its key, sealed. Fails with `Locked` for the first domain that is not
     /// unlocked.
     fn whole_with_keys(&self, backs: &mut Backs) -> Result<Box<dyn Back>, proto::Error> {
-        // Find out what is locked before a process is started for nothing.
+        let mut domains = Vec::new();
         for domain in DomainId::ALL {
-            if !self.engine.has_domain(domain)? {
-                continue;
+            if self.engine.has_domain(domain)? {
+                domains.push(domain);
             }
+        }
+        self.whole_with(backs, &domains)
+    }
+
+    /// A process for the whole vault that holds `domains`, each handed over
+    /// by its holder. Fails with `Locked` for the first one that is not
+    /// unlocked.
+    fn whole_with(
+        &self,
+        backs: &mut Backs,
+        domains: &[DomainId],
+    ) -> Result<Box<dyn Back>, proto::Error> {
+        // Find out what is locked before a process is started for nothing.
+        for &domain in domains {
             let unlocked = match backs.worker(domain) {
                 None => self.engine.unlocked(domain),
                 Some(worker) => worker.unlocked(domain),
@@ -308,13 +322,30 @@ impl Front {
         }
         let mut whole = self.spawner.back(Scope::Whole);
         let to = whole.import_key()?;
-        for domain in DomainId::ALL {
-            if self.engine.has_domain(domain)? {
-                let (epoch, sealed) = self.export(backs, domain, &to)?;
-                whole.import(domain, epoch, sealed)?;
-            }
+        for &domain in domains {
+            let (epoch, sealed) = self.export(backs, domain, &to)?;
+            whole.import(domain, epoch, sealed)?;
         }
         Ok(whole)
+    }
+
+    /// Hands domain `worked`, unlocked in `whole`, to its worker so that the
+    /// user is not asked again. A failure leaves the domain merely locked.
+    fn hand_to_worker(&self, backs: &mut Backs, whole: &mut dyn Back, worked: DomainId) {
+        let Some(worker) = backs.worker(worked) else {
+            return;
+        };
+        let handed = worker.import_key().and_then(|to| {
+            let (epoch, sealed) = whole.export(worked, &to)?;
+            worker.import(worked, epoch, sealed)
+        });
+        if let Err(error) = handed {
+            log(&format!(
+                "the {} domain starts locked: {}",
+                convert::domain_name(worked),
+                error.message
+            ));
+        }
     }
 
     /// After `whole` has made the vault file what it is now (created,
@@ -337,26 +368,27 @@ impl Front {
             master_password: master_password.to_owned(),
         })))?;
         for worked in WORKED {
-            if !self.engine.has_domain(worked)? {
-                continue;
-            }
-            let Some(worker) = backs.worker(worked) else {
-                continue;
-            };
-            let handed = worker.import_key().and_then(|to| {
-                let (epoch, sealed) = whole.export(worked, &to)?;
-                worker.import(worked, epoch, sealed)
-            });
-            // The vault is as it should be; the domain is merely locked.
-            if let Err(error) = handed {
-                log(&format!(
-                    "the {} domain starts locked: {}",
-                    convert::domain_name(worked),
-                    error.message
-                ));
+            if self.engine.has_domain(worked)? {
+                self.hand_to_worker(backs, whole, worked);
             }
         }
         Ok(())
+    }
+
+    /// Makes the TOTP or passkey domain on this device (ADR-0011 §2): in a
+    /// process for the whole vault that holds the password domain (for the
+    /// device signing key), which then hands the new domain to its worker.
+    fn set_up_domain(&self, backs: &mut Backs, request: proto::SetUpDomain) -> Reply {
+        let domain = convert::domain_from_proto(request.domain)?;
+        if !WORKED.contains(&domain) {
+            return Err(bad_request(
+                "only the TOTP and passkey domains are set up later",
+            ));
+        }
+        let mut whole = self.whole_with(backs, &[DomainId::Password])?;
+        as_result(whole.call(request::Body::SetUpDomain(request)))?;
+        self.hand_to_worker(backs, whole.as_mut(), domain);
+        self.status(backs)
     }
 
     fn create_vault(&self, backs: &mut Backs, request: proto::CreateVault) -> Reply {
@@ -548,6 +580,7 @@ impl Front {
             Body::BridgeTotp(totp) => self.bridge_totp(backs, &totp),
             Body::PasskeyCreate(create) => self.passkey_create(backs, create),
             Body::PasskeyGet(get) => self.passkey_get(backs, get),
+            Body::SetUpDomain(set_up) => self.set_up_domain(backs, set_up),
             Body::CreateRecoveryKit(kit) => {
                 if self.engine.has_recovery_kit()? && !kit.replace {
                     return Err(proto::Error::new(

@@ -139,6 +139,13 @@ enum Command {
         #[arg(value_enum)]
         domain: Option<DomainArg>,
     },
+    /// Set up the TOTP or passkey domain on this device, for a vault that
+    /// was created without a hardware key store and has it nowhere. The
+    /// hardware key store (Windows Hello) asks.
+    SetUp {
+        #[arg(value_enum)]
+        domain: DomainArg,
+    },
     /// Add an item. Secrets are prompted for, never passed as arguments.
     Add {
         #[command(subcommand)]

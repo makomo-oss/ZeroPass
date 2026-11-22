@@ -122,7 +122,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | `RecoverVault` | `StatusReply` | 復旧鍵と新しいマスターパスワードで、金庫へのアクセスを取り戻す |
 | `Unlock` | `Done` | ドメインを解錠する。パスワードのドメインはマスターパスワードを添える。TOTP・パスキーのドメインは、デーモンが鍵エージェント（§13）を通じて生体認証を求める |
 | `Lock` | `Done` | 1 つのドメイン、またはすべてを施錠する |
-| `ListItems` | `Items` | ドメイン内のアイテムの概要（ID、種類、題名、利用者名、URL）。`query` があれば絞り込む。**秘密を含まない** |
+| `ListItems` | `Items` | ドメイン内のアイテムの概要（ID、種類、題名、利用者名、URL）。`query` があれば絞り込む。**秘密を含まない**。この端末の鍵で開けないアイテムは除き、その件数を `unreadable` で返す（ADR-0011） |
 | `GetItem` | `Item` | アイテム 1 件の内容（§6 の範囲） |
 | `AddItem` | `ItemAdded` | アイテムを追加し、その ID を返す |
 | `UpdateItem` | `Done` | アイテムを置き換える |
@@ -136,6 +136,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | `ExportVault` | `Exported` | 暗号化エクスポートを作る（`export.md`。要求 18・応答 27） |
 | `ImportExport` | `ImportedItems` | 暗号化エクスポートを取り込む（`export.md`。要求 19・応答 28） |
 | `PasskeyCreate` | `PasskeyCreated` | ページのためにパスキーを作り、金庫に保存する（`passkey.md` §5・§9。要求 64・応答 29）。毎回 Windows Hello |
+| `SetUpDomain` | `StatusReply` | どの端末も持たない TOTP・パスキーのドメインを、この端末で作る（ADR-0011 §2。要求 66）。パスワードのドメインの解錠が要る（デバイス署名鍵）。Windows Hello が尋ねる。この端末が持っていれば `INVALID_INPUT`、ほかの端末にある兆しがあれば `DOMAIN_ELSEWHERE`、鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` |
 | `PasskeyGet` | `PasskeyAssertion` または `PasskeyChoices` | ページのパスキーで署名する。候補が複数なら一覧を返す（`passkey.md` §6・§9。要求 65・応答 30・31）。毎回 Windows Hello（選んだ候補の送り直しを除く） |
 
 失敗したときは、どの要求にも `Error`（`code`、`message`、該当すれば `domain`）を返す。
@@ -143,6 +144,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 - `LOCKED` を受け取ったクライアントは、`domain` を解錠してから同じ要求をやり直せる。
 - `message` は人が読むための英語の文で、秘密を含まない。プログラムは `code` で判断する。
 - パスキーの要求に固有のコード: `CREDENTIAL_EXCLUDED`（20。RP が除外したクレデンシャルが金庫にある）、`UNSUPPORTED_ALGORITHM`（21。RP のアルゴリズムに対応するものがない）。ほかのコードとの対応は `passkey.md` §9.3。
+- `DOMAIN_ELSEWHERE`（23）: ほかの端末にあるドメインは、作らずに受け取る。`KEYS_MISSING`（24）: この端末に届いていない鍵で書かれたものを開こうとした（暗号化エクスポートも、開けないアイテムがあれば作らない）。
 - `KEYS_AT_RISK`（22）: この端末から失効させると、ほかの端末が持つ TOTP・パスキーの鍵を入れ替えられず、失効させる端末が最後の持ち主なら失われる（ADR-0011）。
 
 ### 4.3 予約
@@ -152,10 +154,10 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | 番号 | 用途 | 定義するタスク |
 |---|---|---|
 | 48〜63 | 承認要求（Agent Broker の一時許可） | P7-01 |
-| 66〜79 | パスキーの今後の要求 | — |
+| 67〜79 | パスキーと鍵の今後の要求 | — |
 | 106〜111 | 拡張ブリッジの今後の要求 | — |
 
-使用中の番号: 要求 1〜19（§4.2）、32〜39（§10）、40〜45（§11）、64〜65（`passkey.md` §9）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）、27〜28（`export.md`）、29〜31（`passkey.md` §9）。
+使用中の番号: 要求 1〜19（§4.2）、32〜39（§10）、40〜45（§11）、64〜65（`passkey.md` §9）、66（§4.2）、80〜83（§12）、96〜97（§13）、100〜105（`extension.md` §4）。応答 1〜18、19〜22（§12）、23（§13）、24〜26（`extension.md` §4）、27〜28（`export.md`）、29〜31（`passkey.md` §9）。
 
 ## 5. 役割
 
@@ -364,14 +366,14 @@ UI は `KeyAgentAttach` を出せない。鍵エージェントの役割は、�
 
 - フロント以外は、フロントが同じ実行ファイルを `--worker <totp|passkey|whole>` で起動した子プロセスである。サンドボックスはフロントから引き継ぐ。フロントとは標準入出力（無名パイプ）でつながり、その上のメッセージ（`bins/zp-vaultd/src/wire.rs`）はデーモンの内部のもので、版の互換を約束しない。
 - 子プロセスは、標準入力が閉じたら（フロントが手放したか、終了したら）、すべてを施錠して終了する。フロントは終了の前に子プロセスを終わらせる。
-- 全体プロセスを使う要求: `CreateVault`、`RecoverVault`、`PairJoin`、`PairOffer`・`PairAdmit`、`CreateRecoveryKit`、`RevokeDevice`、`ExportVault`、`ImportExport`。`PairOffer` の全体プロセスは、オファーが使われるか、期限が切れるか、どれかのドメインが施錠されるか、新しいオファーが出るまで残る。
+- 全体プロセスを使う要求: `CreateVault`、`RecoverVault`、`SetUpDomain`（パスワードのドメインだけを渡し、作ったドメインはワーカーに渡す）、`PairJoin`、`PairOffer`・`PairAdmit`、`CreateRecoveryKit`、`RevokeDevice`、`ExportVault`、`ImportExport`。`PairOffer` の全体プロセスは、オファーが使われるか、期限が切れるか、どれかのドメインが施錠されるか、新しいオファーが出るまで残る。
 - 金庫を作った・復旧した・参加したあと、全体プロセスは TOTP・パスキーの鍵を各ワーカーへ渡してから終わる（利用者に確認を 2 度求めないため）。応答の `StatusReply` は、そのときの各プロセスの状態を合わせたものである。
 
 ### 13.2 鍵エージェント
 
 TOTP・パスキーの金庫鍵は、Windows Hello の署名から導いた鍵でラップされる（`crypto.md` §7.1）。金庫デーモンはサンドボックスの中にいて、外の Hello の資格情報が見えない（ADR-0006）。署名は、サンドボックスの外で動く鍵エージェント `zp-keyagent` が行う。
 
-- **起動**: UI が、Hello の要る操作（TOTP・パスキーの解錠、`CreateVault`、`RecoverVault`、`PairJoin`）の前に、また拡張ブリッジが `BridgeTotp`・`PasskeyCreate`・`PasskeyGet` の前に、自分と同じディレクトリの `zp-keyagent --vault <金庫ファイル>` を起動する。エージェントは、デーモンが使い始めたら標準出力に `ready` の 1 行を書く。UI は、エージェントの標準入力を開いたままにし、操作が終わったら閉じる。エージェントは標準入力が閉じたら終了する。
+- **起動**: UI が、Hello の要る操作（TOTP・パスキーの解錠、`CreateVault`、`RecoverVault`、`SetUpDomain`、`PairJoin`）の前に、また拡張ブリッジが `BridgeTotp`・`PasskeyCreate`・`PasskeyGet` の前に、自分と同じディレクトリの `zp-keyagent --vault <金庫ファイル>` を起動する。エージェントは、デーモンが使い始めたら標準出力に `ready` の 1 行を書く。UI は、エージェントの標準入力を開いたままにし、操作が終わったら閉じる。エージェントは標準入力が閉じたら終了する。
 - **接続**: エージェントはデーモンに接続し、`KeyAgentAttach`（96）で中継（§11.2 と同じ 2 本の接続）を始める。デーモンは、エージェントを使えるようになったら `Listening`（22）を送る。エージェントが接続していなければ、Windows では Hello の要る要求は失敗する（`CreateVault` も。TOTP・パスキーのない金庫を黙って作らないため）。ハードウェア鍵ストアの実装がまだない OS では、ないものとして扱う。新しいエージェントが接続したら、古いものは使わない。
 - **問いと答え**: 1 度に 1 つ。デーモンは 180 秒待つ。
 

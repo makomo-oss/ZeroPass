@@ -2,6 +2,7 @@
   import { api, errorMessage, isCommandError, items, type DomainState, type Summary } from "../api";
   import { byTitle } from "../search";
   import ConfirmButton from "./ConfirmButton.svelte";
+  import MissingDomain from "./MissingDomain.svelte";
 
   let {
     domain,
@@ -14,6 +15,8 @@
   } = $props();
 
   let passkeys: Summary[] = $state([]);
+  /** Passkeys made with keys that have not reached this device (ADR-0011). */
+  let unreadable = $state(0);
   let busy = $state(false);
   let error = $state("");
 
@@ -48,7 +51,9 @@
 
   async function load() {
     try {
-      passkeys = (await items.list("passkey")).sort(byTitle);
+      const listing = await items.listing("passkey");
+      unreadable = listing.unreadable;
+      passkeys = listing.items.sort(byTitle);
     } catch (caught) {
       passkeys = [];
       if (isCommandError(caught) && caught.code === "Locked") {
@@ -91,12 +96,8 @@
     the next sync.
   </p>
 
-  {#if !domain?.available}
-    <p class="notice info">
-      This vault keeps no passkeys: it was created on a device without Windows
-      Hello. Passkeys are protected by Windows Hello, separately from your
-      master password.
-    </p>
+  {#if domain && !domain.available}
+    <MissingDomain {domain} what="passkeys" {onchanged} />
   {:else if !unlocked}
     <div class="locked card">
       <p>
@@ -108,7 +109,13 @@
       </button>
     </div>
   {:else}
-    {#if passkeys.length === 0}
+    {#if unreadable > 0}
+      <p class="notice warn">
+        {unreadable === 1 ? "1 passkey was" : `${unreadable} passkeys were`} made on another
+        device with keys this PC does not have yet. Get the keys from that device.
+      </p>
+    {/if}
+    {#if passkeys.length === 0 && unreadable === 0}
       <p class="muted">No passkeys yet.</p>
     {/if}
     <ul class="list">

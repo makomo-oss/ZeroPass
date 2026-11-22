@@ -13,6 +13,7 @@
   import { byTitle } from "../search";
   import ConfirmButton from "./ConfirmButton.svelte";
   import CopyButton from "./CopyButton.svelte";
+  import MissingDomain from "./MissingDomain.svelte";
 
   let {
     domain,
@@ -34,6 +35,8 @@
   }
 
   let entries: Entry[] = $state([]);
+  /** Codes made with keys that have not reached this device (ADR-0011). */
+  let unreadable = $state(0);
   let busy = $state(false);
   let error = $state("");
   let adding = $state(false);
@@ -80,7 +83,9 @@
 
   async function load() {
     try {
-      const list = (await items.list("totp")).sort(byTitle);
+      const listing = await items.listing("totp");
+      unreadable = listing.unreadable;
+      const list = listing.items.sort(byTitle);
       entries = await Promise.all(
         list.map(async (summary) => {
           const code = await items.totpCode(summary.id);
@@ -195,12 +200,8 @@
     {/if}
   </header>
 
-  {#if !domain?.available}
-    <p class="notice info">
-      This vault keeps no one-time codes: it was created on a device without
-      Windows Hello. One-time codes are protected by Windows Hello, separately
-      from your master password.
-    </p>
+  {#if domain && !domain.available}
+    <MissingDomain {domain} what="one-time codes" {onchanged} />
   {:else if !unlocked}
     <div class="locked card">
       <p>
@@ -212,6 +213,12 @@
       </button>
     </div>
   {:else}
+    {#if unreadable > 0}
+      <p class="notice warn">
+        {unreadable === 1 ? "1 one-time code was" : `${unreadable} one-time codes were`} made on
+        another device with keys this PC does not have yet. Get the keys from that device.
+      </p>
+    {/if}
     {#if adding}
       <form class="card add" onsubmit={add}>
         <label class="field">

@@ -150,6 +150,7 @@ fn main() {
             commands::app_info,
             commands::status,
             commands::create_vault,
+            commands::set_up_domain,
             commands::unlock,
             commands::lock,
             commands::ui_ready,

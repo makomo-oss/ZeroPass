@@ -16,8 +16,8 @@
 
 use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params};
 use zp_crypto::{
-    DeviceId, DeviceSigningKey, Domain, DomainId, ItemContext, ItemId, ItemKey, SignatureBytes,
-    VaultId,
+    CryptoError, DeviceId, DeviceSigningKey, Domain, DomainId, ItemContext, ItemId, ItemKey,
+    SignatureBytes, VaultId,
 };
 use zp_sync::{Hlc, Op, OpBody, Payload};
 
@@ -131,6 +131,14 @@ pub(crate) fn read_row(row: &Row<'_>) -> Result<Result<ItemRow, VaultError>, rus
                 .transpose()?,
         })
     })())
+}
+
+/// What opening a stored version gave.
+enum Opened {
+    /// Its content (`None` for a tombstone).
+    Content(Option<Content>),
+    /// No key held here opens its item key.
+    NotHeld,
 }
 
 fn context(vault_id: VaultId, row: &ItemRow) -> ItemContext {
@@ -372,30 +380,57 @@ impl Store {
         key: &impl KeySource<D>,
         row: &ItemRow,
     ) -> Result<Option<Content>, VaultError> {
+        match self.open_version_if_held(key, row)? {
+            Opened::Content(content) => Ok(content),
+            // No key of that generation here at all: it has not arrived yet.
+            Opened::NotHeld if key.keys_of(row.key_epoch).is_empty() => {
+                Err(VaultError::KeyGenerationUnavailable {
+                    domain: D::ID,
+                    epoch: row.key_epoch,
+                })
+            }
+            // Keys of that generation are here and none opens it: the version
+            // was changed, or written with a key another device made on its own
+            // (ADR-0011). Reading it fails as before.
+            Opened::NotHeld => Err(CryptoError::Decrypt.into()),
+        }
+    }
+
+    /// Like [`Self::open_version`], but tells apart a version that no key held
+    /// here opens, which a list leaves out and counts.
+    fn open_version_if_held<D: Domain>(
+        &self,
+        key: &impl KeySource<D>,
+        row: &ItemRow,
+    ) -> Result<Opened, VaultError> {
         if row.domain != D::ID {
             return Err(VaultError::DomainMismatch);
         }
         let Some(payload) = &row.payload else {
-            return Ok(None);
+            return Ok(Opened::Content(None));
         };
         let ctx = context(self.vault_id(), row);
-        // Usually one key per generation; after concurrent rotations, the one
-        // that opens this version.
-        let mut dek = Err(VaultError::KeyGenerationUnavailable {
-            domain: D::ID,
-            epoch: row.key_epoch,
-        });
+        // Usually one key per generation; after concurrent rotations, or when
+        // two devices made the domain on their own (ADR-0011), the one that
+        // opens this version.
+        let mut dek = None;
         for candidate in key.keys_of(row.key_epoch) {
-            dek = candidate
-                .unwrap_item_key(&ctx, &payload.wrapped_dek)
-                .map_err(VaultError::from);
-            if dek.is_ok() {
-                break;
+            match candidate.unwrap_item_key(&ctx, &payload.wrapped_dek) {
+                Ok(opened) => {
+                    dek = Some(opened);
+                    break;
+                }
+                Err(CryptoError::Decrypt) => {}
+                Err(other) => return Err(other.into()),
             }
         }
-        let dek = dek?;
+        let Some(dek) = dek else {
+            return Ok(Opened::NotHeld);
+        };
+        // The item key opened: whatever fails from here is an error.
         let plaintext = dek.open_item(&ctx, &payload.ciphertext)?;
-        Content::from_plaintext(&plaintext, row.domain).map(Some)
+        Content::from_plaintext(&plaintext, row.domain)
+            .map(|content| Opened::Content(Some(content)))
     }
 
     /// Stores a new item and returns its identifier.
@@ -477,23 +512,39 @@ impl Store {
             .ok_or(VaultError::ItemNotFound)
     }
 
-    /// Decrypts every live item of domain `D`.
+    /// Decrypts the live items of domain `D` that the keys held here open
+    /// (see [`Self::list_readable_items`]).
     pub fn list_items<D: Domain>(
         &self,
         key: &impl KeySource<D>,
     ) -> Result<Vec<(ItemId, Content)>, VaultError> {
+        Ok(self.list_readable_items(key)?.0)
+    }
+
+    /// Decrypts the live items of domain `D` that the keys held here open, and
+    /// counts those they do not: written with a key that has not reached this
+    /// device (ADR-0011 §3).
+    pub fn list_readable_items<D: Domain>(
+        &self,
+        key: &impl KeySource<D>,
+    ) -> Result<(Vec<(ItemId, Content)>, usize), VaultError> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {COLUMNS} FROM items WHERE domain = ?1 AND deleted = 0 ORDER BY item_id"
         ))?;
         let rows = statement.query_map(params![D::ID.as_u8()], read_row)?;
 
         let mut items = Vec::new();
+        let mut unreadable = 0;
         for row in rows {
             let row = row??;
-            let content = self.open_version(key, &row)?.ok_or_else(|| corrupt(()))?;
-            items.push((row.item_id, content));
+            match self.open_version_if_held(key, &row)? {
+                Opened::Content(content) => {
+                    items.push((row.item_id, content.ok_or_else(|| corrupt(()))?));
+                }
+                Opened::NotHeld => unreadable += 1,
+            }
         }
-        Ok(items)
+        Ok((items, unreadable))
     }
 
     /// Decrypts the live items of domain `D` and returns those matching `query`
@@ -926,7 +977,12 @@ mod tests {
         assert!(is_decrypt_error(
             &f.store.get_item::<Login>(&other, id).unwrap_err()
         ));
-        assert!(is_decrypt_error(&f.store.list_items(&other).unwrap_err()));
+        // A list leaves out what the keys held do not open, and counts it
+        // (ADR-0011 §3), instead of failing as a whole.
+        let (items, unreadable) = f.store.list_readable_items(&other).unwrap();
+        assert!(items.is_empty());
+        assert_eq!(unreadable, 1);
+        assert!(f.store.list_items(&other).unwrap().is_empty());
     }
 
     #[test]

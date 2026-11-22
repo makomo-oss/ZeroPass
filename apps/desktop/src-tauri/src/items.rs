@@ -112,10 +112,19 @@ pub(crate) struct Summary {
     urls: Vec<String>,
 }
 
+/// The items of a domain, and how many this device cannot open yet.
+#[derive(Serialize)]
+pub(crate) struct Listing {
+    items: Vec<Summary>,
+    /// Live items written with keys that have not reached this device
+    /// (ADR-0011): they are not in `items`.
+    unreadable: u32,
+}
+
 /// The items of a domain. A locked domain is an error (`Locked`): listing
 /// does not prompt for Windows Hello by itself.
 #[tauri::command]
-pub(crate) async fn list_items(app: AppHandle, domain: String) -> CommandResult<Vec<Summary>> {
+pub(crate) async fn list_items(app: AppHandle, domain: String) -> CommandResult<Listing> {
     let domain = parse_domain(&domain)?;
     blocking(app, move |state| {
         let list = request::Body::ListItems(proto::ListItems {
@@ -125,17 +134,20 @@ pub(crate) async fn list_items(app: AppHandle, domain: String) -> CommandResult<
         let response::Body::Items(items) = state.daemon.call(list)? else {
             return Err(unexpected());
         };
-        Ok(items
-            .items
-            .into_iter()
-            .map(|summary| Summary {
-                id: hex(&summary.item_id),
-                kind: kind_name(summary.kind),
-                title: summary.title,
-                username: summary.username,
-                urls: summary.urls,
-            })
-            .collect())
+        Ok(Listing {
+            items: items
+                .items
+                .into_iter()
+                .map(|summary| Summary {
+                    id: hex(&summary.item_id),
+                    kind: kind_name(summary.kind),
+                    title: summary.title,
+                    username: summary.username,
+                    urls: summary.urls,
+                })
+                .collect(),
+            unreadable: items.unreadable,
+        })
     })
     .await
 }

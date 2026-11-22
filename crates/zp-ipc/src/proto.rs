@@ -145,6 +145,12 @@ pub enum ErrorCode {
     /// other devices hold unreplaced, or lose them if the revoked device holds
     /// the last copy: this device does not have them (ADR-0011).
     KeysAtRisk = 22,
+    /// Other devices of the vault seem to have the domain: get its keys from
+    /// one of them instead of making it anew (ADR-0011).
+    DomainElsewhere = 23,
+    /// Something was written with a key that has not reached this device
+    /// (ADR-0011): get the keys from another device, or sync.
+    KeysMissing = 24,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +163,7 @@ pub struct Request {
     /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -314,6 +320,10 @@ pub mod request {
         /// (`navigator.credentials.get`). The user is verified anew.
         #[prost(message, tag = "65")]
         PasskeyGet(super::PasskeyGet),
+        /// Makes the TOTP or passkey domain on this device, for a vault that
+        /// has it nowhere (ADR-0011). Windows Hello asks.
+        #[prost(message, tag = "66")]
+        SetUpDomain(super::SetUpDomain),
         /// Key agent: offers the platform's hardware key store to the vault
         /// daemon. Starts a relay.
         #[prost(message, tag = "96")]
@@ -474,6 +484,14 @@ pub struct RevokeDevice {
     /// `KEYS_AT_RISK` in that case.
     #[prost(bool, tag = "2")]
     pub even_without_keys: bool,
+}
+
+/// Makes a hardware-bound domain on this device (ADR-0011 §2).
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct SetUpDomain {
+    /// The TOTP or the passkey domain.
+    #[prost(enumeration = "Domain", tag = "1")]
+    pub domain: i32,
 }
 
 /// Locks everything and stops the daemon.
@@ -1115,6 +1133,10 @@ pub struct Items {
     /// The items, sorted by title.
     #[prost(message, repeated, tag = "1")]
     pub items: Vec<ItemSummary>,
+    /// How many live items of the domain are left out because the keys held
+    /// here do not open them (ADR-0011).
+    #[prost(uint32, tag = "2")]
+    pub unreadable: u32,
 }
 
 /// What a list shows of an item. No secrets.
