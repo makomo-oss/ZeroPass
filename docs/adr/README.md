@@ -14,6 +14,7 @@
 | [0008](0008-windows-installation.md) | Windows ではマシン全体に（Program Files へ）インストールし、ログオン時は Run キーから起動する | 採用 |
 | [0009](0009-desktop-application.md) | デスクトップアプリは Tauri の埋め込みページだけを表示し、金庫には IPC の UI として接続する | 採用 |
 | [0010](0010-passkey-engine.md) | パスキーエンジンは自作し、1Password の `passkey` クレート群は採用しない | 採用 |
+| [0011](0011-hardware-domains-later.md) | TOTP とパスキーのドメインは、後から受け取る・作ることができる | 採用 |
 
 ## テンプレート
 
