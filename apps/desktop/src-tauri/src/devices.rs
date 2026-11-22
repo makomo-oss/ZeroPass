@@ -87,8 +87,15 @@ pub(crate) async fn list_devices(app: AppHandle) -> CommandResult<Vec<Device>> {
 
 /// Revokes a device and replaces the vault keys. Every domain must be open:
 /// the hardware-bound ones are opened with Windows Hello if necessary.
+///
+/// If this device lacks one-time codes or passkeys that other devices seem to
+/// have, the daemon refuses (`KeysAtRisk`) unless `even_without_keys`.
 #[tauri::command]
-pub(crate) async fn revoke_device(app: AppHandle, id: String) -> CommandResult<()> {
+pub(crate) async fn revoke_device(
+    app: AppHandle,
+    id: String,
+    even_without_keys: bool,
+) -> CommandResult<()> {
     let device_id = (0..id.len() / 2)
         .map(|index| u8::from_str_radix(id.get(index * 2..index * 2 + 2).unwrap_or(""), 16))
         .collect::<Result<Vec<u8>, _>>()
@@ -96,6 +103,7 @@ pub(crate) async fn revoke_device(app: AppHandle, id: String) -> CommandResult<(
     blocking(app, move |state| {
         state.call_unlocking(request::Body::RevokeDevice(proto::RevokeDevice {
             device_id,
+            even_without_keys,
         }))?;
         Ok(())
     })
@@ -409,12 +417,15 @@ pub(crate) struct Joined {
 
 /// On a device without a vault: joins the vault of the device that shows
 /// `code`. Returns once the other device's user has confirmed (or refused).
+/// Without Windows Hello the daemon refuses (`HardwareUnavailable`) unless
+/// `without_hardware`, as for creating a vault.
 #[tauri::command]
 pub(crate) async fn join_vault(
     app: AppHandle,
     code: String,
     name: String,
     password: String,
+    without_hardware: bool,
 ) -> CommandResult<Joined> {
     let code = Zeroizing::new(code);
     let password = Zeroizing::new(password);
@@ -431,6 +442,7 @@ pub(crate) async fn join_vault(
             code.trim(),
             &name,
             &password,
+            without_hardware,
         )?;
         Ok(Joined {
             vault_id: hex(&joined.vault_id),

@@ -289,7 +289,7 @@ impl Service {
             request.device_name.clone()
         };
         let joiner = Joiner::new(&name).map_err(pairing_error)?;
-        let hardware = self.hardware(true)?;
+        let hardware = self.hardware_for_new_vault(request.without_hardware)?;
 
         let (link, _answers, _to_client) =
             bridge(relay).map_err(|error| drive_error(error.into()))?;
@@ -355,12 +355,12 @@ mod tests {
 
     impl Daemon {
         fn start(path: &Path) -> Self {
+            Self::start_with(path, KeyStoreChoice::InsecureSoftware)
+        }
+
+        fn start_with(path: &Path, key_store: KeyStoreChoice) -> Self {
             let this = zp_ipc::current_executable().unwrap();
-            let service = Arc::new(Front::local(
-                path.to_path_buf(),
-                KeyStoreChoice::InsecureSoftware,
-                None,
-            ));
+            let service = Arc::new(Front::local(path.to_path_buf(), key_store, None));
             let endpoint = Endpoint::for_vault(path).unwrap();
             let policy = ClientPolicy::deny_all().allow(&this, proto::Role::Ui);
             let server = Server::bind(&endpoint, policy, "test").unwrap();
@@ -436,6 +436,7 @@ mod tests {
             offer: offer.to_owned(),
             device_name: "Test phone".into(),
             master_password: OTHER_PASSWORD.into(),
+            without_hardware: false,
         });
         let (id, mut b_down) = joining.connect().start_relay(join).unwrap();
         let mut b_up = joining.connect().attach_relay(id).unwrap();
@@ -497,6 +498,7 @@ mod tests {
             &ui(),
             request::Body::CreateVault(proto::CreateVault {
                 master_password: PASSWORD.into(),
+                without_hardware: false,
             }),
         );
         assert!(matches!(created, response::Body::Status(_)));
@@ -589,6 +591,59 @@ mod tests {
         assert_eq!(admitted.unwrap_err().code(), Some(ErrorCode::InvalidInput));
         assert!(joined.is_err());
         assert!(!dir.path().join("other.zpvault").exists());
+    }
+
+    fn status(daemon: &Daemon) -> proto::StatusReply {
+        match daemon
+            .call(request::Body::Status(proto::Status {}))
+            .unwrap()
+        {
+            response::Body::Status(status) => status,
+            other => panic!("unexpected answer: {other:?}"),
+        }
+    }
+
+    /// ADR-0011: a device that joined without a key store knows that the other
+    /// devices have the domains it lacks, and does not revoke them blindly.
+    #[test]
+    fn a_device_without_the_hardware_domains_knows_they_are_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = existing_vault(dir.path());
+        let laptop = Daemon::start_with(&dir.path().join("laptop.zpvault"), KeyStoreChoice::None);
+        let (admitted, joined, _) = pair(&pc, &laptop, &offer(&pc), true);
+        admitted.unwrap();
+        joined.unwrap();
+
+        let states = |daemon: &Daemon| -> Vec<(bool, bool)> {
+            status(daemon)
+                .domains
+                .iter()
+                .map(|domain| (domain.available, domain.elsewhere))
+                .collect()
+        };
+        // Password, TOTP, passkey: (here, elsewhere).
+        assert_eq!(
+            states(&laptop),
+            [(true, false), (false, true), (false, true)]
+        );
+        assert_eq!(states(&pc), [(true, false); 3]);
+
+        // Revoking the PC from the laptop would leave the TOTP and passkey keys
+        // unreplaced, and lose them for good: refused unless the user insists.
+        let pc_id = status(&pc).device_id;
+        let revoke = |even_without_keys| {
+            laptop.call(request::Body::RevokeDevice(proto::RevokeDevice {
+                device_id: pc_id.clone(),
+                even_without_keys,
+            }))
+        };
+        let refused = revoke(false).unwrap_err();
+        assert_eq!(refused.code(), Some(ErrorCode::KeysAtRisk));
+        assert!(
+            refused.to_string().contains("totp and passkey"),
+            "{refused}"
+        );
+        revoke(true).unwrap();
     }
 
     #[test]

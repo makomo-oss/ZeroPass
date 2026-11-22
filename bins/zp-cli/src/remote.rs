@@ -191,13 +191,26 @@ impl Remote {
         &mut self,
         vault: &Path,
         password: &str,
+        without_hardware: bool,
         out: &mut impl Write,
     ) -> CliResult<()> {
         // The TOTP and passkey vault keys are wrapped by the hardware key store.
         self.with_key_agent()?;
-        let reply = self.call(request::Body::CreateVault(proto::CreateVault {
+        let reply = match self.call(request::Body::CreateVault(proto::CreateVault {
             master_password: password.to_owned(),
-        }))?;
+            without_hardware,
+        })) {
+            Err(IpcError::Remote(error)) if error.code == ErrorCode::HardwareUnavailable as i32 => {
+                return Err(format!(
+                    "{}\n\
+                    To create the vault without one-time codes and passkeys for now, run \
+                    `zp-cli --no-hardware-keystore init`.",
+                    error.message
+                )
+                .into());
+            }
+            other => other?,
+        };
         let response::Body::Status(status) = reply else {
             return Err(unexpected());
         };
@@ -409,7 +422,10 @@ impl Remote {
                 }
                 writeln!(out, "{} device(s)", devices.len())?;
             }
-            Command::Revoke { device } => self.revoke(&device, out)?,
+            Command::Revoke {
+                device,
+                even_without_keys,
+            } => self.revoke(&device, even_without_keys, out)?,
             Command::Export { file, force } => self.export(&file, force, out)?,
             Command::Import { file } => self.import(&file, out)?,
             Command::Passwd => {
@@ -595,7 +611,12 @@ impl Remote {
         }
     }
 
-    fn revoke(&mut self, device: &str, out: &mut impl Write) -> CliResult<()> {
+    fn revoke(
+        &mut self,
+        device: &str,
+        even_without_keys: bool,
+        out: &mut impl Write,
+    ) -> CliResult<()> {
         let devices = self.devices()?;
         let prefix = device.trim().to_ascii_lowercase();
         let mut matches = devices
@@ -616,6 +637,26 @@ impl Remote {
             _ => {}
         }
         let id = hex(&device.device_id);
+        // Before anything is unlocked: from here, keys that other devices
+        // hold could not be replaced (ADR-0011).
+        let missing: Vec<&str> = self
+            .vault_status()?
+            .domains
+            .iter()
+            .filter(|state| !state.available && state.elsewhere)
+            .filter_map(|state| from_proto(state.domain).map(domain_name))
+            .collect();
+        if !missing.is_empty() && !even_without_keys {
+            return Err(format!(
+                "this device does not have the {} keys that other devices seem to have: \
+                revoking from here does not replace them, and loses them if \"{}\" holds \
+                the last copy. Revoke it from a device that has every part of the vault, \
+                or run `revoke --even-without-keys {id}`.",
+                missing.join(" and "),
+                device.name
+            )
+            .into());
+        }
         // Replacing the keys of a domain takes that domain.
         self.unlock_every_domain()?;
         let question = format!(
@@ -632,6 +673,7 @@ impl Remote {
         // A domain may have locked itself while the question was open.
         let request = request::Body::RevokeDevice(proto::RevokeDevice {
             device_id: device.device_id.clone(),
+            even_without_keys,
         });
         self.call_unlocking(&request)?;
         writeln!(out, "revoked device \"{}\" ({id})", device.name)?;

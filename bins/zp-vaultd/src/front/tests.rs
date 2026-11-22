@@ -50,6 +50,7 @@ impl Fixture {
     fn create(&self) {
         self.call(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
+            without_hardware: false,
         }))
         .unwrap();
     }
@@ -134,6 +135,7 @@ fn a_vault_is_created_used_locked_and_unlocked() {
     assert_eq!(
         fixture.code(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
+            without_hardware: false,
         })),
         ErrorCode::VaultExists
     );
@@ -353,7 +355,12 @@ fn devices_are_listed_and_this_device_cannot_be_revoked() {
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].state, proto::DeviceState::ThisDevice as i32);
     assert_eq!(devices[0].device_id, fixture.status().device_id);
-    let revoke = |id: Vec<u8>| request::Body::RevokeDevice(proto::RevokeDevice { device_id: id });
+    let revoke = |id: Vec<u8>| {
+        request::Body::RevokeDevice(proto::RevokeDevice {
+            device_id: id,
+            even_without_keys: false,
+        })
+    };
     assert_eq!(
         fixture.code(revoke(devices[0].device_id.clone())),
         ErrorCode::DeviceNotFound
@@ -518,6 +525,7 @@ fn the_sync_daemon_reads_and_writes_ops_through_the_ipc() {
         &ui,
         request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
+            without_hardware: false,
         }),
     );
     assert!(matches!(created, response::Body::Status(_)));
@@ -1037,4 +1045,41 @@ fn passkeys_are_made_and_used_through_the_bridge_with_the_user_each_time() {
         panic!("the front answered");
     };
     assert_eq!(error.code, ErrorCode::Internal as i32);
+}
+
+/// ADR-0011: without a usable Windows Hello, a vault is made only when the
+/// user chose to go on without it.
+#[test]
+fn without_windows_hello_a_vault_is_made_only_if_the_user_says_so() {
+    use std::sync::atomic::Ordering;
+
+    use crate::port::testing::FakeAgent;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::new(3));
+    agent.available.store(false, Ordering::SeqCst);
+    let port: Arc<dyn crate::port::KeyAgentPort> = agent.clone();
+    let fixture = Fixture {
+        front: Front::local(
+            dir.path().join("test.zpvault"),
+            KeyStoreChoice::Platform,
+            Some(port),
+        ),
+        _dir: dir,
+    };
+    let create = |without_hardware| {
+        request::Body::CreateVault(proto::CreateVault {
+            master_password: PASSWORD.into(),
+            without_hardware,
+        })
+    };
+    assert_eq!(fixture.code(create(false)), ErrorCode::HardwareUnavailable);
+    assert!(!fixture.status().vault_exists);
+
+    fixture.call(create(true)).unwrap();
+    let status = fixture.status();
+    let available: Vec<bool> = status.domains.iter().map(|d| d.available).collect();
+    assert_eq!(available, [true, false, false]);
+    // No other device has them either: they are to be made here later.
+    assert!(status.domains.iter().all(|d| !d.elsewhere));
 }

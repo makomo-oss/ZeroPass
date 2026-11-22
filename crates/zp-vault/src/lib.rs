@@ -5,6 +5,7 @@
 
 mod clock;
 mod device;
+mod domains;
 mod error;
 pub mod export;
 mod items;

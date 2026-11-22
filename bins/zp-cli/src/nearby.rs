@@ -161,7 +161,27 @@ pub(super) fn join(
     let password = input.new_master_password()?;
     let code = input.secret("Pairing code shown on the other device: ")?;
     let name = name.unwrap_or_else(default_device_name);
-    let joined = pairing::join(vault_path, choice, &code, &name, &password)?;
+    let without_hardware = choice == KeyStoreChoice::None;
+    let joined = pairing::join(
+        vault_path,
+        choice,
+        &code,
+        &name,
+        &password,
+        without_hardware,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> {
+        match error.remote() {
+            Some(remote) if remote.code == proto::ErrorCode::HardwareUnavailable as i32 => format!(
+                "{}\n\
+                        To join without one-time codes and passkeys for now, run \
+                        `zp-cli --no-hardware-keystore join`.",
+                remote.message
+            )
+            .into(),
+            _ => error.into(),
+        }
+    })?;
 
     writeln!(out, "joined vault {} as \"{name}\"", hex(&joined.vault_id))?;
     let mut remote = Remote::open_with(vault_path, choice, Start::IfVaultExists)?;

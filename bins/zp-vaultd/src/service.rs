@@ -303,6 +303,31 @@ impl Service {
         self.hardware_or_why(create).map(Result::ok)
     }
 
+    /// The key store for a new vault file (created or joined). Fails with
+    /// `HARDWARE_UNAVAILABLE` if the platform's store cannot be used, unless the
+    /// user chose to go on without it (`without_hardware`): a vault file must
+    /// not lose its TOTP and passkey domains silently (ADR-0011). A daemon
+    /// started without a key store on purpose goes on as before.
+    pub(crate) fn hardware_for_new_vault(
+        &self,
+        without_hardware: bool,
+    ) -> Result<Option<Box<dyn HardwareKeyStore>>, proto::Error> {
+        match self.hardware_or_why(true)? {
+            Ok(store) => Ok(Some(store)),
+            Err(why) if self.key_store == KeyStoreChoice::Platform && !without_hardware => {
+                Err(proto::Error::new(
+                    ErrorCode::HardwareUnavailable,
+                    format!(
+                        "the hardware key store cannot be used ({why}): set it up (Windows \
+                        Hello: a PIN) and try again, or go on without it, and this device \
+                        has no one-time codes and passkeys until it gets their keys"
+                    ),
+                ))
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Like [`Self::hardware`]; `Ok(Err)` says why this device has no key store.
     fn hardware_or_why(
         &self,
@@ -376,6 +401,7 @@ impl Service {
                 domain: convert::domain_to_proto(domain) as i32,
                 available: vault.has_domain(domain).map_err(vault_error)?,
                 unlocked: vault.is_unlocked(domain),
+                elsewhere: vault.domain_elsewhere(domain).map_err(vault_error)?,
             });
         }
         Ok(proto::StatusReply {
@@ -394,7 +420,7 @@ impl Service {
         if state.vault.is_some() || self.path.exists() {
             return Err(vault_error(VaultError::AlreadyExists));
         }
-        let hardware = self.hardware(true)?;
+        let hardware = self.hardware_for_new_vault(request.without_hardware)?;
         let created = Vault::create(
             &self.path,
             &request.master_password,
@@ -653,14 +679,20 @@ impl Service {
         self.whole()?;
         let id = convert::device_id(&request.device_id)?;
         let vault = self.vault(state)?;
-        Self::revocable(vault, id)?;
+        Self::revocable(vault, id, request.even_without_keys)?;
         Self::require_every_domain(vault)?;
         vault.revoke_device(id).map_err(vault_error)?;
         done()
     }
 
-    /// Fails unless `id` is another device of the vault that is not revoked.
-    fn revocable(vault: &Vault, id: zp_crypto::DeviceId) -> Result<(), proto::Error> {
+    /// Fails unless `id` is another device of the vault that is not revoked,
+    /// and, unless `even_without_keys`, this device has every hardware-bound
+    /// domain that other devices seem to have (ADR-0011).
+    fn revocable(
+        vault: &Vault,
+        id: zp_crypto::DeviceId,
+        even_without_keys: bool,
+    ) -> Result<(), proto::Error> {
         let not_found = |message: &str| proto::Error::new(ErrorCode::DeviceNotFound, message);
         let registry = vault.registry().map_err(vault_error)?;
         if id == vault.device_id() {
@@ -671,6 +703,19 @@ impl Service {
         }
         if registry.is_revoked(&id) {
             return Err(not_found("that device has already been revoked"));
+        }
+        let at_risk = vault.domains_at_risk().map_err(vault_error)?;
+        if !even_without_keys && !at_risk.is_empty() {
+            let names: Vec<&str> = at_risk.into_iter().map(domain_name).collect();
+            return Err(proto::Error::new(
+                ErrorCode::KeysAtRisk,
+                format!(
+                    "this device does not have the {} keys that other devices seem to have: \
+                    revoking from here does not replace them, and loses them if that device \
+                    holds the last copy; revoke from a device that has every part of the vault",
+                    names.join(" and ")
+                ),
+            ));
         }
         Ok(())
     }
@@ -787,10 +832,14 @@ impl Service {
 
     /// Fails unless `device_id` names a device of the vault that can be
     /// revoked. Needs no key.
-    pub(crate) fn check_revocable(&self, device_id: &[u8]) -> Result<(), proto::Error> {
+    pub(crate) fn check_revocable(
+        &self,
+        device_id: &[u8],
+        even_without_keys: bool,
+    ) -> Result<(), proto::Error> {
         let id = convert::device_id(device_id)?;
         let mut state = self.state();
-        Self::revocable(self.vault(&mut state)?, id)
+        Self::revocable(self.vault(&mut state)?, id, even_without_keys)
     }
 
     /// Whether the vault has a recovery kit. Needs no key.

@@ -10,6 +10,8 @@ export interface DomainState {
   name: DomainName;
   available: boolean;
   unlocked: boolean;
+  /** For a domain this device does not have: other devices seem to have it. */
+  elsewhere: boolean;
 }
 
 export interface Status {
@@ -67,8 +69,8 @@ export function domainState(
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
   status: () => invoke<Status>("status"),
-  createVault: (password: string) =>
-    invoke<Status>("create_vault", { password }),
+  createVault: (password: string, withoutHardware = false) =>
+    invoke<Status>("create_vault", { password, withoutHardware }),
   unlock: (domain: DomainName, password?: string) =>
     invoke<void>("unlock", { domain, password: password ?? null }),
   lock: (domain?: DomainName) => invoke<void>("lock", { domain: domain ?? null }),
@@ -219,15 +221,16 @@ export interface Joined {
 
 export const devices = {
   list: () => invoke<Device[]>("list_devices"),
-  revoke: (id: string) => invoke<void>("revoke_device", { id }),
+  revoke: (id: string, evenWithoutKeys = false) =>
+    invoke<void>("revoke_device", { id, evenWithoutKeys }),
   syncStatus: (start: boolean) => invoke<SyncStatus>("sync_status", { start }),
   syncNow: (seconds: number) => invoke<SyncReport>("sync_now", { seconds }),
   pairStart: () => invoke<void>("pair_start"),
   pairProgress: () => invoke<PairProgress>("pair_progress"),
   pairAnswer: (approved: boolean) => invoke<void>("pair_answer", { approved }),
   pairCancel: () => invoke<void>("pair_cancel"),
-  join: (code: string, name: string, password: string) =>
-    invoke<Joined>("join_vault", { code, name, password }),
+  join: (code: string, name: string, password: string, withoutHardware = false) =>
+    invoke<Joined>("join_vault", { code, name, password, withoutHardware }),
   defaultName: () => invoke<string>("default_device_name"),
 };
 

@@ -194,6 +194,11 @@ enum Command {
     Revoke {
         /// The device identifier as shown by `devices`, or the start of it.
         device: String,
+        /// Revoke even though this device lacks one-time codes or passkeys
+        /// that other devices seem to have: their keys are then not replaced,
+        /// and are lost if the revoked device holds the last copy.
+        #[arg(long)]
+        even_without_keys: bool,
     },
     /// Write an encrypted export of the whole vault to FILE: every item, TOTP
     /// seeds included, protected by a passphrase asked for here.
@@ -425,7 +430,12 @@ fn init(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliR
     }
     let password = Input::new().new_master_password()?;
     warn_about_software_key_store(choice, vault_path)?;
-    Remote::open_with(vault_path, choice, Start::Always)?.init(vault_path, &password, out)
+    Remote::open_with(vault_path, choice, Start::Always)?.init(
+        vault_path,
+        &password,
+        choice == KeyStoreChoice::None,
+        out,
+    )
 }
 
 fn recover(choice: KeyStoreChoice, vault_path: &Path, out: &mut impl Write) -> CliResult<()> {

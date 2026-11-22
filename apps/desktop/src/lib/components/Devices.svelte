@@ -21,6 +21,8 @@
   let pairing = $state(false);
   let syncing = $state(false);
   let revoking: string | null = $state(null);
+  /** A device whose revocation was refused because this device lacks keys. */
+  let atRisk: Device | null = $state(null);
   let error = $state("");
   let notice = $state("");
 
@@ -56,19 +58,24 @@
     }
   }
 
-  async function revoke(device: Device) {
+  async function revoke(device: Device, evenWithoutKeys = false) {
     revoking = device.id;
     error = "";
     notice = "";
+    atRisk = null;
     try {
-      await devices.revoke(device.id);
+      await devices.revoke(device.id, evenWithoutKeys);
       notice = `"${device.name}" was revoked and the vault keys were replaced. The other devices get the new keys with their next sync. Change the passwords that device could see if it was stolen.`;
       await loadDevices();
     } catch (caught) {
-      error =
-        isCommandError(caught) && caught.code === "UserCancelled"
-          ? "Windows Hello was cancelled. Every part of the vault must be open to revoke a device."
-          : errorMessage(caught);
+      if (isCommandError(caught) && caught.code === "KeysAtRisk") {
+        atRisk = device;
+      } else {
+        error =
+          isCommandError(caught) && caught.code === "UserCancelled"
+            ? "Windows Hello was cancelled. Every part of the vault must be open to revoke a device."
+            : errorMessage(caught);
+      }
     } finally {
       revoking = null;
     }
@@ -162,6 +169,28 @@
   {#if notice}
     <p class="notice ok">{notice}</p>
   {/if}
+  {#if atRisk}
+    <div class="notice warn at-risk" role="alert">
+      <p>
+        This device does not have the keys of your one-time codes or passkeys,
+        which other devices seem to have. Revoking "{atRisk.name}" from here does
+        not replace those keys, and if "{atRisk.name}" holds the last copy, the
+        codes and passkeys are lost for good.
+      </p>
+      <p>Revoke it from a device that has every part of the vault instead.</p>
+      <div class="actions">
+        <button class="button small" onclick={() => (atRisk = null)}>Keep it</button>
+        <ConfirmButton
+          label="Revoke anyway"
+          question="Lose them if it holds the last copy?"
+          onconfirm={() => {
+            const device = atRisk;
+            if (device) void revoke(device, true);
+          }}
+        />
+      </div>
+    </div>
+  {/if}
   {#if error}
     <p class="notice error" role="alert">{error}</p>
   {/if}
@@ -233,6 +262,21 @@
 
   .bad {
     color: var(--danger);
+  }
+
+  .at-risk {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .at-risk p {
+    margin: 0;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
   }
 
   .list {

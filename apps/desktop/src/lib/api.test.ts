@@ -23,8 +23,8 @@ describe("status", () => {
     vault_id: "00",
     device_id: "11",
     domains: [
-      { name: "password", available: true, unlocked: true },
-      { name: "totp", available: true, unlocked: false },
+      { name: "password", available: true, unlocked: true, elsewhere: false },
+      { name: "totp", available: true, unlocked: false, elsewhere: false },
     ],
     has_recovery_kit: false,
     sandboxed: true,

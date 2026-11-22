@@ -20,6 +20,7 @@ use zp_crypto::{
 use zp_sync::{ChannelPublicKey, DeviceRecord, Revocation};
 
 use crate::clock::Clock;
+use crate::domains::HARDWARE_DOMAINS;
 use crate::keyslots::{PlainSlot, SlotKind};
 use crate::vault::{Keys, check_master_password, new_password_slot};
 use crate::{AutoLock, CreateOptions, KdfChoice, Store, Vault, VaultError};
@@ -254,6 +255,15 @@ impl Vault {
             })
             .collect();
         store.write_slots(Some(&password_slot), &plain)?;
+        // Without a key store, the keys of these domains are dropped: remember
+        // that the other devices have them, to be received later (ADR-0011).
+        if hardware.is_none() {
+            let dropped: Vec<DomainId> = HARDWARE_DOMAINS
+                .into_iter()
+                .filter(|domain| grant.keys.iter().any(|key| key.domain == *domain))
+                .collect();
+            store.note_granted_elsewhere(&dropped)?;
+        }
 
         let mut keys = Keys::default();
         vk_p.install(&mut store, &identity.signing_key, &mut keys, now_ms)?;
