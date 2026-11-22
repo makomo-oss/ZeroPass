@@ -89,6 +89,10 @@ pub enum VaultError {
         "other devices of this vault seem to have the {0:?} domain; get its keys from one of them"
     )]
     DomainElsewhere(zp_crypto::DomainId),
+    /// Another device asked for the TOTP and passkey keys, and this device has
+    /// neither domain.
+    #[error("this device has no one-time code or passkey keys to hand over")]
+    NoKeysToHandOver,
     /// Some items of the domain cannot be opened with the keys held here.
     #[error(
         "{items} item(s) of the {domain:?} domain cannot be opened on this device; get the keys from another device first"

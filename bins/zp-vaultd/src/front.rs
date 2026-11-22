@@ -629,9 +629,10 @@ impl Front {
             }
             Body::Hello(_) => Err(bad_request("Hello was already sent")),
             // These start a relay and do not arrive here.
-            Body::PairAdmit(_) | Body::PairJoin(_) | Body::KeyAgentAttach(_) => {
-                Err(bad_request("this request needs a relay"))
-            }
+            Body::PairAdmit(_)
+            | Body::PairJoin(_)
+            | Body::PairReceiveKeys(_)
+            | Body::KeyAgentAttach(_) => Err(bad_request("this request needs a relay")),
             // The password domain, the registry, the sync requests, and what
             // this daemon does not answer at all.
             request => as_result(self.engine.serve(request)),
@@ -648,6 +649,22 @@ impl Front {
             ));
         };
         as_result(whole.relay(request::Body::PairAdmit(proto::PairAdmit {}), relay))
+    }
+
+    /// Takes in the TOTP and passkey keys of the device at the other end
+    /// (ADR-0011): in a process for the whole vault that holds the domains
+    /// this device has (a domain it has gains keys under its slot key), which
+    /// then hands the hardware-bound domains to their workers.
+    fn pair_receive_keys(&self, receive: proto::PairReceiveKeys, relay: RelayEnd) -> Reply {
+        let mut backs = self.backs();
+        let mut whole = self.whole_with_keys(&mut backs)?;
+        let reply = as_result(whole.relay(request::Body::PairReceiveKeys(receive), relay))?;
+        for worked in WORKED {
+            if self.engine.has_domain(worked)? {
+                self.hand_to_worker(&mut backs, whole.as_mut(), worked);
+            }
+        }
+        Ok(reply)
     }
 
     fn pair_join(&self, join: proto::PairJoin, relay: RelayEnd) -> Reply {
@@ -719,6 +736,7 @@ impl Handler for Front {
             request,
             request::Body::PairAdmit(_)
                 | request::Body::PairJoin(_)
+                | request::Body::PairReceiveKeys(_)
                 | request::Body::KeyAgentAttach(_)
         )
     }
@@ -730,6 +748,7 @@ impl Handler for Front {
         let outcome = match request {
             request::Body::PairAdmit(_) => self.pair_admit(relay),
             request::Body::PairJoin(join) => self.pair_join(join, relay),
+            request::Body::PairReceiveKeys(receive) => self.pair_receive_keys(receive, relay),
             // Not behind the lock: the agent stays attached while requests
             // are answered, and answers their questions.
             request::Body::KeyAgentAttach(_) => Ok(self.agent.attach(relay)),

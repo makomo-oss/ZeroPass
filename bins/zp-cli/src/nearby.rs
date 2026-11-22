@@ -86,26 +86,88 @@ pub(super) fn pair(
                 .map_err(|error| zp_client::Error::message(error.to_string()))
         },
         |question| {
-            let text = format!(
-                "Add the device \"{}\" ({}) to this vault? [y/N] ",
-                question.name,
-                hex(&question.device_id)
-            );
+            let text = if question.keys_only {
+                format!(
+                    "Give the one-time code and passkey keys to the device \"{}\" ({})? [y/N] ",
+                    question.name,
+                    hex(&question.device_id)
+                )
+            } else {
+                format!(
+                    "Add the device \"{}\" ({}) to this vault? [y/N] ",
+                    question.name,
+                    hex(&question.device_id)
+                )
+            };
             matches!(input.line(&text), Ok(Some(answer)) if answer.trim().eq_ignore_ascii_case("y"))
         },
     )?;
 
-    writeln!(
-        out,
-        "added device \"{}\" ({})",
-        admitted.name,
-        hex(&admitted.device_id)
-    )?;
+    if admitted.keys_only {
+        writeln!(
+            out,
+            "handed the one-time code and passkey keys to \"{}\" ({})",
+            admitted.name,
+            hex(&admitted.device_id)
+        )?;
+    } else {
+        writeln!(
+            out,
+            "added device \"{}\" ({})",
+            admitted.name,
+            hex(&admitted.device_id)
+        )?;
+    }
     match first_sync(&admitted) {
         Ok(report) => writeln!(out, "first sync: {report}")?,
         Err(error) => writeln!(
             out,
             "first sync did not complete ({error}); it will be retried at the next sync"
+        )?,
+    }
+    Ok(())
+}
+
+/// `receive-keys`: gets the TOTP and passkey keys from the device that shows
+/// a pairing code (ADR-0011).
+pub(super) fn receive_keys(
+    choice: KeyStoreChoice,
+    vault_path: &Path,
+    out: &mut impl Write,
+) -> CliResult<()> {
+    if !vault_path.exists() {
+        return Err(VaultError::NotFound.into());
+    }
+    let mut remote = Remote::open(vault_path, choice)?;
+    // The password domain holds the device signing key; a domain this device
+    // has takes in keys under its own.
+    remote.unlock_every_domain()?;
+    let code = remote
+        .input
+        .secret("Pairing code shown by `pair` on the other device: ")?;
+    let done = pairing::receive_keys(vault_path, choice, &code)?;
+    let names: Vec<&str> = done
+        .domains
+        .iter()
+        .filter_map(|domain| match proto::Domain::try_from(*domain) {
+            Ok(proto::Domain::Totp) => Some(domain_name(DomainId::Totp)),
+            Ok(proto::Domain::Passkey) => Some(domain_name(DomainId::Passkey)),
+            _ => None,
+        })
+        .collect();
+    if names.is_empty() {
+        writeln!(
+            out,
+            "this device already had every key the other device has"
+        )?;
+    } else {
+        writeln!(out, "received the keys of: {}", names.join(", "))?;
+    }
+    match first_sync(&done) {
+        Ok(report) => writeln!(out, "sync: {report}")?,
+        Err(error) => writeln!(
+            out,
+            "the sync did not complete ({error}); run `sync` to retry"
         )?,
     }
     Ok(())

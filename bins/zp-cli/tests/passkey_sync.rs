@@ -10,9 +10,13 @@
 //! ```text
 //! cargo test -p zp-cli --test passkey_sync -- --ignored
 //! ```
+//!
+//! The second test is ADR-0011: a device that joined without a hardware key
+//! store gets the TOTP and passkey keys later with `receive-keys` (task P5-09).
 
 #![allow(clippy::unwrap_used, reason = "test code may panic")]
 
+use std::cell::Cell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -54,6 +58,9 @@ fn bridge_is_built() {
 struct Device {
     _dir: tempfile::TempDir,
     vault: PathBuf,
+    /// How its daemons are started: with the development key store (in
+    /// place of Windows Hello), or without any.
+    key_store: Cell<&'static str>,
 }
 
 impl Device {
@@ -62,6 +69,7 @@ impl Device {
         Self {
             vault: dir.path().join("vault.zpvault"),
             _dir: dir,
+            key_store: Cell::new("--insecure-software-keystore"),
         }
     }
 
@@ -70,7 +78,7 @@ impl Device {
         command
             .arg("--vault")
             .arg(&self.vault)
-            .arg("--insecure-software-keystore")
+            .arg(self.key_store.get())
             .args(args)
             .env_remove("ZEROPASS_VAULT");
         command
@@ -182,6 +190,19 @@ fn bytes(reply: &Value, name: &str) -> Vec<u8> {
 
 /// Pairs `phone` to `pc` with a pairing code, over the local network.
 fn pair(pc: &Device, phone: &Device) {
+    let joined = with_code(
+        pc,
+        phone,
+        &["join", "--name", "Second device"],
+        &[PHONE_PASSWORD, PHONE_PASSWORD],
+    );
+    assert!(joined.contains("joined vault"), "{joined}");
+    assert!(joined.contains("passkey: available"), "{joined}");
+}
+
+/// Runs `pair` on `pc` (its user agrees) and, once it shows its code, `args`
+/// on `other` with `input` and then the code. Returns what `other` printed.
+fn with_code(pc: &Device, other: &Device, args: &[&str], input: &[&str]) -> String {
     pc.ok(&["lock"], &[]);
     let mut pairing = pc
         .command(&["pair"])
@@ -201,16 +222,14 @@ fn pair(pc: &Device, phone: &Device) {
             break line.trim().to_owned();
         }
     };
-    let joined = phone.ok(
-        &["join", "--name", "Second device"],
-        &[PHONE_PASSWORD, PHONE_PASSWORD, &code],
-    );
-    assert!(joined.contains("joined vault"), "{joined}");
-    assert!(joined.contains("passkey: available"), "{joined}");
+    let mut input = input.to_vec();
+    input.push(&code);
+    let printed = other.ok(args, &input);
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();
     assert!(pairing.wait().unwrap().success(), "{rest}");
     drop(stdin);
+    printed
 }
 
 /// Syncs both devices with each other, at the same time.
@@ -286,4 +305,57 @@ fn a_passkey_made_on_one_device_signs_on_the_other() {
     sync(&pc, &phone);
     let listed = pc.ok(&["list", "--domain", "passkey"], &[PC_PASSWORD]);
     assert!(listed.contains("0 item(s)"), "{listed}");
+}
+
+#[test]
+#[ignore = "needs a local network interface with multicast"]
+fn a_device_that_joined_without_a_key_store_gets_the_keys_later() {
+    common::daemon_is_built();
+    bridge_is_built();
+    let pc = Device::new();
+    let laptop = Device::new();
+    pc.ok(&["init"], &[PC_PASSWORD, PC_PASSWORD]);
+
+    // The laptop joins before Windows Hello is set up on it.
+    laptop.key_store.set("--no-hardware-keystore");
+    let joined = with_code(
+        &pc,
+        &laptop,
+        &["join", "--name", "Old laptop"],
+        &[PHONE_PASSWORD, PHONE_PASSWORD],
+    );
+    assert!(joined.contains("passkey: not available"), "{joined}");
+
+    // A passkey made on the PC reaches the laptop as ciphertext only.
+    let created = Bridge::start(&pc).ask(json!({
+        "type": "passkey_create", "origin": ORIGIN, "rp_id": "example.com", "rp_name": "Example",
+        "user_id": "YWxpY2U", "user_name": "alice", "user_display_name": "Alice",
+        "challenge": "cmVnaXN0cmF0aW9uLWNoYWxsZW5nZQ", "algorithms": [-7]
+    }));
+    let public_key = bytes(&created, "public_key");
+    sync(&pc, &laptop);
+
+    // Windows Hello is set up on the laptop now (here: the development key
+    // store); its daemons start again with it. It gets the keys from the PC,
+    // whose user agrees.
+    common::stop_daemon(&laptop.vault);
+    laptop.key_store.set("--insecure-software-keystore");
+    let received = with_code(&pc, &laptop, &["receive-keys"], &[PHONE_PASSWORD]);
+    assert!(
+        received.contains("received the keys of: totp, passkey"),
+        "{received}"
+    );
+
+    // The laptop signs with the PC's passkey, and the relying party accepts.
+    let signed = Bridge::start(&laptop).ask(json!({
+        "type": "passkey_get", "origin": ORIGIN, "rp_id": "example.com",
+        "challenge": "c2lnbi1pbi1vbi10aGUtbGFwdG9w"
+    }));
+    assert_eq!(signed["credential_id"], created["credential_id"]);
+    assert!(zp_passkey::authenticator::verify(
+        &public_key,
+        &bytes(&signed, "authenticator_data"),
+        &bytes(&signed, "client_data_json"),
+        &bytes(&signed, "signature"),
+    ));
 }

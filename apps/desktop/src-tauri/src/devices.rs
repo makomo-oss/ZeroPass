@@ -206,15 +206,18 @@ pub(crate) enum PairProgress {
         transports: Vec<String>,
         problems: Vec<String>,
     },
-    /// The other device connected: may it join?
+    /// The other device connected: may it join, or (`keys_only`) may this
+    /// device of the vault have the one-time code and passkey keys?
     Confirm {
         device_id: String,
         name: String,
+        keys_only: bool,
     },
-    /// The device was added.
+    /// The device was added, or given the keys.
     Done {
         device_id: String,
         name: String,
+        keys_only: bool,
         /// Why the first sync did not complete, if it did not.
         first_sync_error: String,
         sent: u64,
@@ -316,6 +319,7 @@ pub(crate) fn pair_start(app: AppHandle, state: tauri::State<'_, AppState>) -> C
             Ok(done) => pairing.set(PairProgress::Done {
                 device_id: hex(&done.device_id),
                 name: done.name.clone(),
+                keys_only: done.keys_only,
                 first_sync_error: done.first_sync_error.clone(),
                 sent: done.sent,
                 received: done.received,
@@ -367,6 +371,7 @@ fn admit(state: &AppState) -> CommandResult<proto::PairDone> {
             pairing.set(PairProgress::Confirm {
                 device_id: hex(&question.device_id),
                 name: question.name.clone(),
+                keys_only: question.keys_only,
             });
             receiver.recv_timeout(ANSWER_TIMEOUT).unwrap_or(false)
         },
@@ -449,6 +454,51 @@ pub(crate) async fn join_vault(
             first_sync_error: joined.first_sync_error.clone(),
             sent: joined.sent,
             received: joined.received,
+        })
+    })
+    .await
+}
+
+/// What receiving the keys achieved.
+#[derive(Serialize)]
+pub(crate) struct KeysReceived {
+    /// The domains that gained keys: "totp", "passkey".
+    domains: Vec<&'static str>,
+    first_sync_error: String,
+}
+
+/// On a device of the vault that lacks the one-time code or passkey keys:
+/// gets them from the device that shows `code` (ADR-0011). Windows Hello
+/// asks here for a domain that is new to this device; the user of the other
+/// device confirms.
+#[tauri::command]
+pub(crate) async fn receive_keys(app: AppHandle, code: String) -> CommandResult<KeysReceived> {
+    let code = Zeroizing::new(code);
+    blocking(app, move |state| {
+        // The password domain holds the device signing key; a domain this
+        // device has takes the keys in under its own, so it must be open.
+        for domain in [proto::Domain::Totp, proto::Domain::Passkey] {
+            let status = state.status()?;
+            let needs = status
+                .domains
+                .iter()
+                .any(|entry| entry.domain == domain as i32 && entry.available && !entry.unlocked);
+            if needs {
+                state.unlock_hardware(domain)?;
+            }
+        }
+        let done = pairing::receive_keys(state.daemon.vault(), state.daemon.choice(), code.trim())?;
+        Ok(KeysReceived {
+            domains: done
+                .domains
+                .iter()
+                .filter_map(|domain| match proto::Domain::try_from(*domain) {
+                    Ok(proto::Domain::Totp) => Some("totp"),
+                    Ok(proto::Domain::Passkey) => Some("passkey"),
+                    _ => None,
+                })
+                .collect(),
+            first_sync_error: done.first_sync_error.clone(),
         })
     })
     .await

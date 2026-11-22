@@ -1,16 +1,24 @@
-//! The pairing conversation (`docs/spec/pairing.md` §3.3), without I/O.
+//! The pairing conversation (`docs/spec/pairing.md` §3.3, §3.4), without I/O.
 //!
 //! ```text
 //! new device                              existing device
 //!    │── JoinRequest ────────────────────────▶│  (the user confirms the name)
 //!    │◀──────────────────────────── JoinGrant ─│  vault id, registry, vault keys
 //!    │── JoinAck ────────────────────────────▶│
+//!
+//! registered device                       device with the keys
+//!    │── KeysRequest ────────────────────────▶│  (the user confirms the name)
+//!    │◀──────────────────────────── KeysGrant ─│  vault id, TOTP and passkey keys
+//!    │── JoinAck ────────────────────────────▶│
 //! ```
 //!
 //! The messages travel inside the pairing channel
 //! ([`Handshake::pairing`](crate::Handshake::pairing)), framed like sync
 //! messages. [`Joiner`] is the new device's side; [`admit`] is the existing
-//! device's. Which of the two showed the QR code does not matter here.
+//! device's, and [`answer`] answers either request. A registered device that
+//! lacks the TOTP or passkey keys asks for them with [`keys_request`] and takes
+//! them in with [`take_keys`] (ADR-0011). Which side showed the QR code does
+//! not matter here.
 
 use std::path::Path;
 
@@ -25,7 +33,7 @@ use crate::noise::ChannelPublicKey;
 
 #[derive(Clone, PartialEq, Message)]
 struct Envelope {
-    #[prost(oneof = "Body", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "Body", tags = "1, 2, 3, 4, 5, 6")]
     body: Option<Body>,
 }
 
@@ -39,6 +47,32 @@ enum Body {
     Ack(bool),
     #[prost(bool, tag = "4")]
     Refused(bool),
+    #[prost(message, tag = "5")]
+    KeysRequest(KeysRequestMsg),
+    #[prost(message, tag = "6")]
+    KeysGrant(KeysGrantMsg),
+}
+
+/// A registered device asks for the TOTP and passkey keys (ADR-0011).
+#[derive(Clone, PartialEq, Message)]
+struct KeysRequestMsg {
+    #[prost(bytes = "vec", tag = "1")]
+    device_id: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+#[prost(skip_debug)]
+struct KeysGrantMsg {
+    #[prost(bytes = "vec", tag = "1")]
+    vault_id: Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    keys: Vec<KeyMsg>,
+}
+
+impl core::fmt::Debug for KeysGrantMsg {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("KeysGrantMsg(<redacted>)")
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -105,8 +139,10 @@ fn encode(body: Body) -> Zeroizing<Vec<u8>> {
     let mut envelope = Envelope { body: Some(body) };
     let bytes = Zeroizing::new(envelope.encode_to_vec());
     // The prost structs hold copies of the vault keys.
-    if let Some(Body::Grant(grant)) = &mut envelope.body {
-        grant.keys.iter_mut().for_each(|key| key.key.zeroize());
+    match &mut envelope.body {
+        Some(Body::Grant(grant)) => grant.keys.iter_mut().for_each(|key| key.key.zeroize()),
+        Some(Body::KeysGrant(grant)) => grant.keys.iter_mut().for_each(|key| key.key.zeroize()),
+        _ => {}
     }
     bytes
 }
@@ -192,6 +228,120 @@ pub fn admit(
             })
             .collect(),
     })))
+}
+
+/// What the device at the other end of the pairing channel asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asking {
+    /// To join the vault.
+    Join(JoinRequest),
+    /// The TOTP and passkey keys, for a device that is already a member
+    /// (ADR-0011).
+    Keys {
+        /// The asking device.
+        device_id: DeviceId,
+        /// Its name as the device registry has it.
+        name: String,
+    },
+}
+
+/// The existing device's side for either request: a `JoinRequest` is admitted
+/// as by [`admit`]; a `KeysRequest` gets the TOTP and passkey keys, if it
+/// comes from a member in good standing whose registered channel key is the
+/// one the handshake authenticated (`channel_peer`) and `confirm` agrees.
+/// Returns the reply to send and what was asked.
+pub fn answer(
+    vault: &mut Vault,
+    channel_peer: &ChannelPublicKey,
+    request: &[u8],
+    confirm: impl FnOnce(&Asking) -> bool,
+) -> Result<(Zeroizing<Vec<u8>>, Asking), PairingError> {
+    match decode(request)? {
+        Body::Request(_) => {
+            let mut asked = None;
+            let reply = admit(vault, channel_peer, request, |request| {
+                let asking = Asking::Join(request.clone());
+                let approved = confirm(&asking);
+                asked = Some(asking);
+                approved
+            })?;
+            Ok((reply, asked.ok_or(PairingError::Protocol)?))
+        }
+        Body::KeysRequest(message) => {
+            let device_id =
+                DeviceId::from_slice(&message.device_id).ok_or(PairingError::Protocol)?;
+            let registry = vault.registry().map_err(vault_error)?;
+            let record = registry
+                .get(&device_id)
+                .filter(|_| !registry.is_revoked(&device_id) && device_id != vault.device_id())
+                .ok_or(PairingError::UnknownPeer)?;
+            if record.noise_pk != *channel_peer {
+                return Err(PairingError::KeyMismatch);
+            }
+            let asking = Asking::Keys {
+                device_id,
+                name: record.name.clone(),
+            };
+            if !confirm(&asking) {
+                return Err(PairingError::Declined);
+            }
+            let keys = vault.hand_over_keys().map_err(vault_error)?;
+            let reply = encode(Body::KeysGrant(KeysGrantMsg {
+                vault_id: vault.vault_id().as_bytes().to_vec(),
+                keys: keys
+                    .iter()
+                    .map(|key| KeyMsg {
+                        domain: u32::from(key.domain.as_u8()),
+                        epoch: key.epoch,
+                        key: key.key.to_vec(),
+                    })
+                    .collect(),
+            }));
+            Ok((reply, asking))
+        }
+        _ => Err(PairingError::Protocol),
+    }
+}
+
+/// The encoded `KeysRequest` of the registered device `device_id`, which
+/// lacks the TOTP or passkey keys (ADR-0011). It must speak on the pairing
+/// channel with its registered channel key.
+pub fn keys_request(device_id: DeviceId) -> Vec<u8> {
+    encode(Body::KeysRequest(KeysRequestMsg {
+        device_id: device_id.as_bytes().to_vec(),
+    }))
+    .to_vec()
+}
+
+/// Takes in the reply to [`keys_request`]: on a `KeysGrant`, the keys go
+/// into `vault` ([`Vault::take_keys`]; `hardware` verifies the user). Returns
+/// the domains that gained keys; the caller then sends [`ack_message`].
+pub fn take_keys(
+    vault: &mut Vault,
+    reply: &[u8],
+    hardware: &dyn HardwareKeyStore,
+) -> Result<Vec<DomainId>, PairingError> {
+    let mut message = match decode(reply)? {
+        Body::KeysGrant(message) => message,
+        Body::Refused(_) => return Err(PairingError::Declined),
+        _ => return Err(PairingError::Protocol),
+    };
+    let keys = (|| {
+        let mut keys = Vec::with_capacity(message.keys.len());
+        for key in &message.keys {
+            keys.push(GrantedKey {
+                domain: u8::try_from(key.domain).ok().and_then(DomainId::from_u8)?,
+                epoch: key.epoch,
+                key: Zeroizing::new(key.key.as_slice().try_into().ok()?),
+            });
+        }
+        Some((VaultId::from_slice(&message.vault_id)?, keys))
+    })();
+    message.keys.iter_mut().for_each(|key| key.key.zeroize());
+    let (vault_id, keys) = keys.ok_or(PairingError::Protocol)?;
+    vault
+        .take_keys(vault_id, &keys, hardware)
+        .map_err(vault_error)
 }
 
 /// The reply to send when the user declined a request.

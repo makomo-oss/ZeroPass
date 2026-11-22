@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use zp_crypto::{DeviceId, InsecureSoftwareKeyStore, KdfParams, Password, Totp};
-use zp_pairing::{Hint, Joiner, OfferRole, PairingError, PairingOffer};
+use zp_pairing::{Asking, Hint, Joiner, OfferRole, PairingError, PairingOffer};
 use zp_transport::discovery::{identify, slot_of, tag_for};
 use zp_transport::{
     Address, DriveConfig, DriveError, LoopbackNetwork, LoopbackTransport, NewVault, PairingLink,
@@ -95,7 +95,7 @@ fn pair(existing: &mut Device, network: &LoopbackNetwork, name: &str) -> Device 
                 link,
                 &mut existing.vault,
                 &pairing,
-                |request| request.name == name,
+                |asking| matches!(asking, Asking::Join(request) if request.name == name),
                 &config(),
             )
         });

@@ -211,17 +211,24 @@ export type PairProgress =
       transports: string[];
       problems: string[];
     }
-  | { stage: "confirm"; device_id: string; name: string }
+  | { stage: "confirm"; device_id: string; name: string; keys_only: boolean }
   | {
       stage: "done";
       device_id: string;
       name: string;
+      keys_only: boolean;
       first_sync_error: string;
       sent: number;
       received: number;
     }
   | { stage: "failed"; message: string }
   | { stage: "cancelled" };
+
+/** What receiving the one-time code and passkey keys achieved (ADR-0011). */
+export interface KeysReceived {
+  domains: DomainName[];
+  first_sync_error: string;
+}
 
 export interface Joined {
   vault_id: string;
@@ -243,6 +250,7 @@ export const devices = {
   join: (code: string, name: string, password: string, withoutHardware = false) =>
     invoke<Joined>("join_vault", { code, name, password, withoutHardware }),
   defaultName: () => invoke<string>("default_device_name"),
+  receiveKeys: (code: string) => invoke<KeysReceived>("receive_keys", { code }),
 };
 
 export type ImportPreview =

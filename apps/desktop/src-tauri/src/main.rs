@@ -178,6 +178,7 @@ fn main() {
             devices::pair_answer,
             devices::pair_cancel,
             devices::join_vault,
+            devices::receive_keys,
             devices::default_device_name,
             transfer::import_choose,
             transfer::import_confirm,

@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zp_crypto::{InsecureSoftwareKeyStore, KdfParams};
-use zp_pairing::{Hint, Joiner, OfferRole, PairingOffer};
+use zp_pairing::{Asking, Hint, Joiner, OfferRole, PairingOffer};
 use zp_transport::discovery::{identify, slot_of, tag_for};
 use zp_transport::{
     Address, DriveConfig, LanTransport, NewVault, PairingLink, Transport, pair_as_existing,
@@ -93,7 +93,7 @@ fn two_devices_pair_and_sync_over_the_lan() {
                 link,
                 &mut pc_vault,
                 &pairing,
-                |request| request.name == "Pixel 8",
+                |asking| matches!(asking, Asking::Join(request) if request.name == "Pixel 8"),
                 &config,
             )
         });

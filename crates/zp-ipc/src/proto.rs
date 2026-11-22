@@ -163,7 +163,7 @@ pub struct Request {
     /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
     )]
     pub body: Option<request::Body>,
 }
@@ -261,6 +261,11 @@ pub mod request {
         /// a relay.
         #[prost(message, tag = "42")]
         PairJoin(super::PairJoin),
+        /// Relay: on a device that is already a member, asks the device at the
+        /// other end of the relayed link for the TOTP and passkey keys and
+        /// takes them in (ADR-0011).
+        #[prost(message, tag = "46")]
+        PairReceiveKeys(super::PairReceiveKeys),
         /// Relay: makes this connection the uplink of a relay.
         #[prost(message, tag = "43")]
         RelayAttach(super::RelayAttach),
@@ -638,6 +643,17 @@ pub struct PairJoin {
     /// [`CreateVault::without_hardware`].
     #[prost(bool, tag = "4")]
     pub without_hardware: bool,
+}
+
+/// Asks the device at the other end of the relayed link for the TOTP and
+/// passkey keys (ADR-0011). Windows Hello verifies the user here when a domain
+/// is new to this device.
+#[derive(Clone, PartialEq, Message, Zeroize, ZeroizeOnDrop)]
+#[prost(skip_debug)]
+pub struct PairReceiveKeys {
+    /// The pairing offer shown by the other device, as text.
+    #[prost(string, tag = "1")]
+    pub offer: String,
 }
 
 /// Makes this connection the uplink of a relay: after the answer, the client
@@ -1318,6 +1334,10 @@ pub struct PairConfirmRequest {
     /// The name it gave.
     #[prost(string, tag = "2")]
     pub name: String,
+    /// Whether it is a member asking for the TOTP and passkey keys, rather
+    /// than a new device asking to join (ADR-0011).
+    #[prost(bool, tag = "3")]
+    pub keys_only: bool,
 }
 
 /// Pairing is complete.
@@ -1343,6 +1363,14 @@ pub struct PairDone {
     /// Changes received in the first sync.
     #[prost(uint64, tag = "6")]
     pub received: u64,
+    /// On the device that asked for the keys (`PairReceiveKeys`): the domains
+    /// that gained keys.
+    #[prost(enumeration = "Domain", repeated, tag = "7")]
+    pub domains: Vec<i32>,
+    /// On the device that handed the keys: the other device was a member
+    /// asking for the TOTP and passkey keys, not a new device joining.
+    #[prost(bool, tag = "8")]
+    pub keys_only: bool,
 }
 
 /// Answer to [`SyncdStatus`].
@@ -1764,6 +1792,7 @@ pub struct PasskeyChoice {
 
 redacted_debug!(
     PairJoin,
+    PairReceiveKeys,
     PairOffered,
     SyncIdentityReply,
     CreateVault,

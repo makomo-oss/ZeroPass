@@ -3,6 +3,7 @@
   import { byTitle } from "../search";
   import ConfirmButton from "./ConfirmButton.svelte";
   import MissingDomain from "./MissingDomain.svelte";
+  import ReceiveKeys from "./ReceiveKeys.svelte";
 
   let {
     domain,
@@ -110,10 +111,13 @@
     </div>
   {:else}
     {#if unreadable > 0}
-      <p class="notice warn">
-        {unreadable === 1 ? "1 passkey was" : `${unreadable} passkeys were`} made on another
-        device with keys this PC does not have yet. Get the keys from that device.
-      </p>
+      <div class="notice warn unreadable">
+        <p>
+          {unreadable === 1 ? "1 passkey was" : `${unreadable} passkeys were`} made on another
+          device with keys this PC does not have yet. Get the keys from that device.
+        </p>
+        <ReceiveKeys onreceived={() => void load()} />
+      </div>
     {/if}
     {#if passkeys.length === 0 && unreadable === 0}
       <p class="muted">No passkeys yet.</p>
@@ -165,6 +169,16 @@
 
   .small {
     font-size: 12px;
+  }
+
+  .unreadable {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .unreadable p {
+    margin: 0;
   }
 
   .list {

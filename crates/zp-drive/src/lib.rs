@@ -16,8 +16,8 @@ pub mod link;
 mod opening;
 
 pub use driver::{
-    Admitted, DriveConfig, Joined, NewVault, PairingLink, pair_as_existing, pair_as_new,
-    sync_as_initiator, sync_as_responder,
+    Admitted, DriveConfig, Joined, KeysTaken, NewVault, PairingLink, pair_as_existing, pair_as_new,
+    pair_for_keys, sync_as_initiator, sync_as_responder,
 };
 pub use error::DriveError;
 pub use link::{ChannelReader, Connection, Link, MemoryLink, READ_POLL};

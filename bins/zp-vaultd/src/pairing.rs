@@ -12,18 +12,20 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
+use zp_crypto::DomainId;
 use zp_drive::{
-    DriveConfig, DriveError, Link, MemoryLink, NewVault, PairingLink, pair_as_existing, pair_as_new,
+    DriveConfig, DriveError, Link, MemoryLink, NewVault, PairingLink, pair_as_existing,
+    pair_as_new, pair_for_keys,
 };
 use zp_ipc::RelayEnd;
 use zp_ipc::proto::{self, ErrorCode, request, response};
 use zp_pairing::noise::PSK_LEN;
 use zp_pairing::qr::OFFER_LIFETIME_SECS;
-use zp_pairing::{Hint, Joiner, OfferRole, PairingError, PairingOffer};
+use zp_pairing::{Asking, Hint, Joiner, OfferRole, PairingError, PairingOffer};
 use zp_sync::SessionReport;
 use zp_vault::{AutoLock, CreateOptions, VaultError, default_device_name};
 
-use crate::convert::{bad_request, vault_error};
+use crate::convert::{self, bad_request, vault_error};
 use crate::service::{KeyStoreChoice, Service, State};
 
 /// How long the user has to answer whether a device may join.
@@ -51,6 +53,10 @@ fn drive_error(error: DriveError) -> proto::Error {
         DriveError::Pairing(PairingError::InvalidOffer | PairingError::OfferExpired) => {
             ErrorCode::InvalidInput
         }
+        // A device that is not a member, or not the one it claims to be.
+        DriveError::Pairing(PairingError::UnknownPeer | PairingError::KeyMismatch) => {
+            ErrorCode::Denied
+        }
         _ => ErrorCode::Internal,
     };
     proto::Error::new(code, error.to_string())
@@ -61,6 +67,17 @@ fn done(
     name: &str,
     vault_id: &[u8],
     sync: &Result<SessionReport, String>,
+) -> response::Body {
+    done_with(device_id, name, vault_id, sync, false, &[])
+}
+
+fn done_with(
+    device_id: &[u8],
+    name: &str,
+    vault_id: &[u8],
+    sync: &Result<SessionReport, String>,
+    keys_only: bool,
+    domains: &[DomainId],
 ) -> response::Body {
     let (first_sync_error, sent, received) = match sync {
         Ok(report) => (String::new(), report.sent, report.received.applied),
@@ -73,6 +90,11 @@ fn done(
         first_sync_error,
         sent: sent as u64,
         received: received as u64,
+        domains: domains
+            .iter()
+            .map(|domain| convert::domain_to_proto(*domain) as i32)
+            .collect(),
+        keys_only,
     })
 }
 
@@ -241,9 +263,14 @@ impl Service {
             vault,
             &pairing,
             |request| {
+                let (device_id, name, keys_only) = match request {
+                    Asking::Join(join) => (join.device_id, join.name.clone(), false),
+                    Asking::Keys { device_id, name } => (*device_id, name.clone(), true),
+                };
                 let question = response::Body::PairConfirmRequest(proto::PairConfirmRequest {
-                    device_id: request.device_id.as_bytes().to_vec(),
-                    name: request.name.clone(),
+                    device_id: device_id.as_bytes().to_vec(),
+                    name,
+                    keys_only,
                 });
                 if to_client.send(question).is_err() {
                     return false;
@@ -255,11 +282,78 @@ impl Service {
         );
         vault.set_auto_lock(auto_lock);
         let admitted = admitted.map_err(drive_error)?;
-        Ok(done(
+        Ok(done_with(
             admitted.device.as_bytes(),
             &admitted.name,
             vault_id.as_bytes(),
             &admitted.sync,
+            admitted.keys_only,
+            &[],
+        ))
+    }
+
+    /// `PairReceiveKeys`: on a device that is already a member, asks the
+    /// device at the other end of the relayed link for the TOTP and passkey
+    /// keys and takes them in (ADR-0011). The key store verifies the user for
+    /// a domain that is new here.
+    pub(crate) fn pair_receive_keys(
+        &self,
+        request: &proto::PairReceiveKeys,
+        relay: RelayEnd,
+    ) -> Result<response::Body, proto::Error> {
+        self.whole()?;
+        let offer = PairingOffer::parse(&request.offer, unix_secs())
+            .map_err(|error| drive_error(DriveError::Pairing(error)))?;
+        if offer.role != OfferRole::Existing {
+            return Err(proto::Error::new(
+                ErrorCode::InvalidInput,
+                "this code was not created by a device that has the vault",
+            ));
+        }
+        let hardware = match self.hardware_or_why(true)? {
+            Ok(hardware) => hardware,
+            Err(why) => {
+                return Err(proto::Error::new(
+                    ErrorCode::HardwareUnavailable,
+                    format!(
+                        "the hardware key store cannot be used ({why}): set up Windows Hello \
+                         (a PIN) first"
+                    ),
+                ));
+            }
+        };
+        let mut state = self.state();
+        let vault = self.vault(&mut state)?;
+        let (link, _answers, _to_client) =
+            bridge(relay).map_err(|error| drive_error(error.into()))?;
+        let pairing = PairingLink {
+            scanned: true,
+            psk: &offer.psk,
+            offered_key: Some(offer.noise_pk),
+        };
+        // Taking the keys in may wait for the other device's user: keep the
+        // domains unlocked meanwhile.
+        let auto_lock = vault.auto_lock();
+        vault.set_auto_lock(AutoLock {
+            password: None,
+            hardware: None,
+        });
+        let taken = pair_for_keys(
+            link,
+            vault,
+            &pairing,
+            hardware.as_ref(),
+            &DriveConfig::default(),
+        );
+        vault.set_auto_lock(auto_lock);
+        let taken = taken.map_err(drive_error)?;
+        Ok(done_with(
+            vault.device_id().as_bytes(),
+            "",
+            vault.vault_id().as_bytes(),
+            &taken.sync,
+            false,
+            &taken.domains,
         ))
     }
 
@@ -419,6 +513,28 @@ mod tests {
         Result<proto::PairDone, IpcError>,
         Option<String>,
     ) {
+        let join = request::Body::PairJoin(proto::PairJoin {
+            offer: offer.to_owned(),
+            device_name: "Test phone".into(),
+            master_password: OTHER_PASSWORD.into(),
+            without_hardware: false,
+        });
+        let (admitted, joined, asked) = relay_pairing(existing, joining, join, approve);
+        (admitted, joined, asked.map(|question| question.name))
+    }
+
+    /// Like [`pair`], with any request on the other device's side, and the
+    /// question the existing device's user was asked.
+    fn relay_pairing(
+        existing: &Daemon,
+        joining: &Daemon,
+        join: request::Body,
+        approve: bool,
+    ) -> (
+        Result<proto::PairDone, IpcError>,
+        Result<proto::PairDone, IpcError>,
+        Option<proto::PairConfirmRequest>,
+    ) {
         let (id, mut a_down) = existing
             .connect()
             .start_relay(request::Body::PairAdmit(proto::PairAdmit {}))
@@ -432,12 +548,6 @@ mod tests {
                 return (refused, Err(IpcError::NotRunning), None);
             }
         };
-        let join = request::Body::PairJoin(proto::PairJoin {
-            offer: offer.to_owned(),
-            device_name: "Test phone".into(),
-            master_password: OTHER_PASSWORD.into(),
-            without_hardware: false,
-        });
         let (id, mut b_down) = joining.connect().start_relay(join).unwrap();
         let mut b_up = joining.connect().attach_relay(id).unwrap();
 
@@ -455,7 +565,7 @@ mod tests {
                             let _ = b_up.send(request::Body::LinkData(chunk));
                         }
                         Ok(response::Body::PairConfirmRequest(question)) => {
-                            asked = Some(question.name.clone());
+                            asked = Some(question);
                             let answer = proto::PairConfirm { approved: approve };
                             send(&a_up, request::Body::PairConfirm(answer));
                         }
@@ -644,6 +754,89 @@ mod tests {
             "{refused}"
         );
         revoke(true).unwrap();
+    }
+
+    /// ADR-0011 §1: a device that joined without a key store gets the TOTP and
+    /// passkey keys later, through both daemons and their relays, once the
+    /// PC's user agrees.
+    #[test]
+    fn a_device_gets_the_hardware_keys_later_through_two_daemons() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = existing_vault(dir.path());
+        let added = pc.call(request::Body::AddItem(proto::AddItem {
+            item: Some(proto::NewItem {
+                content: Some(new_item::Content::Totp(proto::NewTotp {
+                    otpauth_uri: "otpauth://totp/Bank:alice?secret=GEZDGNBVGY3TQOJQ".into(),
+                    login_id: None,
+                })),
+            }),
+        }));
+        assert!(matches!(added, Ok(response::Body::ItemAdded(_))));
+        let laptop_path = dir.path().join("laptop.zpvault");
+        {
+            let laptop = Daemon::start_with(&laptop_path, KeyStoreChoice::None);
+            let (admitted, joined, _) = pair(&pc, &laptop, &offer(&pc), true);
+            admitted.unwrap();
+            joined.unwrap();
+        }
+        // Windows Hello is set up on the laptop now (here: the development
+        // key store). Its daemon starts locked.
+        let laptop = Daemon::start(&laptop_path);
+        laptop
+            .call(request::Body::Unlock(proto::Unlock {
+                domain: Domain::Password as i32,
+                master_password: OTHER_PASSWORD.into(),
+            }))
+            .unwrap();
+        let receive =
+            |offer: String| request::Body::PairReceiveKeys(proto::PairReceiveKeys { offer });
+        let hardware_domains = |daemon: &Daemon| -> Vec<(bool, bool)> {
+            status(daemon).domains[1..]
+                .iter()
+                .map(|domain| (domain.available, domain.unlocked))
+                .collect()
+        };
+
+        // The PC's user refuses: nothing changes.
+        let (admitted, received, asked) = relay_pairing(&pc, &laptop, receive(offer(&pc)), false);
+        assert!(asked.is_some_and(|question| question.keys_only));
+        assert_eq!(admitted.unwrap_err().code(), Some(ErrorCode::UserCancelled));
+        assert_eq!(received.unwrap_err().code(), Some(ErrorCode::UserCancelled));
+        assert_eq!(hardware_domains(&laptop), [(false, false); 2]);
+
+        // The PC's user agrees, asked about the laptop by its registered name.
+        let (admitted, received, asked) = relay_pairing(&pc, &laptop, receive(offer(&pc)), true);
+        let asked = asked.unwrap();
+        assert!(asked.keys_only);
+        assert_eq!(asked.name, "Test phone");
+        let admitted = admitted.unwrap();
+        assert!(admitted.keys_only);
+        let received = received.unwrap();
+        assert_eq!(
+            received.domains,
+            [Domain::Totp as i32, Domain::Passkey as i32]
+        );
+        assert_eq!(hardware_domains(&laptop), [(true, true); 2]);
+        assert!(
+            status(&laptop)
+                .domains
+                .iter()
+                .all(|domain| !domain.elsewhere)
+        );
+        // The workers hold the new domains: the PC's code is listed.
+        match laptop
+            .call(request::Body::ListItems(proto::ListItems {
+                domain: Domain::Totp as i32,
+                query: String::new(),
+            }))
+            .unwrap()
+        {
+            response::Body::Items(items) => {
+                assert_eq!(items.items.len(), 1);
+                assert_eq!(items.unreadable, 0);
+            }
+            other => panic!("unexpected answer: {other:?}"),
+        }
     }
 
     #[test]

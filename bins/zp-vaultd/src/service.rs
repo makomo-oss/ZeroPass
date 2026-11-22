@@ -329,7 +329,7 @@ impl Service {
     }
 
     /// Like [`Self::hardware`]; `Ok(Err)` says why this device has no key store.
-    fn hardware_or_why(
+    pub(crate) fn hardware_or_why(
         &self,
         create: bool,
     ) -> Result<Result<Box<dyn HardwareKeyStore>, String>, proto::Error> {
@@ -823,7 +823,7 @@ impl Service {
                 crate::passkey::get(self.vault(state)?, &request)
             }
             // These start a relay and do not arrive here.
-            Body::PairAdmit(_) | Body::PairJoin(_) => {
+            Body::PairAdmit(_) | Body::PairJoin(_) | Body::PairReceiveKeys(_) => {
                 Err(bad_request("this request needs a relay"))
             }
             // These belong to a relay that is already running.
@@ -861,6 +861,7 @@ impl Service {
         let outcome = match request {
             request::Body::PairAdmit(_) => self.pair_admit(relay),
             request::Body::PairJoin(join) => self.pair_join(join, relay),
+            request::Body::PairReceiveKeys(receive) => self.pair_receive_keys(receive, relay),
             _ => Err(bad_request("not a relay request")),
         };
         outcome.unwrap_or_else(response::Body::Error)

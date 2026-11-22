@@ -16,11 +16,12 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use zp_crypto::{ChannelKey, DeviceId, HardwareKeyStore, VaultId};
+use zp_crypto::{ChannelKey, DeviceId, DomainId, HardwareKeyStore, VaultId};
 use zp_pairing::flow::{ack_message, is_ack, refusal_message};
 use zp_pairing::noise::PSK_LEN;
 use zp_pairing::{
-    ChannelPublicKey, Handshake, JoinRequest, Joiner, PairingError, SecureChannel, admit,
+    Asking, ChannelPublicKey, Handshake, Joiner, PairingError, SecureChannel, answer, keys_request,
+    take_keys,
 };
 use zp_sync::{FrameDecoder, OpLog, Session, SessionReport, encode_frame};
 use zp_vault::{CreateOptions, Vault};
@@ -287,24 +288,28 @@ fn pairing_channel(
 /// What pairing achieved on the existing device.
 #[derive(Debug, Clone)]
 pub struct Admitted {
-    /// The device that joined.
+    /// The device that joined, or that received the keys.
     pub device: DeviceId,
     /// Its name.
     pub name: String,
+    /// Whether the device was already a member and received the TOTP and
+    /// passkey keys (ADR-0011), rather than joining.
+    pub keys_only: bool,
     /// The first sync, or why it did not complete. The device is a member
     /// either way and will catch up at the next sync.
     pub sync: Result<SessionReport, String>,
 }
 
 /// The existing device's side of pairing over `link`: admits the device at the
-/// other end (after `confirm`) and runs the first sync.
+/// other end, or hands a registered device the TOTP and passkey keys (after
+/// `confirm`), and runs the first sync.
 ///
 /// Every domain of `vault` must be unlocked.
 pub fn pair_as_existing(
     link: Box<dyn Link>,
     vault: &mut Vault,
     pairing: &PairingLink<'_>,
-    confirm: impl FnOnce(&JoinRequest) -> bool,
+    confirm: impl FnOnce(&Asking) -> bool,
     config: &DriveConfig,
 ) -> Result<Admitted, DriveError> {
     let local = vault.channel_key().map_err(store_error)?;
@@ -314,15 +319,8 @@ pub fn pair_as_existing(
     let mut messenger = Messenger::new(connection, channel, config)?;
 
     let request = messenger.receive(None)?;
-    let mut joined = None;
-    let grant = match admit(vault, &peer_key, &request, |request| {
-        let approved = confirm(request);
-        if approved {
-            joined = Some((request.device_id, request.name.clone()));
-        }
-        approved
-    }) {
-        Ok(grant) => grant,
+    let (grant, asked) = match answer(vault, &peer_key, &request, confirm) {
+        Ok(answered) => answered,
         Err(error) => {
             // Tell the other side instead of leaving it waiting.
             let _ = messenger.send(&refusal_message());
@@ -330,13 +328,56 @@ pub fn pair_as_existing(
         }
     };
     messenger.send(&grant)?;
-    let (device, name) = joined.ok_or(PairingError::Protocol)?;
+    let (device, name, keys_only) = match asked {
+        Asking::Join(request) => (request.device_id, request.name, false),
+        Asking::Keys { device_id, name } => (device_id, name, true),
+    };
 
     if !is_ack(&messenger.receive(None)?) {
         return Err(PairingError::Protocol.into());
     }
     let sync = run_session(&mut messenger, vault).map_err(|error| error.to_string());
-    Ok(Admitted { device, name, sync })
+    Ok(Admitted {
+        device,
+        name,
+        keys_only,
+        sync,
+    })
+}
+
+/// What a registered device achieved by asking for the keys.
+pub struct KeysTaken {
+    /// The domains that gained keys.
+    pub domains: Vec<DomainId>,
+    /// The sync that follows, or why it did not complete.
+    pub sync: Result<SessionReport, String>,
+}
+
+/// A registered device's side of pairing over `link` (ADR-0011): speaks with
+/// its registered channel key, asks the device at the other end for the TOTP
+/// and passkey keys, takes them in with `hardware` (which verifies the user)
+/// and syncs.
+///
+/// The password domain of `vault` must be unlocked, and so must every
+/// hardware-bound domain it has.
+pub fn pair_for_keys(
+    link: Box<dyn Link>,
+    vault: &mut Vault,
+    pairing: &PairingLink<'_>,
+    hardware: &dyn HardwareKeyStore,
+    config: &DriveConfig,
+) -> Result<KeysTaken, DriveError> {
+    let local = vault.channel_key().map_err(store_error)?;
+    let mut connection = Connection::open(link, config.idle_timeout)?;
+    let channel = pairing_channel(&mut connection, &local, pairing)?;
+    let mut messenger = Messenger::new(connection, channel, config)?;
+
+    messenger.send(&keys_request(vault.device_id()))?;
+    let reply = messenger.receive(None)?;
+    let domains = take_keys(vault, &reply, hardware)?;
+    messenger.send(&ack_message())?;
+    let sync = run_session(&mut messenger, vault).map_err(|error| error.to_string());
+    Ok(KeysTaken { domains, sync })
 }
 
 /// What pairing achieved on the new device.

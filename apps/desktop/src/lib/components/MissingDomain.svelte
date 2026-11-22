@@ -2,6 +2,7 @@
   // For a domain this PC does not have (ADR-0011): explains why, and makes it
   // here when no other device seems to have it.
   import { api, errorMessage, isCommandError, type DomainState } from "../api";
+  import ReceiveKeys from "./ReceiveKeys.svelte";
 
   let {
     domain,
@@ -20,6 +21,8 @@
   let error = $state("");
   /** The daemon found that other devices have the domain after all. */
   let foundElsewhere = $state(false);
+  /** The user would rather get the keys from another device. */
+  let receiving = $state(false);
 
   let elsewhere = $derived(domain.elsewhere || foundElsewhere);
 
@@ -56,6 +59,7 @@
       Set up Windows Hello on this PC (a PIN in Settings &gt; Accounts &gt;
       Sign-in options), then get the keys from a device that has them.
     </p>
+    <ReceiveKeys onreceived={onchanged} />
   {:else}
     <p>
       This vault has no {what} yet: it was created without Windows Hello, which
@@ -66,11 +70,19 @@
       Sign-in options), then set up {what} here. Your other devices get them
       from this PC.
     </p>
-    <div>
+    <div class="actions">
       <button class="button primary" onclick={() => void setUp()} disabled={busy}>
         {busy ? "Waiting for Windows Hello…" : `Set up ${what} on this PC`}
       </button>
+      {#if !receiving}
+        <button class="button ghost" onclick={() => (receiving = true)} disabled={busy}>
+          Another device has them
+        </button>
+      {/if}
     </div>
+    {#if receiving}
+      <ReceiveKeys onreceived={onchanged} />
+    {/if}
   {/if}
   {#if error}
     <p class="notice error" role="alert">{error}</p>
@@ -88,5 +100,11 @@
 
   .missing p {
     margin: 0;
+  }
+
+  .actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 </style>
