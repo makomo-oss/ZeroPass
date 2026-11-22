@@ -13,7 +13,7 @@ use zp_ffi::{
     ByteLink, FfiError, LinkError, MobileVault, announces_pairing, ble_uuids, join_vault,
     offer_info, recognise_peer, sync_with,
 };
-use zp_pairing::{OfferRole, PairingOffer};
+use zp_pairing::{Asking, OfferRole, PairingOffer};
 use zp_transport::ble::tag_value;
 use zp_transport::discovery::{slot_of, tag_for};
 use zp_transport::{
@@ -116,7 +116,7 @@ fn a_phone_joins_writes_and_syncs() {
             pc_link,
             &mut pc,
             &pairing,
-            |request| request.name == "Test phone",
+            |asking| matches!(asking, Asking::Join(request) if request.name == "Test phone"),
             &DriveConfig::default(),
         )
         .unwrap();

@@ -95,6 +95,11 @@
         {#each progress.problems as problem (problem)}
           <p class="muted small">Not available: {problem}</p>
         {/each}
+        <p class="muted small">
+          A computer of this vault that lacks your one-time codes or passkeys
+          enters the code under <strong>Passkeys</strong> or
+          <strong>One-time codes</strong> to get their keys.
+        </p>
         <p class="notice warn small">
           Anyone who sees the code while it is valid can ask to join. You will
           see the device's name and decide.
@@ -102,6 +107,18 @@
       </div>
     </div>
     <div><button class="button" onclick={() => void cancel()}>Cancel</button></div>
+  {:else if progress.stage === "confirm" && progress.keys_only}
+    <h3>Give this device your one-time code and passkey keys?</h3>
+    <p class="device"><strong>{progress.name}</strong> <span class="mono muted">{progress.device_id}</span></p>
+    <p class="muted">
+      It is already a device of this vault but lacks these keys, because it
+      joined without Windows Hello. Give them only if you are setting it up now:
+      it can then open every one-time code and passkey of this vault.
+    </p>
+    <div class="actions">
+      <button class="button primary" onclick={() => void answer(true)}>Give the keys</button>
+      <button class="button" onclick={() => void answer(false)}>Refuse</button>
+    </div>
   {:else if progress.stage === "confirm"}
     <h3>Add this device to the vault?</h3>
     <p class="device"><strong>{progress.name}</strong> <span class="mono muted">{progress.device_id}</span></p>
@@ -114,8 +131,13 @@
       <button class="button" onclick={() => void answer(false)}>Refuse</button>
     </div>
   {:else if progress.stage === "done"}
-    <h3>Device added</h3>
-    <p><strong>{progress.name}</strong> is now a device of this vault.</p>
+    {#if progress.keys_only}
+      <h3>Keys handed over</h3>
+      <p><strong>{progress.name}</strong> can now open your one-time codes and passkeys.</p>
+    {:else}
+      <h3>Device added</h3>
+      <p><strong>{progress.name}</strong> is now a device of this vault.</p>
+    {/if}
     {#if progress.first_sync_error}
       <p class="notice warn">The first sync did not complete ({progress.first_sync_error}); the next sync catches up.</p>
     {:else}

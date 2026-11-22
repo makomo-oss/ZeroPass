@@ -197,8 +197,20 @@ impl Remote {
         let request = request::Body::SetUpDomain(proto::SetUpDomain {
             domain: to_proto(domain) as i32,
         });
-        // Refused if other devices seem to have the domain: the daemon says so.
-        self.call(request)?;
+        match self.call(request) {
+            Err(IpcError::Remote(error)) if error.code == ErrorCode::DomainElsewhere as i32 => {
+                return Err(format!(
+                    "{}\n\
+                     On a device that has it, run `pair`; here, run `receive-keys` and enter \
+                     its code.",
+                    error.message
+                )
+                .into());
+            }
+            other => {
+                other?;
+            }
+        }
         writeln!(
             out,
             "the {} domain was set up on this device",
@@ -469,7 +481,7 @@ impl Remote {
                 ))?;
                 writeln!(out, "master password changed")?;
             }
-            Command::Pair | Command::Sync { .. } => {
+            Command::Pair | Command::ReceiveKeys | Command::Sync { .. } => {
                 unreachable!("pairing and sync open a connection to another device: see `nearby`")
             }
         }

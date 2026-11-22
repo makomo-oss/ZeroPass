@@ -251,6 +251,47 @@ pub fn admit(
     )
 }
 
+/// On a device that is already a member: asks the device that shows `code`
+/// for the TOTP and passkey keys and takes them in (ADR-0011). The user of the
+/// other device confirms; Windows Hello verifies the user here when a domain
+/// is new to this device. The password domain (and every hardware-bound
+/// domain this device has) must be unlocked.
+pub fn receive_keys(vault: &Path, choice: KeyStoreChoice, code: &str) -> Result<proto::PairDone> {
+    // The daemon checks the code again; here it is read for the addresses.
+    let offer = PairingOffer::parse(code, unix_secs())?;
+    if offer.role != OfferRole::Existing {
+        return Err(Error::message(
+            "this code was not created by a device that has the vault",
+        ));
+    }
+    let addresses = offer
+        .hints
+        .iter()
+        .filter_map(|hint| match hint {
+            Hint::Socket(address) => Some(address.to_string()),
+            Hint::Ble => None,
+        })
+        .collect();
+    let connect = request::Body::PairConnect(proto::PairConnect { addresses });
+    let device = DeviceSide::WhenReady(Box::new({
+        let vault = vault.to_path_buf();
+        move || -> Result<Box<dyn Link>> {
+            Ok(Box::new(DeviceLink::open(&vault, connect, || Ok(()))?))
+        }
+    }));
+    let receive = request::Body::PairReceiveKeys(proto::PairReceiveKeys {
+        offer: code.to_owned(),
+    });
+    // The daemon wraps the keys with the hardware key store, which the key
+    // agent reaches for it.
+    vaultd::connect(vault, choice, Start::IfVaultExists)?;
+    let _key_agent = KeyAgent::start(vault, choice)?;
+    // Nobody is asked on this side: the user of the other device confirms.
+    relay(vault, choice, Start::IfVaultExists, receive, device, |_| {
+        false
+    })
+}
+
 /// On a new device: creates the vault file at `vault` by joining the vault of
 /// the device that shows `code`. The vault daemon creates the file from what
 /// the other device grants, protected by `master_password`; this process only

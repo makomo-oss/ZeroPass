@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use zp_crypto::{DomainId, InsecureSoftwareKeyStore, ItemId, KdfParams, Passkey, Password, Totp};
 use zp_pairing::flow::{ack_message, is_ack, refusal_message};
 use zp_pairing::{
-    Handshake, Hint, Joiner, OfferRole, PairingError, PairingOffer, SecureChannel, admit,
+    Asking, Handshake, Hint, Joiner, OfferRole, PairingError, PairingOffer, SecureChannel, admit,
+    answer, keys_request, take_keys,
 };
 use zp_sync::{FrameDecoder, Session, encode_frame};
 use zp_vault::model::{Login, PasskeyCredential, TotpEntry};
@@ -453,4 +454,129 @@ fn a_grant_meant_for_another_device_cannot_be_used() {
         .unwrap_err();
     assert!(matches!(error, PairingError::Vault(_)), "{error:?}");
     assert!(!path.exists());
+}
+
+/// A device that joined `pc`'s vault without a key store (it has no TOTP and
+/// passkey keys), and its vault file.
+fn joined_without_key_store(pc: &mut Existing) -> (tempfile::TempDir, PathBuf, Vault) {
+    let (dir, path) = new_device_path();
+    let identity = zp_vault::JoinIdentity::generate().unwrap();
+    let grant = pc
+        .vault
+        .grant(
+            identity.device_id(),
+            identity.sign_pk(),
+            *identity.channel_key().public_bytes(),
+            "Old laptop",
+        )
+        .unwrap();
+    let vault = Vault::join(&path, identity, grant, PASSWORD_B, None, options("x")).unwrap();
+    (dir, path, vault)
+}
+
+/// ADR-0011: a registered device that lacks the TOTP and passkey keys gets them
+/// over the pairing channel, speaking with its registered channel key, after
+/// the user of the device that has them agrees.
+#[test]
+fn a_registered_device_gets_the_keys_over_the_pairing_channel() {
+    let mut pc = existing();
+    let (_dir, laptop_path, mut laptop) = joined_without_key_store(&mut pc);
+    let mut air = Vec::new();
+
+    let pc_key = pc.vault.channel_key().unwrap();
+    let offer =
+        PairingOffer::new(OfferRole::Existing, *pc_key.public_bytes(), vec![], NOW).unwrap();
+    let scanned = PairingOffer::parse(&offer.to_text(), NOW + 5).unwrap();
+    let laptop_key = laptop.channel_key().unwrap();
+    let (mut laptop_end, mut pc_end) = handshake(
+        Handshake::pairing(true, &laptop_key, &scanned.psk).unwrap(),
+        Handshake::pairing(false, &pc_key, &offer.psk).unwrap(),
+        &mut air,
+    )
+    .unwrap();
+
+    let bytes = laptop_end.send(&keys_request(laptop.device_id()), &mut air);
+    let request = pc_end.receive(&bytes).remove(0);
+    let peer_key = *pc_end.channel.remote_static();
+    let mut shown = None;
+    let (reply, asked) = answer(&mut pc.vault, &peer_key, &request, |asking| {
+        shown = Some(asking.clone());
+        true
+    })
+    .unwrap();
+    // The user sees the name the registry has, not one the request claims.
+    let expected = Asking::Keys {
+        device_id: laptop.device_id(),
+        name: "Old laptop".into(),
+    };
+    assert_eq!(shown.as_ref(), Some(&expected));
+    assert_eq!(asked, expected);
+
+    let bytes = pc_end.send(&reply, &mut air);
+    let reply = laptop_end.receive(&bytes).remove(0);
+    let hardware = InsecureSoftwareKeyStore::generate().unwrap();
+    let domains = take_keys(&mut laptop, &reply, &hardware).unwrap();
+    assert_eq!(domains, [DomainId::Totp, DomainId::Passkey]);
+    let bytes = laptop_end.send(&ack_message(), &mut air);
+    assert!(is_ack(&pc_end.receive(&bytes).remove(0)));
+
+    let (mut pc_store, mut laptop_store) = (
+        Store::open(&pc.path).unwrap(),
+        Store::open(&laptop_path).unwrap(),
+    );
+    sync_over(
+        &mut pc_end,
+        &mut pc_store,
+        &mut laptop_end,
+        &mut laptop_store,
+        &mut air,
+    );
+    drop((pc_store, laptop_store));
+    assert_eq!(laptop.get::<TotpEntry>(pc.ids.1).unwrap(), totp());
+    assert_eq!(
+        laptop.get::<PasskeyCredential>(pc.ids.2).unwrap(),
+        passkey()
+    );
+    for secret in [&b"Old laptop"[..], b"Study PC", &[1u8; 20]] {
+        assert!(!contains(&air, secret), "sent in the clear");
+    }
+}
+
+#[test]
+fn only_a_member_at_the_other_end_of_the_channel_gets_the_keys() {
+    let mut pc = existing();
+    let (_dir, _path, laptop) = joined_without_key_store(&mut pc);
+    let laptop_key = *laptop.channel_key().unwrap().public_bytes();
+
+    // Someone else, naming the laptop: not the laptop's channel key.
+    let stranger = zp_crypto::ChannelKey::generate().unwrap();
+    let request = keys_request(laptop.device_id());
+    assert_eq!(
+        answer(&mut pc.vault, stranger.public_bytes(), &request, |_| true).unwrap_err(),
+        PairingError::KeyMismatch
+    );
+    // A device the vault does not know.
+    let unknown = keys_request(zp_crypto::DeviceId::generate().unwrap());
+    assert_eq!(
+        answer(&mut pc.vault, &laptop_key, &unknown, |_| true).unwrap_err(),
+        PairingError::UnknownPeer
+    );
+    // The PC itself.
+    let itself = keys_request(pc.vault.device_id());
+    let pc_key = *pc.vault.channel_key().unwrap().public_bytes();
+    assert_eq!(
+        answer(&mut pc.vault, &pc_key, &itself, |_| true).unwrap_err(),
+        PairingError::UnknownPeer
+    );
+    // The user says no.
+    assert_eq!(
+        answer(&mut pc.vault, &laptop_key, &request, |_| false).unwrap_err(),
+        PairingError::Declined
+    );
+    // A revoked device.
+    pc.vault.revoke_device(laptop.device_id()).unwrap();
+    assert_eq!(
+        answer(&mut pc.vault, &laptop_key, &request, |_| true).unwrap_err(),
+        PairingError::UnknownPeer
+    );
 }

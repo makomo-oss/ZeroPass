@@ -46,6 +46,11 @@ Browser extension (fills your logins into web pages):
     confirms every passkey. Passkeys sync to your other devices like
     everything else; see them in the desktop application under "Passkeys".
 
+    A PC that joined the vault before Windows Hello was set up on it has no
+    one-time codes or passkeys yet. Set up Windows Hello (a PIN), then on a
+    PC that has them choose Devices > "Add a device", and enter the code it
+    shows on this PC under "Passkeys" (or "One-time codes") > "Get the keys".
+
 Uninstall: "Installed apps" > ZeroPass > Uninstall, or:
 
     powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\ZeroPass\uninstall.ps1"

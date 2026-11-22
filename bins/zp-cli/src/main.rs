@@ -187,8 +187,13 @@ enum Command {
         #[arg(long)]
         replace: bool,
     },
-    /// Show a pairing code and admit the device that enters it.
+    /// Show a pairing code and admit the device that enters it, or hand the
+    /// TOTP and passkey keys to a device of this vault that asks for them.
     Pair,
+    /// On a device of this vault that lacks the TOTP or passkey keys (it joined
+    /// without a hardware key store): get them from a device that has them.
+    /// Run `pair` there and enter its code here.
+    ReceiveKeys,
     /// Sync with the other devices of this vault on the local network.
     Sync {
         /// How long to look for other devices, in seconds.
@@ -334,7 +339,10 @@ fn parse_id(text: &str) -> CliResult<ItemId> {
 /// Whether a command involves other devices: the sync daemon holds the
 /// connection, the vault daemon runs the protocol.
 fn is_direct(command: &Command) -> bool {
-    matches!(command, Command::Pair | Command::Sync { .. })
+    matches!(
+        command,
+        Command::Pair | Command::ReceiveKeys | Command::Sync { .. }
+    )
 }
 
 /// Runs a command that involves other devices.
@@ -346,6 +354,7 @@ fn run_direct(
 ) -> CliResult<()> {
     match command {
         Command::Pair => nearby::pair(choice, vault_path, out),
+        Command::ReceiveKeys => nearby::receive_keys(choice, vault_path, out),
         Command::Sync { seconds } => nearby::sync(vault_path, seconds, out),
         _ => unreachable!("not a direct command"),
     }

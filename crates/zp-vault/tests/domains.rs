@@ -5,10 +5,13 @@
 
 use std::path::{Path, PathBuf};
 
+use zeroize::Zeroizing;
 use zp_crypto::{DomainId, InsecureSoftwareKeyStore, KdfParams, Passkey, Totp};
 use zp_sync::sync_in_memory;
 use zp_vault::model::{Login, PasskeyCredential, TotpEntry};
-use zp_vault::{CreateOptions, JoinIdentity, KdfChoice, Store, Vault, VaultError, VaultGrant};
+use zp_vault::{
+    CreateOptions, GrantedKey, JoinIdentity, KdfChoice, Store, Vault, VaultError, VaultGrant,
+};
 
 const PASSWORD: &str = "the master password of this device";
 
@@ -243,5 +246,177 @@ fn what_another_device_wrote_with_its_own_key_is_left_out_and_counted() {
                 items: 1
             }
         ))
+    ));
+}
+
+fn totp(name: &str) -> TotpEntry {
+    TotpEntry::new(name, "alice", vec![3; 20])
+}
+
+/// ADR-0011 §1: a device that joined without a key store takes in the keys of
+/// every generation later, and then reads what was written before and after a
+/// rotation.
+#[test]
+fn a_device_that_joined_without_a_key_store_takes_the_keys_in_later() {
+    let mut pc = with_key_store();
+    let old = pc.vault.insert(totp("Before")).unwrap();
+    pc.vault.rotate_key::<Totp>().unwrap();
+    let new = pc.vault.insert(totp("After")).unwrap();
+    let passkey_id = pc.vault.insert(passkey("example.com")).unwrap();
+    let mut laptop = join_without_key_store(&mut pc.vault, "laptop");
+    sync(&pc.path, &laptop.path);
+    assert!(matches!(
+        laptop.vault.get::<TotpEntry>(old),
+        Err(VaultError::Locked(DomainId::Totp))
+    ));
+
+    let keys = pc.vault.hand_over_keys().unwrap();
+    let hardware = InsecureSoftwareKeyStore::generate().unwrap();
+    let taken = laptop
+        .vault
+        .take_keys(pc.vault.vault_id(), &keys, &hardware)
+        .unwrap();
+    assert_eq!(taken, [DomainId::Totp, DomainId::Passkey]);
+    assert_eq!(elsewhere(&laptop.vault), [false; 3]);
+    assert_eq!(laptop.vault.get::<TotpEntry>(old).unwrap(), totp("Before"));
+    assert_eq!(laptop.vault.get::<TotpEntry>(new).unwrap(), totp("After"));
+    // The same keys again change nothing.
+    assert!(
+        laptop
+            .vault
+            .take_keys(pc.vault.vault_id(), &keys, &hardware)
+            .unwrap()
+            .is_empty()
+    );
+
+    // Later, the laptop's own key store opens the domains; its master
+    // password does not.
+    drop(laptop.vault);
+    let mut vault = Vault::open(&laptop.path).unwrap();
+    vault.unlock_password(PASSWORD).unwrap();
+    assert!(matches!(
+        vault.get::<PasskeyCredential>(passkey_id),
+        Err(VaultError::Locked(DomainId::Passkey))
+    ));
+    vault.unlock_hardware::<Passkey>(&hardware).unwrap();
+    assert_eq!(
+        vault.get::<PasskeyCredential>(passkey_id).unwrap(),
+        passkey("example.com")
+    );
+    // And what it writes, the PC reads.
+    vault.unlock_hardware::<Totp>(&hardware).unwrap();
+    let from_laptop = vault.insert(totp("From the laptop")).unwrap();
+    sync(&pc.path, &laptop.path);
+    assert_eq!(
+        pc.vault.get::<TotpEntry>(from_laptop).unwrap(),
+        totp("From the laptop")
+    );
+}
+
+/// ADR-0011 §3: two devices that each set up the domain alone read each
+/// other's items once each has taken in the other's keys, and then write with
+/// the same key.
+#[test]
+fn devices_that_set_up_a_domain_alone_merge_their_keys() {
+    let mut pc = without_key_store();
+    let mut laptop = join_without_key_store(&mut pc.vault, "laptop");
+    let (pc_hw, laptop_hw) = (
+        InsecureSoftwareKeyStore::generate().unwrap(),
+        InsecureSoftwareKeyStore::generate().unwrap(),
+    );
+    pc.vault.set_up_domain::<Passkey>(&pc_hw).unwrap();
+    laptop.vault.set_up_domain::<Passkey>(&laptop_hw).unwrap();
+    let on_pc = pc.vault.insert(passkey("pc.example")).unwrap();
+    let on_laptop = laptop.vault.insert(passkey("laptop.example")).unwrap();
+    sync(&pc.path, &laptop.path);
+    assert_eq!(pc.vault.list_readable::<Passkey>().unwrap().1, 1);
+
+    let vault_id = pc.vault.vault_id();
+    let from_pc = pc.vault.hand_over_keys().unwrap();
+    let from_laptop = laptop.vault.hand_over_keys().unwrap();
+    assert_eq!(
+        pc.vault.take_keys(vault_id, &from_laptop, &pc_hw).unwrap(),
+        [DomainId::Passkey]
+    );
+    assert_eq!(
+        laptop
+            .vault
+            .take_keys(vault_id, &from_pc, &laptop_hw)
+            .unwrap(),
+        [DomainId::Passkey]
+    );
+    for vault in [&mut pc.vault, &mut laptop.vault] {
+        let (items, unreadable) = vault.list_readable::<Passkey>().unwrap();
+        assert_eq!((items.len(), unreadable), (2, 0));
+        assert_eq!(
+            vault.get::<PasskeyCredential>(on_pc).unwrap(),
+            passkey("pc.example")
+        );
+        assert_eq!(
+            vault.get::<PasskeyCredential>(on_laptop).unwrap(),
+            passkey("laptop.example")
+        );
+    }
+    // Both now write with the same key: each reads the other's new items.
+    let later = pc.vault.insert(passkey("later.example")).unwrap();
+    sync(&pc.path, &laptop.path);
+    assert_eq!(
+        laptop.vault.get::<PasskeyCredential>(later).unwrap(),
+        passkey("later.example")
+    );
+
+    // After reopening, the merged keys are still there.
+    drop(laptop.vault);
+    let mut vault = Vault::open(&laptop.path).unwrap();
+    vault.unlock_hardware::<Passkey>(&laptop_hw).unwrap();
+    assert_eq!(vault.list_readable::<Passkey>().unwrap().1, 0);
+}
+
+#[test]
+fn keys_are_handed_over_and_taken_in_only_as_they_should() {
+    let mut pc = with_key_store();
+    let mut laptop = join_without_key_store(&mut pc.vault, "laptop");
+    let hardware = InsecureSoftwareKeyStore::generate().unwrap();
+    // A device without the domains has nothing to hand over.
+    assert!(matches!(
+        laptop.vault.hand_over_keys(),
+        Err(VaultError::NoKeysToHandOver)
+    ));
+    let keys = pc.vault.hand_over_keys().unwrap();
+
+    // Keys of another vault are refused.
+    let other = with_key_store();
+    assert!(matches!(
+        laptop
+            .vault
+            .take_keys(other.vault.vault_id(), &keys, &hardware),
+        Err(VaultError::InvalidGrant(_))
+    ));
+    // The password domain's keys never travel this way.
+    let with_password = [GrantedKey {
+        domain: DomainId::Password,
+        epoch: 1,
+        key: Zeroizing::new([7; 32]),
+    }];
+    assert!(matches!(
+        laptop
+            .vault
+            .take_keys(pc.vault.vault_id(), &with_password, &hardware),
+        Err(VaultError::InvalidGrant(_))
+    ));
+    // The password domain must be open (it holds the device signing key).
+    laptop.vault.lock_all();
+    assert!(matches!(
+        laptop
+            .vault
+            .take_keys(pc.vault.vault_id(), &keys, &hardware),
+        Err(VaultError::Locked(DomainId::Password))
+    ));
+    assert!(!laptop.vault.has_domain(DomainId::Totp).unwrap());
+    // A locked domain hands nothing over.
+    pc.vault.lock(DomainId::Totp);
+    assert!(matches!(
+        pc.vault.hand_over_keys(),
+        Err(VaultError::Locked(DomainId::Totp))
     ));
 }

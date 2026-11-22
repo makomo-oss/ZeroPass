@@ -145,7 +145,7 @@ impl Vault {
     }
 
     /// The keys of domain `D` as a joining device needs them.
-    fn granted_keys<D: Domain>(&mut self) -> Result<Vec<GrantedKey>, VaultError> {
+    pub(crate) fn granted_keys<D: Domain>(&mut self) -> Result<Vec<GrantedKey>, VaultError> {
         let ring = Self::key::<D>(&mut self.keys, &self.store, &self.auto_lock)?;
         Ok(ring
             .export()

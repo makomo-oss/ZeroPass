@@ -9,6 +9,6 @@ pub mod noise;
 pub mod qr;
 
 pub use error::PairingError;
-pub use flow::{JoinRequest, Joiner, admit};
+pub use flow::{Asking, JoinRequest, Joiner, admit, answer, keys_request, take_keys};
 pub use noise::{ChannelPublicKey, Handshake, Opening, SecureChannel};
 pub use qr::{Hint, OfferRole, PairingOffer};

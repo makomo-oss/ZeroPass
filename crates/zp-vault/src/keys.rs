@@ -123,6 +123,13 @@ impl<D: Domain> KeyRing<D> {
         (entry.epoch, &entry.key)
     }
 
+    /// Whether the ring holds `key` as a key of generation `epoch`.
+    pub(crate) fn holds(&self, epoch: u32, key: &VaultKey<D>) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.epoch == epoch && same_key(&entry.key, key))
+    }
+
     /// The generation new versions are written with.
     pub fn epoch(&self) -> u32 {
         self.entries[self.write].epoch
