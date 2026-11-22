@@ -141,6 +141,10 @@ pub enum ErrorCode {
     /// None of the signature algorithms the relying party accepts is one
     /// ZeroPass makes passkeys with.
     UnsupportedAlgorithm = 21,
+    /// Revoking from this device would leave the TOTP or passkey keys that
+    /// other devices hold unreplaced, or lose them if the revoked device holds
+    /// the last copy: this device does not have them (ADR-0011).
+    KeysAtRisk = 22,
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +346,11 @@ pub struct CreateVault {
     /// The master password of the new vault.
     #[prost(string, tag = "1")]
     pub master_password: String,
+    /// Create the vault even if the hardware key store cannot be used: then
+    /// it has no TOTP and passkey domains on this device (ADR-0011). Without
+    /// this, the request fails with `HARDWARE_UNAVAILABLE`.
+    #[prost(bool, tag = "2")]
+    pub without_hardware: bool,
 }
 
 /// Restores access to the vault file with its recovery key.
@@ -460,6 +469,11 @@ pub struct RevokeDevice {
     /// The device identifier.
     #[prost(bytes = "vec", tag = "1")]
     pub device_id: Vec<u8>,
+    /// Revoke even though this device lacks a TOTP or passkey domain that
+    /// other devices seem to have. Without this, the request fails with
+    /// `KEYS_AT_RISK` in that case.
+    #[prost(bool, tag = "2")]
+    pub even_without_keys: bool,
 }
 
 /// Locks everything and stops the daemon.
@@ -602,6 +616,10 @@ pub struct PairJoin {
     /// The master password of the new vault file.
     #[prost(string, tag = "3")]
     pub master_password: String,
+    /// Join even if the hardware key store cannot be used, as for
+    /// [`CreateVault::without_hardware`].
+    #[prost(bool, tag = "4")]
+    pub without_hardware: bool,
 }
 
 /// Makes this connection the uplink of a relay: after the answer, the client
@@ -1083,6 +1101,12 @@ pub struct DomainStatus {
     /// Whether the domain is unlocked right now.
     #[prost(bool, tag = "3")]
     pub unlocked: bool,
+    /// For a domain this device does not have: whether there are signs that
+    /// other devices of the vault have it (its keys came with the pairing, or
+    /// the vault holds its items or key updates). Then its keys are to be
+    /// received from such a device rather than created here (ADR-0011).
+    #[prost(bool, tag = "4")]
+    pub elsewhere: bool,
 }
 
 /// Answer to [`ListItems`].

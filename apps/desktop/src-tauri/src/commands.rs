@@ -62,6 +62,8 @@ pub(crate) struct DomainState {
     name: &'static str,
     available: bool,
     unlocked: bool,
+    /// For a domain this device does not have: other devices seem to have it.
+    elsewhere: bool,
 }
 
 /// The state of the vault.
@@ -90,6 +92,7 @@ impl From<proto::StatusReply> for Status {
                         name: domain_name(domain)?,
                         available: state.available,
                         unlocked: state.unlocked,
+                        elsewhere: state.elsewhere,
                     })
                 })
                 .collect(),
@@ -130,8 +133,16 @@ pub(crate) async fn status(app: AppHandle) -> CommandResult<Status> {
 /// Creates the vault, protected by `password`. With a hardware key store the
 /// TOTP and passkey domains are bound to it (Windows Hello asks twice). The
 /// vault stays unlocked: the next step is the recovery kit.
+///
+/// Without Windows Hello the daemon refuses (`HardwareUnavailable`) unless
+/// `without_hardware`: the user chose a vault without one-time codes and
+/// passkeys on this device for now (ADR-0011).
 #[tauri::command]
-pub(crate) async fn create_vault(app: AppHandle, password: String) -> CommandResult<Status> {
+pub(crate) async fn create_vault(
+    app: AppHandle,
+    password: String,
+    without_hardware: bool,
+) -> CommandResult<Status> {
     let password = Zeroizing::new(password);
     blocking(app, move |state| {
         if state.daemon.vault().exists() {
@@ -139,6 +150,7 @@ pub(crate) async fn create_vault(app: AppHandle, password: String) -> CommandRes
         }
         let create = request::Body::CreateVault(proto::CreateVault {
             master_password: password.as_str().to_owned(),
+            without_hardware,
         });
         status_of(state.daemon.call_with_key_agent(Start::Always, create)?)
     })

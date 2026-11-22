@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, errorMessage, MIN_MASTER_PASSWORD_CHARS, type Status } from "../api";
+  import { api, errorMessage, isCommandError, MIN_MASTER_PASSWORD_CHARS, type Status } from "../api";
   import Join from "../components/Join.svelte";
 
   let {
@@ -18,6 +18,8 @@
   let again = $state("");
   let busy = $state(false);
   let error = $state("");
+  /** Windows Hello could not be used: the user may set it up, or go on without. */
+  let noHello = $state(false);
 
   let tooShort = $derived(
     password.length > 0 && [...password].length < MIN_MASTER_PASSWORD_CHARS,
@@ -29,16 +31,25 @@
 
   async function create(event: SubmitEvent) {
     event.preventDefault();
+    await make(false);
+  }
+
+  async function make(withoutHardware: boolean) {
     if (!ready) return;
     busy = true;
     error = "";
+    noHello = false;
     try {
-      const status = await api.createVault(password);
+      const status = await api.createVault(password, withoutHardware);
       password = "";
       again = "";
       oncreated(status);
     } catch (caught) {
-      error = errorMessage(caught);
+      if (isCommandError(caught) && caught.code === "HardwareUnavailable") {
+        noHello = true;
+      } else {
+        error = errorMessage(caught);
+      }
     } finally {
       busy = false;
     }
@@ -93,6 +104,24 @@
     {#if error}
       <p class="notice error" role="alert">{error}</p>
     {/if}
+    {#if noHello}
+      <div class="notice warn no-hello" role="alert">
+        <p>
+          Windows Hello is not set up on this PC. Your one-time codes and
+          passkeys are protected by it, apart from the master password.
+        </p>
+        <p>
+          Set up a PIN in Settings &gt; Accounts &gt; Sign-in options, then choose
+          Create vault again. Or create the vault without them for now: you can
+          add them on this PC once Windows Hello is set up.
+        </p>
+        <div>
+          <button class="button small" type="button" onclick={() => void make(true)} disabled={!ready}>
+            Create without Windows Hello
+          </button>
+        </div>
+      </div>
+    {/if}
     {#if busy}
       <p class="notice info">
         Creating the vault… Windows Hello may ask you to confirm twice: once for
@@ -123,6 +152,16 @@
     place-items: center;
     padding: 24px;
     overflow: auto;
+  }
+
+  .no-hello {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .no-hello p {
+    margin: 0;
   }
 
   .panel {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import { devices, errorMessage, MIN_MASTER_PASSWORD_CHARS } from "../api";
+  import { devices, errorMessage, isCommandError, MIN_MASTER_PASSWORD_CHARS } from "../api";
 
   let { onjoined, oncancel }: { onjoined: () => void; oncancel: () => void } = $props();
 
@@ -12,6 +12,8 @@
   let busy = $state(false);
   let error = $state("");
   let result = $state("");
+  /** Windows Hello could not be used: the user may set it up, or go on without. */
+  let noHello = $state(false);
 
   let ready = $derived(
     code.trim().length > 0 &&
@@ -31,11 +33,16 @@
 
   async function join(event: SubmitEvent) {
     event.preventDefault();
+    await connect(false);
+  }
+
+  async function connect(withoutHardware: boolean) {
     if (!ready) return;
     busy = true;
     error = "";
+    noHello = false;
     try {
-      const joined = await devices.join(code, name, password);
+      const joined = await devices.join(code, name, password, withoutHardware);
       password = "";
       again = "";
       code = "";
@@ -44,7 +51,11 @@
         : `Joined. First sync: received ${joined.received} change(s).`;
       onjoined();
     } catch (caught) {
-      error = errorMessage(caught);
+      if (isCommandError(caught) && caught.code === "HardwareUnavailable") {
+        noHello = true;
+      } else {
+        error = errorMessage(caught);
+      }
     } finally {
       busy = false;
     }
@@ -87,6 +98,25 @@
   {#if error}
     <p class="notice error" role="alert">{error}</p>
   {/if}
+  {#if noHello}
+    <div class="notice warn no-hello" role="alert">
+      <p>
+        Windows Hello is not set up on this PC, so it cannot keep your one-time
+        codes and passkeys.
+      </p>
+      <p>
+        Set up a PIN in Settings &gt; Accounts &gt; Sign-in options, then join
+        again (ask the other device for a new code if this one has expired). Or
+        join without them for now: once Windows Hello is set up, this PC can get
+        them from a device that has them.
+      </p>
+      <div>
+        <button class="button small" type="button" onclick={() => void connect(true)} disabled={!ready}>
+          Join without Windows Hello
+        </button>
+      </div>
+    </div>
+  {/if}
   {#if result}
     <p class="notice ok">{result}</p>
   {/if}
@@ -105,6 +135,16 @@
 
   .small {
     font-size: 12px;
+  }
+
+  .no-hello {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .no-hello p {
+    margin: 0;
   }
 
   .actions {

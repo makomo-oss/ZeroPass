@@ -117,8 +117,8 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 
 | 要求 | 応答 | 内容 |
 |---|---|---|
-| `Status` | `StatusReply` | 金庫の有無、金庫 ID、端末 ID、ドメインごとの状態（あるか、解錠中か）、復旧キットの有無 |
-| `CreateVault` | `StatusReply` | マスターパスワードを受け取り、金庫ファイルを作る |
+| `Status` | `StatusReply` | 金庫の有無、金庫 ID、端末 ID、ドメインごとの状態（あるか、解錠中か、この端末にないドメインならほかの端末にある兆し `elsewhere`。ADR-0011）、復旧キットの有無 |
+| `CreateVault` | `StatusReply` | マスターパスワードを受け取り、金庫ファイルを作る。プラットフォームの鍵ストアを使う設定で、鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` で断る。`without_hardware` があれば、TOTP・パスキーのドメインなしで作る（ADR-0011） |
 | `RecoverVault` | `StatusReply` | 復旧鍵と新しいマスターパスワードで、金庫へのアクセスを取り戻す |
 | `Unlock` | `Done` | ドメインを解錠する。パスワードのドメインはマスターパスワードを添える。TOTP・パスキーのドメインは、デーモンが鍵エージェント（§13）を通じて生体認証を求める |
 | `Lock` | `Done` | 1 つのドメイン、またはすべてを施錠する |
@@ -131,7 +131,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | `ChangeMasterPassword` | `Done` | マスターパスワードを変える |
 | `CreateRecoveryKit` | `RecoveryKit` | 復旧キットを作り、復旧鍵を 1 回だけ返す |
 | `ListDevices` | `Devices` | 金庫の端末の一覧 |
-| `RevokeDevice` | `Done` | 端末を失効させ、金庫鍵を入れ替える |
+| `RevokeDevice` | `Done` | 端末を失効させ、金庫鍵を入れ替える。この端末が持たない TOTP・パスキーのドメインがほかにある兆しがあれば、`even_without_keys` がない限り `KEYS_AT_RISK` で断る（ADR-0011） |
 | `Shutdown` | `Done` | すべて施錠し、デーモンを終了する |
 | `ExportVault` | `Exported` | 暗号化エクスポートを作る（`export.md`。要求 18・応答 27） |
 | `ImportExport` | `ImportedItems` | 暗号化エクスポートを取り込む（`export.md`。要求 19・応答 28） |
@@ -143,6 +143,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 - `LOCKED` を受け取ったクライアントは、`domain` を解錠してから同じ要求をやり直せる。
 - `message` は人が読むための英語の文で、秘密を含まない。プログラムは `code` で判断する。
 - パスキーの要求に固有のコード: `CREDENTIAL_EXCLUDED`（20。RP が除外したクレデンシャルが金庫にある）、`UNSUPPORTED_ALGORITHM`（21。RP のアルゴリズムに対応するものがない）。ほかのコードとの対応は `passkey.md` §9.3。
+- `KEYS_AT_RISK`（22）: この端末から失効させると、ほかの端末が持つ TOTP・パスキーの鍵を入れ替えられず、失効させる端末が最後の持ち主なら失われる（ADR-0011）。
 
 ### 4.3 予約
 
@@ -262,7 +263,7 @@ UI は `KeyAgentAttach` を出せない。鍵エージェントの役割は、�
 |---|---|---|
 | `PairOffer` | `PairOffered` | ペアリングのオファー（QR コードの文字列）と有効秒数。`hints` に、この端末に届くアドレス（`アドレス:ポート`）を入れる。金庫のすべてのドメインが解錠されていなければ `LOCKED` |
 | `PairAdmit` | 中継（§11.2） | `PairOffer` で作ったオファーで、中継する接続の向こうの端末を迎え入れる |
-| `PairJoin` | 中継（§11.2） | 相手の端末が示したオファー、この端末の名前、新しいマスターパスワードを渡し、相手から受け取る許可でこの端末の金庫ファイルを作る |
+| `PairJoin` | 中継（§11.2） | 相手の端末が示したオファー、この端末の名前、新しいマスターパスワードを渡し、相手から受け取る許可でこの端末の金庫ファイルを作る。鍵ストアが使えないときは `CreateVault` と同じ（`without_hardware`） |
 
 - オファーは 1 つだけ保持し、使われるか期限が切れるまで有効である。新しいオファーを作ると、前のものは無効になる。`PairAdmit` は、成否にかかわらずオファーを使い切る。
 - **オファーが待っているあいだ、デーモンは自動施錠を止める。** 相手が接続し、利用者が確認するまでに、ハードウェア鍵のドメインの待ち時間（1 分）を超えうるためである。オファーが使われるか期限が切れると、元に戻す。

@@ -564,7 +564,8 @@ impl Front {
                 as_result(whole.call(body))
             }
             Body::RevokeDevice(revoke) => {
-                self.engine.check_revocable(&revoke.device_id)?;
+                self.engine
+                    .check_revocable(&revoke.device_id, revoke.even_without_keys)?;
                 let mut whole = self.whole_with_keys(backs)?;
                 // The keys of every domain are replaced; each holder follows
                 // from the vault file with its next use.

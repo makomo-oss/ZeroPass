@@ -255,12 +255,17 @@ pub fn admit(
 /// the device that shows `code`. The vault daemon creates the file from what
 /// the other device grants, protected by `master_password`; this process only
 /// carries the bytes. The user of the other device confirms.
+///
+/// If the hardware key store cannot be used, the daemon refuses with
+/// `HARDWARE_UNAVAILABLE` unless `without_hardware`: then this device joins
+/// without the TOTP and passkey domains (ADR-0011).
 pub fn join(
     vault: &Path,
     choice: KeyStoreChoice,
     code: &str,
     device_name: &str,
     master_password: &str,
+    without_hardware: bool,
 ) -> Result<proto::PairDone> {
     if vault.exists() {
         return Err(VaultError::AlreadyExists.into());
@@ -295,6 +300,7 @@ pub fn join(
         offer: code.to_owned(),
         device_name: device_name.to_owned(),
         master_password: master_password.to_owned(),
+        without_hardware,
     });
     // The daemon wraps the keys it is granted with the hardware key store,
     // which the key agent reaches for it.
