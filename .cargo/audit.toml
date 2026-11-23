@@ -18,4 +18,8 @@ ignore = [
     # checks the dependency graph and does not report it, so deny.toml needs
     # no entry.
     "RUSTSEC-2026-0543",
+    # `cookie` 0.18.2: private cookie nonces can repeat after fork. Private
+    # cookies are behind the crate's `private` feature, which nothing enables;
+    # Tauri uses only the cookie types (see deny.toml).
+    "RUSTSEC-2026-0594",
 ]
