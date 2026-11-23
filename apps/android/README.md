@@ -60,6 +60,8 @@ adb logcat -s ZeroPass:I      # アプリのログ
 
 `do` には `create`（この端末で金庫を作る。`password`、`name`）、`join`、`unlock`、`lock`、`sync`、`codes`（ワンタイムコードを表示。確認画面が出る）、`add-code`（`uri` に `otpauth://`）、`tab`（`vault`・`codes`・`passkeys`・`devices`・`settings`）を指定できる。デバッグビルドでは、画面の部品のテストタグがリソース ID になる（`uiautomator dump` で探してタップできる）。`adb shell` は引数を空白で分けるので、パスワードに空白を入れない。
 
+背面の同期（WorkManager の仕事、`docs/spec/android.md` §5）は、デバッグビルドなら `adb shell am broadcast -n io.github.makomooss.zeropass/.DebugSyncReceiver` で 1 回起こせる（電池の計測に使う）。
+
 金庫のプロセスが分離されていることは、次で確かめられる（`u0_i` で始まる利用者で動き、ネットワークの権限のグループ 3003 を持たない）。
 
 ```sh

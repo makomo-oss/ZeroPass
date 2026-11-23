@@ -13,6 +13,7 @@ class ZeroPassApp : Application() {
         super.onCreate()
         if (isolated()) return
         registerActivityLifecycleCallbacks(Prompts)
+        SyncWorker.schedule(this)
     }
 
     private fun isolated(): Boolean =
