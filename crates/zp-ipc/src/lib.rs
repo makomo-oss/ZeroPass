@@ -73,3 +73,24 @@ pub fn wait_until_closed(endpoint: &Endpoint, timeout: std::time::Duration) -> b
 pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
     sys::spawn_detached(command)
 }
+
+/// On Linux: from now on, has the executables of connecting processes
+/// (`ipc.md` §3.1) looked up by a helper: `program` started with `args`,
+/// which answers with [`serve_executable_lookups`]. A daemon that restricts
+/// itself with Landlock starts it first: inside, it may not read the
+/// `/proc/<pid>/exe` of the processes outside its sandbox (`ipc.md` §9.2).
+#[cfg(target_os = "linux")]
+pub fn look_up_executables_through(
+    program: &std::path::Path,
+    args: &[&str],
+) -> std::io::Result<()> {
+    sys::executables::start_helper(program, args)
+}
+
+/// The helper of [`look_up_executables_through`]: answers on standard output
+/// the requests read from standard input, until it ends (the process that
+/// started this one is gone).
+#[cfg(target_os = "linux")]
+pub fn serve_executable_lookups() -> std::io::Result<()> {
+    sys::executables::serve(std::io::stdin().lock(), std::io::stdout().lock())
+}
