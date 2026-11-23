@@ -240,6 +240,10 @@ fn configure(conn: &Connection) -> Result<(), VaultError> {
         PRAGMA secure_delete = ON;
         -- A crafted file must not be able to run SQL through views or triggers.
         PRAGMA trusted_schema = OFF;
+        -- Sorts and temporary tables stay in memory: no temporary files
+        -- outside the vault's directory, which is all the Linux sandbox opens
+        -- (ipc.md §9.2).
+        PRAGMA temp_store = MEMORY;
         ",
     )?;
     Ok(())

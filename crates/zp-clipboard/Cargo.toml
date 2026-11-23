@@ -27,6 +27,11 @@ print_stdout = "warn"
 [dependencies]
 zeroize = "1.9.1"
 
+# The X11 selection. Without its default features: no images, so no image
+# codecs; X11 through x11rb's own Rust implementation of the protocol.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.7.0", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",

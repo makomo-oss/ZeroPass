@@ -11,15 +11,17 @@
 //! |---|---|
 //! | Windows | available |
 //! | macOS | planned (P6-09) |
-//! | Linux | planned (P6-10) |
+//! | Linux | available: the X11 selection (also under Wayland, through XWayland). Only the process that copied can clear it |
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(windows)]
 mod windows;
 
 use std::io;
 
 /// Whether this platform has a clipboard implementation.
-pub const SUPPORTED: bool = cfg!(windows);
+pub const SUPPORTED: bool = cfg!(any(windows, target_os = "linux"));
 
 /// What the clipboard held right after a secret was copied: enough to tell
 /// later whether it still holds that secret, without looking at the content.
@@ -28,7 +30,8 @@ pub struct Copied(u32);
 
 impl Copied {
     /// A number that stands for this state of the clipboard, to hand to
-    /// another process that will clear it.
+    /// another process that will clear it (Windows; on Linux only the
+    /// process that copied can clear what it copied).
     pub fn token(self) -> u32 {
         self.0
     }
@@ -39,7 +42,7 @@ impl Copied {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn unsupported<T>() -> io::Result<T> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -54,7 +57,11 @@ pub fn copy_secret(secret: &str) -> io::Result<Copied> {
     {
         windows::copy_secret(secret).map(Copied)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::copy_secret(secret).map(Copied)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = secret;
         unsupported()
@@ -72,7 +79,11 @@ pub fn clear_if_unchanged(copied: Copied) -> io::Result<bool> {
         }
         windows::clear().map(|()| true)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::clear_if_unchanged(copied.0)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = copied;
         unsupported()
@@ -85,7 +96,11 @@ pub fn text() -> io::Result<Option<String>> {
     {
         windows::text()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::text()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         unsupported()
     }

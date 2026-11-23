@@ -46,6 +46,14 @@ allow = [
     "MPL-2.0",
 ]
 confidence-threshold = 0.93
+# Crates that are in the graph for a target where nothing uses them.
+exceptions = [
+    # The Win32 clipboard backend of `arboard` (and its error helper). ZeroPass
+    # uses `arboard` on Linux only (`crates/zp-clipboard`; Windows has its own
+    # code), so these are never built. Boost Software License: permissive.
+    { allow = ["BSL-1.0"], crate = "clipboard-win" },
+    { allow = ["BSL-1.0"], crate = "error-code" },
+]
 
 [licenses.private]
 # Workspace crates are publish = false. They are GPL-3.0-only (see LICENSE); the
