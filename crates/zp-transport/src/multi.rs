@@ -156,7 +156,7 @@ pub fn open_nearby() -> io::Result<Nearby> {
     })
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, all(target_os = "linux", feature = "linux-ble")))]
 fn open_ble(transports: &mut Vec<Box<dyn Transport>>, problems: &mut Vec<String>) -> bool {
     #[cfg(target_os = "linux")]
     use crate::ble_linux::BlePeripheral;
@@ -175,7 +175,7 @@ fn open_ble(transports: &mut Vec<Box<dyn Transport>>, problems: &mut Vec<String>
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, all(target_os = "linux", feature = "linux-ble"))))]
 fn open_ble(_transports: &mut Vec<Box<dyn Transport>>, problems: &mut Vec<String>) -> bool {
     problems.push("Bluetooth: not implemented for this system yet".to_owned());
     false
