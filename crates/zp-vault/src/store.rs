@@ -3,11 +3,15 @@
 //! [`Store`] creates, opens and migrates the file and reads and writes rows. The
 //! rows it handles are opaque: encryption happens in the `items` module, with keys
 //! supplied by the caller for the duration of a call.
+//!
+//! The database can also live in memory only ([`Place::Memory`]): a process
+//! that may not open files (the vault process on Android, ADR-0012) opens it
+//! from an image and hands every new image to someone who stores it.
 
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, params};
 use zp_crypto::{DeviceId, VaultId};
 
 use crate::VaultError;
@@ -17,6 +21,16 @@ use crate::schema::{self, APPLICATION_ID, MIGRATIONS};
 const META_VAULT_ID: &str = "vault_id";
 const META_DEVICE_ID: &str = "device_id";
 const META_CREATED_AT_MS: &str = "created_at_ms";
+
+/// Where a vault file is kept.
+#[derive(Debug, Clone, Copy)]
+pub enum Place<'a> {
+    /// A file on disk, which the store reads and writes itself.
+    File(&'a Path),
+    /// Memory only. Whoever holds the vault keeps it by storing its image
+    /// ([`Store::image`]) and opens it again from that ([`Store::open_image`]).
+    Memory,
+}
 
 /// An open vault file.
 #[derive(Debug)]
@@ -37,15 +51,33 @@ impl Store {
 
     /// Like [`Self::create`], with an explicit time source.
     pub fn create_with_clock(path: &Path, clock: Clock) -> Result<Self, VaultError> {
-        if path.exists() {
-            return Err(VaultError::AlreadyExists);
+        Self::create_in(Place::File(path), clock, None)
+    }
+
+    /// Creates an empty vault in `place`. With `identity`, for an existing
+    /// vault (see [`Self::create_for_vault`]); otherwise a new one.
+    pub(crate) fn create_in(
+        place: Place<'_>,
+        clock: Clock,
+        identity: Option<(VaultId, DeviceId)>,
+    ) -> Result<Self, VaultError> {
+        match place {
+            Place::File(path) => {
+                if path.exists() {
+                    return Err(VaultError::AlreadyExists);
+                }
+                let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+                let result = Connection::open_with_flags(path, flags)
+                    .map_err(VaultError::from)
+                    .and_then(|conn| Self::initialise(conn, clock, identity));
+                if result.is_err() {
+                    // Do not leave a half-initialised file behind.
+                    let _ = std::fs::remove_file(path);
+                }
+                result
+            }
+            Place::Memory => Self::initialise(Connection::open_in_memory()?, clock, identity),
         }
-        let result = Self::create_new(path, clock, None);
-        if result.is_err() {
-            // Do not leave a half-initialised file behind.
-            let _ = std::fs::remove_file(path);
-        }
-        result
     }
 
     /// Creates an empty vault file for an **existing** vault: the local copy of a
@@ -58,23 +90,14 @@ impl Store {
         device_id: DeviceId,
         clock: Clock,
     ) -> Result<Self, VaultError> {
-        if path.exists() {
-            return Err(VaultError::AlreadyExists);
-        }
-        let result = Self::create_new(path, clock, Some((vault_id, device_id)));
-        if result.is_err() {
-            let _ = std::fs::remove_file(path);
-        }
-        result
+        Self::create_in(Place::File(path), clock, Some((vault_id, device_id)))
     }
 
-    fn create_new(
-        path: &Path,
+    fn initialise(
+        mut conn: Connection,
         clock: Clock,
         identity: Option<(VaultId, DeviceId)>,
     ) -> Result<Self, VaultError> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
-        let mut conn = Connection::open_with_flags(path, flags)?;
         configure(&conn)?;
         conn.pragma_update(None, "application_id", APPLICATION_ID)?;
         schema::migrate(&mut conn, MIGRATIONS)?;
@@ -108,8 +131,23 @@ impl Store {
         if !path.exists() {
             return Err(VaultError::NotFound);
         }
-        let mut conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        Self::from_connection(conn, clock)
+    }
 
+    /// Opens a vault from an image of its file ([`Self::image`]), in memory
+    /// only: nothing is written to disk. The image is checked like a file.
+    pub fn open_image(image: &[u8], clock: Clock) -> Result<Self, VaultError> {
+        if image.is_empty() {
+            return Err(VaultError::NotFound);
+        }
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(MAIN_DB, image, image.len(), false)
+            .map_err(not_a_database_as_not_a_vault)?;
+        Self::from_connection(conn, clock)
+    }
+
+    fn from_connection(mut conn: Connection, clock: Clock) -> Result<Self, VaultError> {
         let application_id: i32 = conn
             .pragma_query_value(None, "application_id", |row| row.get(0))
             .map_err(not_a_database_as_not_a_vault)?;
@@ -142,6 +180,19 @@ impl Store {
     /// The identifier of this vault.
     pub fn vault_id(&self) -> VaultId {
         self.vault_id
+    }
+
+    /// The whole vault file as bytes: what [`Self::open_image`] opens. For a
+    /// vault kept in memory, the image to store after a change.
+    pub fn image(&mut self) -> Result<Vec<u8>, VaultError> {
+        Ok(self.conn.serialize(MAIN_DB)?.to_vec())
+    }
+
+    /// How many rows this store has written since it was opened. It grows
+    /// with every change, so a vault kept in memory needs storing whenever it
+    /// differs from the count at the last store.
+    pub fn changes(&self) -> u64 {
+        self.conn.total_changes()
     }
 
     /// The identifier of this device's copy of the vault.

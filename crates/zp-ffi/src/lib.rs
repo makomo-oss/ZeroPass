@@ -22,7 +22,7 @@ use zp_transport::{
     sync_as_initiator,
 };
 use zp_vault::model::{Content, Login};
-use zp_vault::{CreateOptions, Store, Vault};
+use zp_vault::{CreateOptions, Place, Store, Vault};
 
 uniffi::setup_scaffolding!();
 
@@ -294,7 +294,7 @@ pub fn join_vault(
         offered_key: Some(offer.noise_pk),
     };
     let new_vault = NewVault {
-        path: Path::new(&path),
+        place: Place::File(Path::new(&path)),
         master_password: &master_password,
         hardware: None,
         options: CreateOptions {

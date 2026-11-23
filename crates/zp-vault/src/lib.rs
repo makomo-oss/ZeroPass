@@ -27,7 +27,7 @@ pub use items::HistoryEntry;
 pub use join::{GrantedKey, JoinIdentity, VaultGrant};
 pub use keys::{KeyRing, KeySource};
 pub use schema::SCHEMA_VERSION;
-pub use store::Store;
+pub use store::{Place, Store};
 pub use vault::{
     AutoLock, CreateOptions, KdfChoice, MIN_MASTER_PASSWORD_CHARS, Vault, is_user_cancelled,
 };

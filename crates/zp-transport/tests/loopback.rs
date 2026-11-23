@@ -15,7 +15,7 @@ use zp_transport::{
     Transport, pair_as_existing, pair_as_new, sync_as_initiator, sync_as_responder,
 };
 use zp_vault::model::{Login, TotpEntry};
-use zp_vault::{Clock, CreateOptions, KdfChoice, Store, Vault};
+use zp_vault::{Clock, CreateOptions, KdfChoice, Place, Store, Vault};
 
 const PASSWORD_PC: &str = "the master password of the PC";
 const PASSWORD_PHONE: &str = "the phone has its own password";
@@ -109,7 +109,7 @@ fn pair(existing: &mut Device, network: &LoopbackNetwork, name: &str) -> Device 
             offered_key: Some(scanned.noise_pk),
         };
         let new_vault = NewVault {
-            path: &path,
+            place: Place::File(&path),
             master_password: PASSWORD_PHONE,
             hardware: Some(&hardware),
             options: options("ignored"),
@@ -414,7 +414,7 @@ fn pairing_is_refused_without_the_code_or_the_users_consent() {
                     offered_key: Some(offer.noise_pk),
                 };
                 let new_vault = NewVault {
-                    path: &path,
+                    place: Place::File(&path),
                     master_password: PASSWORD_PHONE,
                     hardware: None,
                     options: options("x"),

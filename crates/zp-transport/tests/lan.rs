@@ -23,7 +23,7 @@ use zp_transport::{
     pair_as_new, sync_as_initiator, sync_as_responder,
 };
 use zp_vault::model::Login;
-use zp_vault::{CreateOptions, KdfChoice, Store, Vault};
+use zp_vault::{CreateOptions, KdfChoice, Place, Store, Vault};
 
 const PASSWORD_PC: &str = "the master password of the PC";
 const PASSWORD_PHONE: &str = "the phone has its own password";
@@ -109,7 +109,7 @@ fn two_devices_pair_and_sync_over_the_lan() {
             offered_key: Some(scanned.noise_pk),
         };
         let new_vault = NewVault {
-            path: &phone_path,
+            place: Place::File(&phone_path),
             master_password: PASSWORD_PHONE,
             hardware: Some(&phone_hw),
             options: options("x"),

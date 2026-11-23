@@ -26,7 +26,7 @@ use prost::Message;
 use zeroize::{Zeroize, Zeroizing};
 use zp_crypto::{ChannelKey, DeviceId, DomainId, HardwareKeyStore, SignPublicKey, VaultId};
 use zp_sync::{decode_registry, encode_registry};
-use zp_vault::{CreateOptions, GrantedKey, JoinIdentity, Vault, VaultGrant};
+use zp_vault::{CreateOptions, GrantedKey, JoinIdentity, Place, Vault, VaultGrant};
 
 use crate::PairingError;
 use crate::noise::ChannelPublicKey;
@@ -397,6 +397,19 @@ impl Joiner {
         hardware: Option<&dyn HardwareKeyStore>,
         options: CreateOptions,
     ) -> Result<Vault, PairingError> {
+        self.accept_in(reply, Place::File(path), master_password, hardware, options)
+    }
+
+    /// Like [`Self::accept`], creating the vault in `place` (in memory, for
+    /// a process that keeps it as an image: ADR-0012).
+    pub fn accept_in(
+        self,
+        reply: &[u8],
+        place: Place<'_>,
+        master_password: &str,
+        hardware: Option<&dyn HardwareKeyStore>,
+        options: CreateOptions,
+    ) -> Result<Vault, PairingError> {
         let mut message = match decode(reply)? {
             Body::Grant(message) => message,
             Body::Refused(_) => return Err(PairingError::Declined),
@@ -422,8 +435,8 @@ impl Joiner {
         message.keys.iter_mut().for_each(|key| key.key.zeroize());
         let grant = grant.ok_or(PairingError::Protocol)?;
 
-        Vault::join(
-            path,
+        Vault::join_in(
+            place,
             self.identity,
             grant,
             master_password,

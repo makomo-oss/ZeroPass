@@ -26,7 +26,7 @@ use zp_sync::SessionReport;
 use zp_vault::{AutoLock, CreateOptions, VaultError, default_device_name};
 
 use crate::convert::{self, bad_request, vault_error};
-use crate::service::{KeyStoreChoice, Service, State};
+use crate::service::{Service, State};
 
 /// How long the user has to answer whether a device may join.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
@@ -366,7 +366,7 @@ impl Service {
     ) -> Result<response::Body, proto::Error> {
         self.whole()?;
         let mut state = self.state();
-        if state.vault.is_some() || self.path.exists() {
+        if state.vault.is_some() || self.on_disk() {
             return Err(vault_error(VaultError::AlreadyExists));
         }
         let pairing_error = |error: PairingError| drive_error(DriveError::Pairing(error));
@@ -393,7 +393,7 @@ impl Service {
             offered_key: Some(offer.noise_pk),
         };
         let new_vault = NewVault {
-            path: &self.path,
+            place: self.place(),
             master_password: &request.master_password,
             hardware: hardware.as_deref(),
             options: CreateOptions {
@@ -404,9 +404,7 @@ impl Service {
         let joined = match pair_as_new(link, joiner, &pairing, new_vault, &DriveConfig::default()) {
             Ok(joined) => joined,
             Err(error) => {
-                if self.key_store == KeyStoreChoice::InsecureSoftware {
-                    let _ = std::fs::remove_file(self.dev_key_path());
-                }
+                self.forget_dev_key();
                 return Err(drive_error(error));
             }
         };
@@ -421,7 +419,7 @@ impl Service {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
@@ -433,22 +431,23 @@ mod tests {
     };
 
     use super::*;
+    use crate::service::KeyStoreChoice;
     use crate::front::Front;
 
-    const PASSWORD: &str = "correct horse battery staple";
+    pub(crate) const PASSWORD: &str = "correct horse battery staple";
     const OTHER_PASSWORD: &str = "an entirely different passphrase";
 
     /// A daemon serving a vault path over the real IPC; this test binary is
     /// its user interface.
-    struct Daemon {
-        service: Arc<Front>,
+    pub(crate) struct Daemon {
+        pub(crate) service: Arc<Front>,
         endpoint: Endpoint,
         shutdown: ShutdownHandle,
         serving: Option<JoinHandle<()>>,
     }
 
     impl Daemon {
-        fn start(path: &Path) -> Self {
+        pub(crate) fn start(path: &Path) -> Self {
             Self::start_with(path, KeyStoreChoice::InsecureSoftware)
         }
 
@@ -471,7 +470,7 @@ mod tests {
             }
         }
 
-        fn connect(&self) -> Client {
+        pub(crate) fn connect(&self) -> Client {
             let this = zp_ipc::current_executable().unwrap();
             Client::connect(&self.endpoint, &DaemonPolicy::default().allow(this), "test").unwrap()
         }
@@ -490,7 +489,7 @@ mod tests {
         }
     }
 
-    fn offer(daemon: &Daemon) -> String {
+    pub(crate) fn offer(daemon: &Daemon) -> String {
         match daemon
             .call(request::Body::PairOffer(proto::PairOffer { hints: vec![] }))
             .unwrap()
@@ -535,11 +534,25 @@ mod tests {
         Result<proto::PairDone, IpcError>,
         Option<proto::PairConfirmRequest>,
     ) {
-        let (id, mut a_down) = existing
-            .connect()
+        relay_between(&|| existing.connect(), &|| joining.connect(), join, approve)
+    }
+
+    /// Relays a pairing between the daemons that `existing` and `joining`
+    /// connect to.
+    pub(crate) fn relay_between(
+        existing: &dyn Fn() -> Client,
+        joining: &dyn Fn() -> Client,
+        join: request::Body,
+        approve: bool,
+    ) -> (
+        Result<proto::PairDone, IpcError>,
+        Result<proto::PairDone, IpcError>,
+        Option<proto::PairConfirmRequest>,
+    ) {
+        let (id, mut a_down) = existing()
             .start_relay(request::Body::PairAdmit(proto::PairAdmit {}))
             .unwrap();
-        let a_up = match existing.connect().attach_relay(id) {
+        let a_up = match existing().attach_relay(id) {
             Ok(uplink) => Arc::new(Mutex::new(uplink)),
             // The relay is already over: the daemon refused to start. Its
             // reason is on the downlink, and the other device is never reached.
@@ -548,8 +561,8 @@ mod tests {
                 return (refused, Err(IpcError::NotRunning), None);
             }
         };
-        let (id, mut b_down) = joining.connect().start_relay(join).unwrap();
-        let mut b_up = joining.connect().attach_relay(id).unwrap();
+        let (id, mut b_down) = joining().start_relay(join).unwrap();
+        let mut b_up = joining().attach_relay(id).unwrap();
 
         let send = |uplink: &Mutex<Uplink>, body: request::Body| {
             let _ = uplink.lock().unwrap().send(body);
@@ -602,7 +615,7 @@ mod tests {
     }
 
     /// A vault with one login, every domain unlocked.
-    fn existing_vault(dir: &Path) -> Daemon {
+    pub(crate) fn existing_vault(dir: &Path) -> Daemon {
         let daemon = Daemon::start(&dir.join("pc.zpvault"));
         let created = daemon.service.handle(
             &ui(),

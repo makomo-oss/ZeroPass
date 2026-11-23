@@ -1,6 +1,8 @@
 //! The client's side: connects to the daemon, checks that it is the daemon and
 //! makes requests.
 
+use std::io::{Read, Write};
+
 use crate::codec::{read_frame, write_frame};
 use crate::peer::DaemonPolicy;
 use crate::proto::{
@@ -8,9 +10,16 @@ use crate::proto::{
 };
 use crate::{Endpoint, IpcError, sys};
 
+/// A connected byte stream to the daemon: a named pipe, a Unix domain socket,
+/// or one end of a socket pair that reaches an embedded daemon
+/// (`docs/spec/ipc.md` §14).
+pub trait Duplex: Read + Write + Send {}
+
+impl<T: Read + Write + Send> Duplex for T {}
+
 /// An open conversation with the daemon.
 pub struct Client {
-    stream: sys::Stream,
+    stream: Box<dyn Duplex>,
     role: Role,
     daemon_version: String,
 }
@@ -42,6 +51,18 @@ impl Client {
             };
             return Err(IpcError::UntrustedPeer(who));
         }
+        Self::open(Box::new(stream), name)
+    }
+
+    /// Opens the conversation on `stream`, which already reaches the daemon:
+    /// the vault process of the Android app, whose end of a socket pair was
+    /// handed to it through Binder (`docs/spec/ipc.md` §14). Whoever connected
+    /// the stream answers for the process at the other end.
+    pub fn over(stream: impl Duplex + 'static, name: &str) -> Result<Self, IpcError> {
+        Self::open(Box::new(stream), name)
+    }
+
+    fn open(stream: Box<dyn Duplex>, name: &str) -> Result<Self, IpcError> {
         let mut client = Self {
             stream,
             role: Role::Unspecified,

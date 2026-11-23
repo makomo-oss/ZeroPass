@@ -23,7 +23,7 @@ use crate::clock::Clock;
 use crate::domains::HARDWARE_DOMAINS;
 use crate::keyslots::{PlainSlot, SlotKind};
 use crate::vault::{Keys, check_master_password, new_password_slot};
-use crate::{AutoLock, CreateOptions, KdfChoice, Store, Vault, VaultError};
+use crate::{AutoLock, CreateOptions, KdfChoice, Place, Store, Vault, VaultError};
 
 /// The keys a device generates for itself before it joins a vault.
 pub struct JoinIdentity {
@@ -175,6 +175,25 @@ impl Vault {
         hardware: Option<&dyn HardwareKeyStore>,
         options: CreateOptions,
     ) -> Result<Self, VaultError> {
+        Self::join_in(
+            Place::File(path),
+            identity,
+            grant,
+            master_password,
+            hardware,
+            options,
+        )
+    }
+
+    /// Like [`Self::join`], in `place`.
+    pub fn join_in(
+        place: Place<'_>,
+        identity: JoinIdentity,
+        grant: VaultGrant,
+        master_password: &str,
+        hardware: Option<&dyn HardwareKeyStore>,
+        options: CreateOptions,
+    ) -> Result<Self, VaultError> {
         check_master_password(master_password)?;
         if let KdfChoice::Fixed(params) = options.kdf
             && !params.meets_minimum()
@@ -185,7 +204,7 @@ impl Vault {
             return Err(VaultError::InvalidGrant("key generations start at 1"));
         }
         let clock = options.clock.unwrap_or_else(Clock::system);
-        let store = Store::create_for_vault(path, grant.vault_id, identity.device_id, clock)?;
+        let store = Store::create_in(place, clock, Some((grant.vault_id, identity.device_id)))?;
         let result = Self::install_grant(
             store,
             identity,
@@ -194,7 +213,9 @@ impl Vault {
             hardware,
             options.kdf,
         );
-        if result.is_err() {
+        if result.is_err()
+            && let Place::File(path) = place
+        {
             let _ = std::fs::remove_file(path);
         }
         result
