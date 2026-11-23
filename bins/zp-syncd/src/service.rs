@@ -179,7 +179,14 @@ impl Service {
                     reason: "no device connected before the pairing code expired".into(),
                 })
             }
-            // The loop dropped the sink: it is not running.
+            // The loop stops waiting when the code expires, which can come a
+            // moment before this timeout (it counts from `until`).
+            Err(mpsc::RecvTimeoutError::Disconnected) if Instant::now() >= until => {
+                response::Body::LinkEnded(proto::LinkEnded {
+                    reason: "no device connected before the pairing code expired".into(),
+                })
+            }
+            // The loop dropped the sink otherwise: it is not running.
             Err(mpsc::RecvTimeoutError::Disconnected) => error(
                 ErrorCode::Internal,
                 format!(
