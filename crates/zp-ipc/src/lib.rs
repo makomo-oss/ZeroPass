@@ -19,20 +19,22 @@ mod client;
 mod codec;
 mod endpoint;
 mod error;
+mod memory;
 mod peer;
 pub mod proto;
 mod server;
 mod sync;
 mod sys;
 
-pub use client::{Client, Downlink, Uplink};
+pub use client::{Client, Downlink, Duplex, Uplink};
 pub use codec::{MAX_FRAME, read_frame, write_frame};
 pub use endpoint::{DAEMON_SANDBOX, Endpoint};
 pub use error::IpcError;
+pub use memory::{MemoryStream, memory_pair};
 pub use peer::{
     ClientPolicy, DAEMON_NAME, DaemonPolicy, KEY_AGENT_NAME, Peer, PeerProcess, SYNC_DAEMON_NAME,
 };
-pub use server::{Handler, RelayEnd, Server, ShutdownHandle};
+pub use server::{Handler, RelayEnd, Server, ShutdownHandle, StreamServer};
 pub use sync::{RemoteOpLog, RemoteSyncError};
 
 /// The executable of this process, in the form in which the executables of

@@ -12,7 +12,7 @@ use zp_crypto::{
 use zp_ipc::RelayEnd;
 use zp_ipc::proto::{self, ErrorCode, request, response};
 use zp_vault::model::Content;
-use zp_vault::{CreateOptions, KdfChoice, Vault, VaultError};
+use zp_vault::{Clock, CreateOptions, KdfChoice, Place, Vault, VaultError};
 
 use crate::convert::{self, NewItem, bad_request, domain_name, locked, vault_error};
 use crate::port::{self, KeyAgentPort};
@@ -58,6 +58,34 @@ impl Scope {
             Scope::Front => "front",
             Scope::Domain(domain) => domain_name(domain),
             Scope::Whole => "whole",
+        }
+    }
+}
+
+/// Where the vault file is kept.
+pub(crate) enum Storage {
+    /// On disk, at this path: the daemon opens and writes it itself.
+    File(PathBuf),
+    /// In memory only. The vault arrives as an image ([`Service::load_image`])
+    /// and whoever embeds the service stores every new image (ADR-0012).
+    Image,
+}
+
+/// What tells one state of an open vault from another: a vault kept in
+/// memory needs storing when its revision differs from the stored one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Revision {
+    vault_id: zp_crypto::VaultId,
+    device_id: zp_crypto::DeviceId,
+    changes: u64,
+}
+
+impl Revision {
+    fn of(vault: &Vault) -> Self {
+        Self {
+            vault_id: vault.vault_id(),
+            device_id: vault.device_id(),
+            changes: vault.changes(),
         }
     }
 }
@@ -124,7 +152,7 @@ pub(crate) struct State {
 /// One process's hold on the vault: the vault file and the keys of the domains
 /// this process may have (its [`Scope`]).
 pub(crate) struct Service {
-    pub(crate) path: PathBuf,
+    pub(crate) storage: Storage,
     pub(crate) key_store: KeyStoreChoice,
     pub(crate) scope: Scope,
     /// The way to the platform's hardware key store.
@@ -136,13 +164,13 @@ pub(crate) struct Service {
 
 impl Service {
     pub(crate) fn new(
-        path: PathBuf,
+        storage: Storage,
         key_store: KeyStoreChoice,
         scope: Scope,
         port: Arc<dyn KeyAgentPort>,
     ) -> Result<Self, proto::Error> {
         Ok(Self {
-            path,
+            storage,
             key_store,
             scope,
             port,
@@ -181,7 +209,55 @@ impl Service {
 
     /// Whether the vault file exists.
     pub(crate) fn exists(&self) -> bool {
-        self.state().vault.is_some() || self.path.exists()
+        self.state().vault.is_some() || self.on_disk()
+    }
+
+    /// Whether the vault file is on disk (never, for a vault kept in memory).
+    pub(crate) fn on_disk(&self) -> bool {
+        matches!(&self.storage, Storage::File(path) if path.exists())
+    }
+
+    /// Where a new vault file goes.
+    pub(crate) fn place(&self) -> Place<'_> {
+        match &self.storage {
+            Storage::File(path) => Place::File(path),
+            Storage::Image => Place::Memory,
+        }
+    }
+
+    /// Opens the vault kept in memory from `image`, replacing whatever was
+    /// open (and its keys). An empty image means that there is no vault yet.
+    pub(crate) fn load_image(&self, image: &[u8]) -> Result<(), proto::Error> {
+        let vault = if image.is_empty() {
+            None
+        } else {
+            Some(Vault::open_image(image, Clock::system()).map_err(vault_error)?)
+        };
+        *self.state() = State { vault, offer: None };
+        Ok(())
+    }
+
+    /// The revision of the open vault; `None` if there is no vault.
+    pub(crate) fn revision(&self) -> Result<Option<Revision>, proto::Error> {
+        Ok(self.state().vault.as_ref().map(Revision::of))
+    }
+
+    /// The image of the open vault and its revision, if the vault differs
+    /// from `stored`. `None` if it does not, or if there is no vault.
+    pub(crate) fn image_if_changed(
+        &self,
+        stored: Option<Revision>,
+    ) -> Result<Option<(Revision, Vec<u8>)>, proto::Error> {
+        let mut state = self.state();
+        let Some(vault) = state.vault.as_mut() else {
+            return Ok(None);
+        };
+        let revision = Revision::of(vault);
+        if stored == Some(revision) {
+            return Ok(None);
+        }
+        let image = vault.image().map_err(vault_error)?;
+        Ok(Some((revision, image)))
     }
 
     /// The public key to seal a vault key to that is meant for this process.
@@ -290,8 +366,23 @@ impl Service {
         }
     }
 
-    pub(crate) fn dev_key_path(&self) -> PathBuf {
-        self.path.with_extension("devkey")
+    /// The file of the development-only software key store: beside the vault
+    /// file, and nowhere for a vault kept in memory.
+    pub(crate) fn dev_key_path(&self) -> Option<PathBuf> {
+        match &self.storage {
+            Storage::File(path) => Some(path.with_extension("devkey")),
+            Storage::Image => None,
+        }
+    }
+
+    /// Removes the development-only software key store after a failed
+    /// creation, so that the next attempt starts afresh.
+    pub(crate) fn forget_dev_key(&self) {
+        if self.key_store == KeyStoreChoice::InsecureSoftware
+            && let Some(path) = self.dev_key_path()
+        {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// The key store for the TOTP and passkey domains; `None` if this device
@@ -345,7 +436,9 @@ impl Service {
                 Err(error) => Err(internal(error.to_string())),
             },
             KeyStoreChoice::InsecureSoftware => {
-                let path = self.dev_key_path();
+                let Some(path) = self.dev_key_path() else {
+                    return missing("the software key store needs a vault file on disk");
+                };
                 let store = if create {
                     let store = InsecureSoftwareKeyStore::generate()
                         .map_err(|error| internal(error.to_string()))?;
@@ -376,18 +469,17 @@ impl Service {
     pub(crate) fn vault<'s>(&self, state: &'s mut State) -> Result<&'s mut Vault, proto::Error> {
         let vault = match state.vault.take() {
             Some(vault) => vault,
-            None => {
-                if !self.path.exists() {
-                    return Err(vault_error(VaultError::NotFound));
-                }
-                Vault::open(&self.path).map_err(vault_error)?
-            }
+            None => match &self.storage {
+                Storage::File(path) if path.exists() => Vault::open(path).map_err(vault_error)?,
+                // A vault kept in memory is open from its image, or there is none.
+                _ => return Err(vault_error(VaultError::NotFound)),
+            },
         };
         Ok(state.vault.insert(vault))
     }
 
     fn status(&self, state: &mut State) -> Result<proto::StatusReply, proto::Error> {
-        if state.vault.is_none() && !self.path.exists() {
+        if state.vault.is_none() && !self.on_disk() {
             return Ok(proto::StatusReply {
                 sandboxed: zp_sandbox::is_sandboxed(),
                 pid: std::process::id(),
@@ -417,12 +509,12 @@ impl Service {
 
     fn create_vault(&self, state: &mut State, request: &proto::CreateVault) -> Reply {
         self.whole()?;
-        if state.vault.is_some() || self.path.exists() {
+        if state.vault.is_some() || self.on_disk() {
             return Err(vault_error(VaultError::AlreadyExists));
         }
         let hardware = self.hardware_for_new_vault(request.without_hardware)?;
-        let created = Vault::create(
-            &self.path,
+        let created = Vault::create_in(
+            self.place(),
             &request.master_password,
             hardware.as_deref(),
             CreateOptions::default(),
@@ -430,9 +522,7 @@ impl Service {
         match created {
             Ok(vault) => state.vault = Some(vault),
             Err(error) => {
-                if self.key_store == KeyStoreChoice::InsecureSoftware {
-                    let _ = std::fs::remove_file(self.dev_key_path());
-                }
+                self.forget_dev_key();
                 return Err(vault_error(error));
             }
         }
@@ -481,21 +571,45 @@ impl Service {
 
     fn recover_vault(&self, state: &mut State, request: &proto::RecoverVault) -> Reply {
         self.whole()?;
-        if !self.path.exists() {
-            return Err(vault_error(VaultError::NotFound));
-        }
+        let image = match &self.storage {
+            Storage::File(path) if path.exists() => None,
+            Storage::Image if state.vault.is_some() => Some(
+                state
+                    .vault
+                    .as_mut()
+                    .map(Vault::image)
+                    .transpose()
+                    .map_err(vault_error)?,
+            ),
+            _ => return Err(vault_error(VaultError::NotFound)),
+        };
         let recovery_key = RecoveryKey::from_code(&request.recovery_key)
             .map_err(|error| vault_error(error.into()))?;
         let hardware = self.hardware(true)?;
-        // Recovery gives this copy a new device identity: what is open is stale.
-        state.vault = None;
-        let vault = Vault::recover(
-            &self.path,
-            &recovery_key,
-            &request.new_master_password,
-            hardware.as_deref(),
-            CreateOptions::default(),
-        )
+        let options = CreateOptions::default();
+        let new_password = &request.new_master_password;
+        let vault = match (&self.storage, image.flatten()) {
+            (Storage::File(path), _) => {
+                // Recovery gives this copy a new device identity: what is open is stale.
+                state.vault = None;
+                Vault::recover(
+                    path,
+                    &recovery_key,
+                    new_password,
+                    hardware.as_deref(),
+                    options,
+                )
+            }
+            // In memory the open vault stays until the recovered one replaces it.
+            (Storage::Image, Some(image)) => Vault::recover_image(
+                &image,
+                &recovery_key,
+                new_password,
+                hardware.as_deref(),
+                options,
+            ),
+            (Storage::Image, None) => return Err(vault_error(VaultError::NotFound)),
+        }
         .map_err(vault_error)?;
         state.vault = Some(vault);
         self.status(state).map(response::Body::Status)

@@ -13,7 +13,6 @@
 //! ```
 
 use std::collections::VecDeque;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use zp_crypto::{ChannelKey, DeviceId, DomainId, HardwareKeyStore, VaultId};
@@ -24,7 +23,7 @@ use zp_pairing::{
     take_keys,
 };
 use zp_sync::{FrameDecoder, OpLog, Session, SessionReport, encode_frame};
-use zp_vault::{CreateOptions, Vault};
+use zp_vault::{CreateOptions, Place, Vault};
 
 use crate::DriveError;
 use crate::link::{Connection, Link};
@@ -391,8 +390,9 @@ pub struct Joined {
 
 /// Where and how the new device creates its vault file.
 pub struct NewVault<'a> {
-    /// Path of the vault file to create.
-    pub path: &'a Path,
+    /// Where to create the vault: a file, or memory for a process that keeps
+    /// it as an image (ADR-0012).
+    pub place: Place<'a>,
     /// This device's own master password.
     pub master_password: &'a str,
     /// This device's hardware key store, if it has one.
@@ -416,9 +416,9 @@ pub fn pair_as_new(
 
     messenger.send(&joiner.request())?;
     let reply = messenger.receive(None)?;
-    let mut vault = joiner.accept(
+    let mut vault = joiner.accept_in(
         &reply,
-        new_vault.path,
+        new_vault.place,
         new_vault.master_password,
         new_vault.hardware,
         new_vault.options,

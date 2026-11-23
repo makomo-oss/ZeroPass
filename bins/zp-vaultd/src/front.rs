@@ -19,7 +19,7 @@ use crate::agent::AgentLink;
 use crate::back::{Back, ProcessSpawner, Spawner};
 use crate::convert::{self, bad_request, vault_error};
 use crate::port::KeyAgentPort;
-use crate::service::{KeyStoreChoice, Reply, Scope, Service, log};
+use crate::service::{KeyStoreChoice, Reply, Scope, Service, Storage, log};
 
 /// The hardware-bound domains: each has a worker.
 const WORKED: [DomainId; 2] = [DomainId::Totp, DomainId::Passkey];
@@ -114,7 +114,7 @@ impl Front {
         spawner: Box<dyn Spawner>,
     ) -> Result<Self, proto::Error> {
         Ok(Self {
-            engine: Service::new(path, key_store, Scope::Front, port)?,
+            engine: Service::new(Storage::File(path), key_store, Scope::Front, port)?,
             backs: Mutex::new(Backs {
                 totp: spawner.back(Scope::Domain(DomainId::Totp)),
                 passkey: spawner.back(Scope::Domain(DomainId::Passkey)),

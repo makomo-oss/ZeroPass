@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use crate::codec::{read_frame, write_frame};
 use crate::peer::{ClientPolicy, Peer, PeerProcess};
 use crate::proto::{
-    Done, Error, ErrorCode, HelloReply, PROTOCOL_VERSION, RelayOpened, Request, Response, request,
-    response,
+    Done, Error, ErrorCode, HelloReply, PROTOCOL_VERSION, RelayOpened, Request, Response, Role,
+    request, response,
 };
 use crate::{Endpoint, IpcError, sys};
 
@@ -196,6 +196,49 @@ impl Server {
             });
         }
         release(self.listener);
+    }
+}
+
+/// Serves conversations on streams that were connected some other way: the
+/// vault process of the Android app, to which the app hands one end of a
+/// socket pair through Binder for every connection (`docs/spec/ipc.md` §14).
+///
+/// Nobody is checked: whoever handed over the stream answers for the client.
+/// Every conversation gets the same role. Relays work across the
+/// conversations of one `StreamServer`, as across the connections of a
+/// [`Server`].
+pub struct StreamServer {
+    role: Role,
+    daemon_version: String,
+    relays: Relays,
+}
+
+impl StreamServer {
+    /// A server that gives every conversation `role`.
+    pub fn new(role: Role, daemon_version: impl Into<String>) -> Self {
+        Self {
+            role,
+            daemon_version: daemon_version.into(),
+            relays: Relays::default(),
+        }
+    }
+
+    /// Runs one conversation on `stream` until the client closes it. A
+    /// `Shutdown` that the handler answers with `Done` ends only this
+    /// conversation: the embedding program decides when to stop.
+    pub fn converse<S: Read + Write, H: Handler + ?Sized>(
+        &self,
+        stream: &mut S,
+        handler: &H,
+    ) -> Result<(), IpcError> {
+        let peer = Peer {
+            process: PeerProcess {
+                pid: None,
+                executable: None,
+            },
+            role: self.role,
+        };
+        converse(stream, &peer, handler, &self.daemon_version, &self.relays).map(drop)
     }
 }
 

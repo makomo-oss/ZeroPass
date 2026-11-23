@@ -28,6 +28,7 @@ use crate::device::default_device_name;
 use crate::keys::KeyRing;
 use crate::keyslots::{PasswordSlot, PlainSlot, SlotKind};
 use crate::model::{Content, Item, TotpEntry};
+use crate::store::Place;
 use crate::totp::{self, TotpCode};
 use crate::{HistoryEntry, Store, VaultError};
 
@@ -226,6 +227,17 @@ impl Vault {
         hardware: Option<&dyn HardwareKeyStore>,
         options: CreateOptions,
     ) -> Result<Self, VaultError> {
+        Self::create_in(Place::File(path), master_password, hardware, options)
+    }
+
+    /// Like [`Self::create`], in `place`: a vault kept in memory is never
+    /// written anywhere by this crate (see [`Self::image`]).
+    pub fn create_in(
+        place: Place<'_>,
+        master_password: &str,
+        hardware: Option<&dyn HardwareKeyStore>,
+        options: CreateOptions,
+    ) -> Result<Self, VaultError> {
         // Check cheap preconditions before anything touches the disk.
         check_master_password(master_password)?;
         if let KdfChoice::Fixed(params) = options.kdf
@@ -234,10 +246,12 @@ impl Vault {
             return Err(VaultError::WeakKdf);
         }
         let clock = options.clock.unwrap_or_else(Clock::system);
-        let store = Store::create_with_clock(path, clock)?;
+        let store = Store::create_in(place, clock, None)?;
         let device_name = options.device_name.unwrap_or_else(default_device_name);
         let result = Self::initialise(store, master_password, hardware, options.kdf, &device_name);
-        if result.is_err() {
+        if result.is_err()
+            && let Place::File(path) = place
+        {
             // A vault without key slots is useless; do not leave it behind.
             let _ = std::fs::remove_file(path);
         }
@@ -309,7 +323,29 @@ impl Vault {
 
     /// Like [`Self::open`], with an explicit time source.
     pub fn open_with_clock(path: &Path, clock: Clock) -> Result<Self, VaultError> {
-        let store = Store::open_with_clock(path, clock)?;
+        Self::from_store(Store::open_with_clock(path, clock)?)
+    }
+
+    /// Opens a vault from an image of its file ([`Self::image`]) and keeps it
+    /// in memory only. Every domain starts locked.
+    pub fn open_image(image: &[u8], clock: Clock) -> Result<Self, VaultError> {
+        Self::from_store(Store::open_image(image, clock)?)
+    }
+
+    /// The whole vault file as bytes, to store a vault kept in memory after a
+    /// change. Contains what the file contains: ciphertext, key slots and the
+    /// plaintext metadata of `docs/spec/crypto.md`, never a key of a domain.
+    pub fn image(&mut self) -> Result<Vec<u8>, VaultError> {
+        self.store.image()
+    }
+
+    /// How many rows have been written since the vault was opened (see
+    /// [`Store::changes`]).
+    pub fn changes(&self) -> u64 {
+        self.store.changes()
+    }
+
+    fn from_store(store: Store) -> Result<Self, VaultError> {
         if store.password_slot()?.is_none() {
             return Err(VaultError::Corrupt("the vault has no password slot"));
         }

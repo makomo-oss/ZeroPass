@@ -19,7 +19,7 @@ use zp_ipc::{RelayEnd, read_frame, write_frame};
 
 use crate::convert::{domain_from_proto, domain_to_proto};
 use crate::port::{KeyAgentPort, failed};
-use crate::service::{KeyStoreChoice, Scope, Service};
+use crate::service::{KeyStoreChoice, Scope, Service, Storage};
 use crate::wire::{Down, ImportKey, KeyTransfer, Up, down, up};
 
 /// How often idle domains are checked for their timeout.
@@ -298,7 +298,12 @@ where
     W: Write + Send + 'static,
 {
     let wiring = connect(input, output);
-    let service = Arc::new(Service::new(vault, key_store, scope, wiring.port.clone())?);
+    let service = Arc::new(Service::new(
+        Storage::File(vault),
+        key_store,
+        scope,
+        wiring.port.clone(),
+    )?);
     {
         // Ends with the service.
         let service = Arc::downgrade(&service);

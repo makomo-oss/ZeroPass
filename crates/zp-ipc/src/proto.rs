@@ -151,6 +151,9 @@ pub enum ErrorCode {
     /// Something was written with a key that has not reached this device
     /// (ADR-0011): get the keys from another device, or sync.
     KeysMissing = 24,
+    /// The vault process of the Android app has no image host yet
+    /// (`docs/spec/ipc.md` §14.2): attach one first.
+    NotReady = 25,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +166,7 @@ pub struct Request {
     /// The request. Tags 48–63 and 66–79 are reserved (`docs/spec/ipc.md` §4.3).
     #[prost(
         oneof = "request::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 64, 65, 66, 80, 81, 82, 83, 96, 97, 100, 101, 102, 103, 104, 105, 112, 113, 114"
     )]
     pub body: Option<request::Body>,
 }
@@ -336,6 +339,16 @@ pub mod request {
         /// Relay of the key agent, uplink: the answer to a `KeyAgentRequest`.
         #[prost(message, tag = "97")]
         KeyAgentReply(super::KeyAgentReply),
+        /// The vault process of the Android app: offers to store its vault
+        /// file (`docs/spec/ipc.md` §14.2). Starts a relay.
+        #[prost(message, tag = "112")]
+        ImageHostAttach(super::ImageHostAttach),
+        /// Relay of the image host, uplink: part of the stored image.
+        #[prost(message, tag = "113")]
+        ImageChunk(super::ImageChunk),
+        /// Relay of the image host, uplink: a new image was stored, or not.
+        #[prost(message, tag = "114")]
+        ImageStored(super::ImageStored),
     }
 }
 
@@ -725,6 +738,36 @@ pub struct PairConnect {
 // Key agent (`docs/spec/ipc.md` §13)
 // ---------------------------------------------------------------------------
 
+/// Offers to store the vault file of the Android app's vault process, for as
+/// long as the relay lasts (`docs/spec/ipc.md` §14.2). The stored image
+/// follows on the uplink; the vault process answers `Listening` once it has
+/// opened it.
+#[derive(Clone, Copy, PartialEq, Message)]
+pub struct ImageHostAttach {}
+
+/// Part of an image of the vault file. An empty image (no vault yet) is one
+/// empty chunk with `last`.
+#[derive(Clone, PartialEq, Message)]
+pub struct ImageChunk {
+    /// The bytes, at most [`IMAGE_CHUNK`].
+    #[prost(bytes = "vec", tag = "1")]
+    pub data: Vec<u8>,
+    /// Whether this is the end of the image.
+    #[prost(bool, tag = "2")]
+    pub last: bool,
+}
+
+/// The longest [`ImageChunk`].
+pub const IMAGE_CHUNK: usize = 1024 * 1024;
+
+/// The image host's answer to a new image.
+#[derive(Clone, PartialEq, Message)]
+pub struct ImageStored {
+    /// Why the image could not be stored; empty if it was.
+    #[prost(string, tag = "1")]
+    pub error: String,
+}
+
 /// Offers the platform's hardware key store to the vault daemon, for as long
 /// as the relay lasts. The daemon answers `Listening` once it will use it.
 #[derive(Clone, Copy, PartialEq, Message)]
@@ -932,7 +975,7 @@ pub struct Response {
     /// The response.
     #[prost(
         oneof = "response::Body",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
     )]
     pub body: Option<response::Body>,
 }
@@ -1042,6 +1085,9 @@ pub mod response {
         /// hardware key store.
         #[prost(message, tag = "23")]
         KeyAgentRequest(super::KeyAgentRequest),
+        /// Relay of the image host, downlink: part of a new image to store.
+        #[prost(message, tag = "32")]
+        ImageChunk(super::ImageChunk),
     }
 }
 

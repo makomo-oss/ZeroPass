@@ -140,6 +140,40 @@ impl Vault {
         hardware: Option<&dyn HardwareKeyStore>,
         options: CreateOptions,
     ) -> Result<Self, VaultError> {
+        Self::recover_with(
+            |clock| Store::open_with_clock(path, clock),
+            recovery_key,
+            new_master_password,
+            hardware,
+            options,
+        )
+    }
+
+    /// Like [`Self::recover`], for a vault kept in memory: opens `image`
+    /// ([`Self::image`]) and returns the recovered vault, still in memory.
+    pub fn recover_image(
+        image: &[u8],
+        recovery_key: &RecoveryKey,
+        new_master_password: &str,
+        hardware: Option<&dyn HardwareKeyStore>,
+        options: CreateOptions,
+    ) -> Result<Self, VaultError> {
+        Self::recover_with(
+            |clock| Store::open_image(image, clock),
+            recovery_key,
+            new_master_password,
+            hardware,
+            options,
+        )
+    }
+
+    fn recover_with(
+        open: impl FnOnce(Clock) -> Result<Store, VaultError>,
+        recovery_key: &RecoveryKey,
+        new_master_password: &str,
+        hardware: Option<&dyn HardwareKeyStore>,
+        options: CreateOptions,
+    ) -> Result<Self, VaultError> {
         check_master_password(new_master_password)?;
         if let KdfChoice::Fixed(params) = options.kdf
             && !params.meets_minimum()
@@ -147,7 +181,7 @@ impl Vault {
             return Err(VaultError::WeakKdf);
         }
         let clock = options.clock.unwrap_or_else(Clock::system);
-        let mut store = Store::open_with_clock(path, clock)?;
+        let mut store = open(clock)?;
         let vault_id = store.vault_id();
         let mut keys = Keys::default();
 
