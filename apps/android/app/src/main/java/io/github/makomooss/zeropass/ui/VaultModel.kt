@@ -11,6 +11,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.makomooss.zeropass.Nearby
 import io.github.makomooss.zeropass.Prompts
+import io.github.makomooss.zeropass.SyncRecord
+import io.github.makomooss.zeropass.SyncWorker
 import io.github.makomooss.zeropass.Vault
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -74,6 +76,9 @@ data class UiState(
     val log: List<String> = emptyList(),
     /** A recovery key that was just made: shown once. */
     val recoveryKey: String? = null,
+    /** When the last sync ran and what it did, for the Devices tab. */
+    val lastSync: String = "",
+    val backgroundSync: Boolean = true,
 ) {
     fun domain(domain: Domain): DomainState? = status?.domains?.firstOrNull { it.domain == domain }
     val unlocked: Boolean get() = domain(Domain.PASSWORD)?.unlocked == true
@@ -93,6 +98,8 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
     private var codeTicker: Job? = null
     private var passwordHider: Job? = null
     private var backgroundLock: Job? = null
+    private var syncing: Job? = null
+    private var pendingSync: Job? = null
 
     private fun vault(): VaultClient = Vault.client(app)
 
@@ -174,6 +181,13 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
     /** The screen is shown: follow the vault's state. */
     fun onForeground() {
         backgroundLock?.cancel()
+        showLastSync()
+        // Autofill, Credential Manager or a background sync may have changed it.
+        if (state.unlocked) {
+            loadItems()
+            loadDevices()
+        }
+        if (System.currentTimeMillis() - SyncRecord.lastAt(app) > FOREGROUND_SYNC_MILLIS) quietSync()
         polling?.cancel()
         polling = viewModelScope.launch {
             while (isActive) {
@@ -233,6 +247,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
         }) {
             Prompts.reason = "Protect the one-time codes and passkeys of the new vault"
             vault().create(masterPassword, name.trim(), withoutHardware)
+            SyncWorker.schedule(app)
             update { it.copy(tab = Tab.VAULT) }
         }
     }
@@ -256,6 +271,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
             outcome.firstSync?.let { log("first sync: received ${it.received} change(s)") }
             outcome.firstSyncError?.let { log("the first sync did not complete ($it); sync again later") }
             vault().lock(null)
+            SyncWorker.schedule(app)
             update { it.copy(tab = Tab.VAULT) }
         }
     }
@@ -364,6 +380,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
             val content = client.get(id)
             update { it.copy(draft = null, open = OpenItem(id, content)) }
             loadItems()
+            changed()
         }
     }
 
@@ -374,6 +391,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
                 vault().delete(open.id)
                 update { it.copy(open = null) }
                 loadItems()
+                changed()
             }
         }
     }
@@ -455,6 +473,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
             val client = vault()
             if (state.domain(Domain.TOTP)?.unlocked != true) client.unlock(Domain.TOTP)
             client.addTotp(uri, null)
+            changed()
             val codes = readCodes(client)
             update { it.copy(codes = codes) }
             startCodeTicker()
@@ -465,6 +484,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
         ask("Delete this one-time code? The other devices delete it too when they sync.", "Delete") {
             run("Deleting") {
                 vault().delete(id)
+                changed()
                 val codes = readCodes(vault())
             update { it.copy(codes = codes) }
             }
@@ -499,6 +519,7 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
             run("Deleting") {
                 val client = vault()
                 client.delete(id)
+                changed()
                 val passkeys = client.list(Domain.PASSKEY, "").items
                 update { it.copy(passkeys = passkeys) }
             }
@@ -541,6 +562,8 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
         run("Syncing") {
             val synced = Nearby.sync(app, vault(), ::log)
             log(if (synced == 0) "nothing synced" else "synced with $synced device(s)")
+            SyncRecord.save(app, synced, state.log.lastOrNull())
+            withContext(Dispatchers.Main) { showLastSync() }
             loadItems()
             loadDevices()
         }
@@ -605,13 +628,62 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
                 Vault.close()
                 val file = Vault.file(app)
                 listOf("", ".tmp").forEach { java.io.File(file.path + it).delete() }
+                SyncWorker.schedule(app)
                 update { UiState() }
             }
         }
     }
 
+    // --- Sync without asking -------------------------------------------------
+
+    private fun showLastSync() {
+        val at = SyncRecord.lastAt(app)
+        val text = if (at == 0L) {
+            "Not synced yet."
+        } else {
+            val minutes = (System.currentTimeMillis() - at) / 60_000
+            val ago = if (minutes < 1) "just now" else "$minutes min ago"
+            "Last sync $ago: ${SyncRecord.lastSummary(app)}"
+        }
+        state = state.copy(lastSync = text, backgroundSync = SyncRecord.background(app))
+    }
+
+    /** Syncs without showing progress: when the app opens, and after a change. */
+    private fun quietSync() {
+        if (!Vault.file(app).exists() || syncing?.isActive == true) return
+        syncing = viewModelScope.launch {
+            val lines = mutableListOf<String>()
+            try {
+                val synced = withContext(Dispatchers.IO) { Nearby.sync(app, vault()) { lines += it } }
+                SyncRecord.save(app, synced, lines.lastOrNull())
+                if (synced > 0 && state.unlocked) loadItems()
+            } catch (error: Exception) {
+                Log.i(TAG, "sync: ${error.message}")
+            }
+            showLastSync()
+        }
+    }
+
+    /** Something changed here: send it to the devices nearby soon. */
+    private fun changed() {
+        pendingSync?.cancel()
+        pendingSync = viewModelScope.launch {
+            delay(CHANGE_SYNC_MILLIS)
+            quietSync()
+        }
+    }
+
+    fun setBackgroundSync(on: Boolean) {
+        SyncRecord.setBackground(app, on)
+        showLastSync()
+    }
+
     companion object {
         private const val TAG = "ZeroPass"
+        /** Sync when the app opens if the last sync is older than this. */
+        private const val FOREGROUND_SYNC_MILLIS = 60_000L
+        /** How long after a change to sync it. */
+        private const val CHANGE_SYNC_MILLIS = 10_000L
         private const val POLL_MILLIS = 5_000L
         /** How long the app may be away before the one-time codes and passkeys lock. */
         private const val BACKGROUND_LOCK_MILLIS = 10_000L

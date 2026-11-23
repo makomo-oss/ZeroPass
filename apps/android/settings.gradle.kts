@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "zeropass-android"
 include(":app")
+// A login form for testing the autofill service on the emulator; never shipped.
+include(":autofilltest")

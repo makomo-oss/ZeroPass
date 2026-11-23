@@ -337,8 +337,18 @@ docs/    threat-model.md  adr/  spec/
   - **エミュレータ（Android 16、2026-11-23、adb からテストタグで操作）**: 作成（PIN の確認 2 回）→ ログインの追加（生成したパスワード）・詳細・表示 → ワンタイムコードの追加と表示（そのたびに PIN）→ パスキーの一覧（空）→ 端末の一覧 → 復旧キット（両方のドメインの確認のあと、復旧鍵を 1 回だけ表示。作り直しは確かめてから）→ 検索 → Lock now → 解錠、まで通した。作業中に直したもの: ワンタイムコードを UI のスレッドで読んでいた（`VaultBinding` の検査で失敗した）、PIN の確認画面でアプリが止まったと見なして TOTP・パスキーを施錠し、全ドメインの要る操作が失敗した、エミュレータの Google の自動入力がアプリのマスターパスワードの欄に出た。
   - **未確認（実機で確かめること）**: QR コードの読み取りから BLE での参加（エミュレータは BLE とカメラがない）、指紋・顔での確認、小さい画面・横向き。
 
-- [ ] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
-- [ ] **P6-05** Android: Autofill Service と Credential Manager プロバイダ（パスワード + パスキー）（依存: P6-03, P5-03）
+- [x] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
+  - 仕様: `docs/spec/android.md` §5。前面: アプリを開いたとき（前の同期から 60 秒以上）と、変更の 10 秒後に黙って同期、「Sync now」。背面: WorkManager の定期の仕事（15 分ごと、電池残量が少ないときはしない、設定で止められる）で LAN → 残りの端末と BLE。終わったら、画面が前面になければ金庫のプロセスを手放す。Bluetooth が切れていても LAN の同期は行う。最後の同期の時刻と結果を「Devices」に出す。
+  - **電池（エミュレータ、2026-11-23）**: もう 1 台が登録された金庫（相手は不在）で背面の同期を 10 回、`dumpsys batterystats`: 1 回あたり仕事 7.0 秒、BLE のスキャン 4.0 秒、mDNS の探索 2.5 秒、CPU 0.86 秒、通信約 1 KB。1 日 96 回で、BLE のスキャン約 6.4 分、ウェイクロック約 11 分（表は `android.md` §5.1）。測るために、デバッグビルドだけの `DebugSyncReceiver`（シェルだけが送れる）で仕事を 1 回ずつ起こした。
+  - **未確認（実機で確かめること）**: 実機での mAh（エミュレータは消費電流を測れない。手順は `android.md` §5.1）、背面で実際に PC と同期すること（Doze・アプリのスタンバイの下で）、タブレットとの BLE・LAN の同期。
+
+- [x] **P6-05** Android: Autofill Service と Credential Manager プロバイダ（パスワード + パスキー）（依存: P6-03, P5-03）
+  - 仕様: `docs/spec/android.md` §6、`passkey.md` §11。ページは、許可リスト（Google が公開する特権ブラウザの一覧の写し、パッケージ名と署名証明書）のブラウザが示すウェブのオリジンか、`androidapp://<パッケージ名>`（ログインのアドレスに完全一致のものだけ）。パスキーは許可リストのブラウザからの要求だけ（アプリと RP の関係を確かめるには RP のサーバーに問い合わせる必要があるため）。
+  - 金庫の側: `PasskeyCreate`・`PasskeyGet` に `client_data_hash`（ブラウザが作ったクライアントデータのハッシュに署名し、clientDataJSON を返さない）と `list_only`（署名せず候補だけ。選んだ候補の送り直しは尋ねない）。ブリッジの照合に `androidapp://` の完全一致。`zp-ffi` に、ページのログイン・資格情報・比較・保存・更新、パスキーの作成・候補・署名。
+  - Android: 自動入力サービス（候補はどれも認証つきで、選ばれたログインだけ `AutofillActivity` が取る、施錠中は「Unlock ZeroPass」、保存は OS の確認の後に比較して保存・更新）、Credential Manager のプロバイダ（パスワードは開いていれば直接、パスキーは「Unlock ZeroPass」→ Keystore の確認 → アカウントの一覧 → 選んだもので署名。作成も）。応答は WebAuthn の JSON。
+  - **エミュレータ（Android 16、Chrome 133、2026-11-23）**: Chrome で webauthn.io に、Credential Manager の「ZeroPass に保存」でパスキーを登録（PIN の確認 1 回）→ サーバーが登録を検証 →「Authenticate」で「Unlock ZeroPass」→ PIN の確認 1 回でアカウントが並び、選ぶと尋ね直さずに署名して「You're logged in!」。ZeroPass の「Passkeys」に webauthn.io のパスキーが出た。自動入力は、ログインの画面だけの試験用のアプリ（`apps/android/autofilltest`、配布しない）で、保存（OS の確認 → 保存）、開いているときの候補から入力、施錠中の「Unlock ZeroPass」→ マスターパスワード → 候補から入力、まで通した。作業中に直したもの: 自動入力などで変わった金庫が、アプリに戻っても一覧に映らなかった。
+  - **未確認（実機で確かめること）**: Chrome の自動入力（ほかのサービスでの自動入力は Chrome 135 以上。エミュレータの Chrome 133 は更新できなかった）、Credential Manager でのパスワードの取得と保存、Firefox・Edge・Samsung Internet、実際のサイトのアカウント。
+
 - [ ] **P6-06** iOS: Xcode プロジェクト、Secure Enclave + LocalAuthentication の `HardwareKeyStore`（**要 Mac**）（依存: P6-01）
   - **保留（2026-11-23、所有者の判断）**: Mac がないため。
 - [ ] **P6-07** iOS: SwiftUI UI、CoreBluetooth セントラル（バックグラウンド復元）、Network.framework + Bonjour（ローカルネットワーク権限）（依存: P6-06）

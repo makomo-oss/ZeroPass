@@ -43,6 +43,7 @@ fn create<'a>(user: &'a [u8], name: &'a str, algorithms: &'a [i32]) -> CreateReq
         challenge: b"a challenge of the relying party",
         algorithms,
         exclude: &[],
+        client_data_hash: None,
     }
 }
 
@@ -54,6 +55,8 @@ fn get<'a>(challenge: &'a [u8], allow: &'a [Vec<u8>]) -> GetRequest<'a> {
         challenge,
         allow,
         chosen: None,
+        client_data_hash: None,
+        list_only: false,
     }
 }
 
@@ -282,4 +285,78 @@ fn a_locked_passkey_domain_makes_and_signs_nothing() {
         .unlock_hardware::<zp_crypto::Passkey>(&hardware)
         .unwrap();
     assert!(get_assertion(&mut vault, &get(b"challenge", &[])).is_ok());
+}
+
+#[test]
+fn a_browser_that_makes_the_client_data_gets_a_signature_over_its_hash() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut vault, _) = vault(&dir);
+    // The client data an Android browser made itself (passkey.md §11).
+    let browser_data = br#"{"type":"webauthn.get","challenge":"Y2hhbGxlbmdl","origin":"https://login.example.com","crossOrigin":false,"androidPackageName":"com.android.chrome"}"#;
+    let hash: [u8; 32] = Sha256::digest(browser_data).into();
+
+    let registration = make_credential(
+        &mut vault,
+        &CreateRequest {
+            client_data_hash: Some(&hash),
+            ..create(b"alice", "alice", &[])
+        },
+    )
+    .unwrap();
+    assert!(registration.client_data_json.is_empty());
+
+    let with_hash = GetRequest {
+        client_data_hash: Some(&hash),
+        ..get(b"challenge", &[])
+    };
+    let GetOutcome::Signed(assertion) = get_assertion(&mut vault, &with_hash).unwrap() else {
+        panic!("one credential: no choice");
+    };
+    assert!(assertion.client_data_json.is_empty());
+    // The relying party checks the signature against the browser's client data.
+    assert!(verify(
+        &registration.public_key,
+        &assertion.authenticator_data,
+        browser_data,
+        &assertion.signature
+    ));
+
+    // A hash that is not a SHA-256 is refused before anything is signed.
+    let short = GetRequest {
+        client_data_hash: Some(&[1; 31]),
+        ..get(b"challenge", &[])
+    };
+    assert!(matches!(
+        get_assertion(&mut vault, &short),
+        Err(PasskeyError::Invalid(_))
+    ));
+}
+
+#[test]
+fn listing_only_offers_even_a_single_passkey() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut vault, _) = vault(&dir);
+    let alice = make_credential(&mut vault, &create(b"alice", "alice", &[])).unwrap();
+
+    let list = GetRequest {
+        list_only: true,
+        ..get(b"challenge", &[])
+    };
+    let GetOutcome::Choose(choices) = get_assertion(&mut vault, &list).unwrap() else {
+        panic!("listing only: a choice, even of one");
+    };
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].credential_id, alice.credential_id);
+    assert_eq!(choices[0].user_name, "alice");
+
+    let picked = GetRequest {
+        chosen: Some(&alice.credential_id),
+        ..get(b"challenge", &[])
+    };
+    assert!(matches!(
+        get_assertion(&mut vault, &picked).unwrap(),
+        GetOutcome::Signed(_)
+    ));
 }

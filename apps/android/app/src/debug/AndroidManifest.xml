@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+            Debug builds only: runs the background sync once, for measuring it
+            (docs/spec/android.md §5). Only the shell (adb) holds DUMP.
+        -->
+        <receiver
+            android:name=".DebugSyncReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>

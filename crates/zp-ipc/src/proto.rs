@@ -1745,6 +1745,11 @@ pub struct PasskeyCreate {
     /// The credential identifiers of `excludeCredentials`.
     #[prost(bytes = "vec", repeated, tag = "10")]
     pub exclude: Vec<Vec<u8>>,
+    /// The SHA-256 of the client data, when the browser makes the client
+    /// data itself (Android's privileged browsers, `passkey.md` §11):
+    /// ZeroPass signs over it and returns no client data. Empty otherwise.
+    #[prost(bytes = "vec", tag = "11")]
+    pub client_data_hash: Vec<u8>,
 }
 
 /// Signs for a web page with one of its passkeys: what
@@ -1771,6 +1776,14 @@ pub struct PasskeyGet {
     /// request; empty if none.
     #[prost(bytes = "vec", tag = "6")]
     pub chosen: Vec<u8>,
+    /// Like [`PasskeyCreate::client_data_hash`].
+    #[prost(bytes = "vec", tag = "7")]
+    pub client_data_hash: Vec<u8>,
+    /// List the passkeys that fit without signing (the user is verified
+    /// all the same): the answer is always `PasskeyChoices`, and the same
+    /// request with one of them picked is then signed without asking again.
+    #[prost(bool, tag = "8")]
+    pub list_only: bool,
 }
 
 /// Answer to [`PasskeyCreate`]: what the relying party receives. Never the

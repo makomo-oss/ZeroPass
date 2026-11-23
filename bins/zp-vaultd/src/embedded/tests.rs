@@ -412,6 +412,7 @@ fn passkeys_ask_the_user_every_time() {
         challenge: b"registration challenge".to_vec(),
         algorithms: vec![-7],
         exclude: Vec::new(),
+        client_data_hash: Vec::new(),
     };
     let get = |chosen: &[u8]| proto::PasskeyGet {
         origin: "https://login.example.com".into(),
@@ -420,6 +421,8 @@ fn passkeys_ask_the_user_every_time() {
         challenge: b"sign-in challenge".to_vec(),
         allow: Vec::new(),
         chosen: chosen.to_vec(),
+        client_data_hash: Vec::new(),
+        list_only: false,
     };
 
     let before = prompts();
@@ -456,6 +459,27 @@ fn passkeys_ask_the_user_every_time() {
     let signed = app.call(request::Body::PasskeyGet(get(&picked))).unwrap();
     assert!(matches!(signed, response::Body::PasskeyAssertion(_)));
     assert_eq!(prompts(), asked + 1, "the pick is not asked again");
+
+    // Listing only (Android's selector): asked once, then the pick is signed
+    // without asking again.
+    let listed = prompts();
+    let list = proto::PasskeyGet {
+        list_only: true,
+        ..get(&[])
+    };
+    let response::Body::PasskeyChoices(choices) =
+        app.call(request::Body::PasskeyGet(list)).unwrap()
+    else {
+        panic!("no list");
+    };
+    assert_eq!(prompts(), listed + 1);
+    let signed = app
+        .call(request::Body::PasskeyGet(get(
+            &choices.choices[1].credential_id
+        )))
+        .unwrap();
+    assert!(matches!(signed, response::Body::PasskeyAssertion(_)));
+    assert_eq!(prompts(), listed + 1);
 
     // Turned down: nothing.
     agent.user_present.store(false, Ordering::SeqCst);
@@ -498,4 +522,66 @@ fn a_phone_joins_a_vault_through_the_app() {
     assert_eq!(phone.titles(), ["From the PC"]);
     let status = phone.status();
     assert!(status.domains.iter().all(|domain| domain.available));
+}
+
+#[test]
+fn apps_are_matched_by_their_exact_package() {
+    let agent = Arc::new(FakeAgent::new(6));
+    let app = App::ready(Vec::new(), &agent);
+    app.create();
+    let bank = "androidapp://com.example.bank";
+    let saved = app
+        .call(request::Body::BridgeSave(proto::BridgeSave {
+            origin: bank.into(),
+            top_origin: String::new(),
+            title: String::new(),
+            username: "alice".into(),
+            password: "app-password".into(),
+        }))
+        .unwrap();
+    let response::Body::ItemAdded(added) = saved else {
+        panic!("not saved");
+    };
+    let find = |origin: &str| match app.call(request::Body::BridgeFind(proto::BridgeFind {
+        origin: origin.into(),
+        top_origin: String::new(),
+    })) {
+        Ok(response::Body::BridgeLogins(logins)) => logins.logins,
+        other => panic!("not a list: {other:?}"),
+    };
+    let found = find("ANDROIDAPP://com.example.bank/");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].title, "com.example.bank");
+    assert!(found[0].exact);
+    // Another package, a look-alike, and a web page of the same name: nothing.
+    assert!(find("androidapp://com.example.bank.evil").is_empty());
+    assert!(find("androidapp://com.example").is_empty());
+    assert!(find("https://com.example.bank").is_empty());
+
+    let fill = |origin: &str| {
+        app.call(request::Body::BridgeFill(proto::BridgeFill {
+            origin: origin.into(),
+            item_id: added.item_id.clone(),
+            top_origin: String::new(),
+        }))
+    };
+    match fill(bank).unwrap() {
+        response::Body::BridgeCredential(credential) => {
+            assert_eq!(credential.password, "app-password");
+        }
+        other => panic!("not filled: {other:?}"),
+    }
+    assert_eq!(
+        code(fill("androidapp://com.example.other")),
+        ErrorCode::Denied
+    );
+    // Not a package, and an app inside a frame: refused outright.
+    assert_eq!(code(fill("androidapp://com..bank")), ErrorCode::BadRequest);
+    assert_eq!(
+        code(app.call(request::Body::BridgeFind(proto::BridgeFind {
+            origin: bank.into(),
+            top_origin: "https://example.com".into(),
+        }))),
+        ErrorCode::BadRequest
+    );
 }
