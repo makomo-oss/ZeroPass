@@ -456,7 +456,17 @@ pub(crate) mod tests {
             let service = Arc::new(Front::local(path.to_path_buf(), key_store, None));
             let endpoint = Endpoint::for_vault(path).unwrap();
             let policy = ClientPolicy::deny_all().allow(&this, proto::Role::Ui);
-            let server = Server::bind(&endpoint, policy, "test").unwrap();
+            // A daemon this test just stopped on the same vault may not have
+            // let go of the pipe yet (Windows releases it a little later).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let server = loop {
+                match Server::bind(&endpoint, policy.clone(), "test") {
+                    Err(IpcError::AlreadyRunning) if std::time::Instant::now() < deadline => {
+                        thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    bound => break bound.unwrap(),
+                }
+            };
             let shutdown = server.shutdown_handle();
             let serving = {
                 let service = Arc::clone(&service);
