@@ -217,7 +217,9 @@ try {
   failed(error);
 } finally {
   await app?.close();
+  // A daemon that is still ending holds its files for a moment (Windows:
+  // EPERM, EBUSY); rmSync retries those.
   await sleep(500);
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 finish();
