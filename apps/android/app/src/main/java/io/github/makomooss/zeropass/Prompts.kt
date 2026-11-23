@@ -16,6 +16,9 @@ object Prompts : Application.ActivityLifecycleCallbacks {
     /** What the next prompt is for, set by the screen that asks. */
     @Volatile var reason: String? = null
 
+    /** Whether a prompt is up: the app may look stopped meanwhile. */
+    @Volatile var showing: Boolean = false
+
     override fun onActivityResumed(activity: Activity) {
         if (activity is FragmentActivity) foreground = activity
     }

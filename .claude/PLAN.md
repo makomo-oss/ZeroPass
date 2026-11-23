@@ -332,7 +332,11 @@ docs/    threat-model.md  adr/  spec/
   - **エミュレータ（Android 16、PIN 1234、2026-11-23）**: 金庫の作成で確認画面（PIN）が 2 回（TOTP とパスキーのラップ）出て、TOTP・パスキーのドメインつきで作られた。ワンタイムコードの追加とコードの表示は、そのたびに PIN を求め、正しいコードが出た。確認画面を戻るで閉じると `CANCELLED` で何も開かない。エミュレータの Keystore はソフトウェアだけ（記録に `software only`）。
   - **未確認（実機で確かめること）**: 指紋・顔の生体認証での確認、StrongBox・TEE のある端末での鍵の作成、Android 9 のタブレット（強い生体認証がないので、画面ロックの直後 5 秒の鍵になる）。
 
-- [ ] **P6-03** Android: Compose UI（解錠・一覧・詳細・QR ペアリング）（依存: P6-02）
+- [x] **P6-03** Android: Compose UI（解錠・一覧・詳細・QR ペアリング）（依存: P6-02）
+  - 仕様: `docs/spec/android.md` §4。PoC の画面を Jetpack Compose（Material 3、Kotlin 2.4、compileSdk 37.2・targetSdk 36）に置き換えた。金庫がない: 作成（マスターパスワード 2 回、端末名。`CreateVault` に `device_name` を加えた）と、QR コードを読んで BLE で参加。施錠中: 解錠。解錠中のタブ: Vault（ログインとノートの検索・一覧・詳細・追加・編集・削除、パスワード生成器、パスワードは「Show」で 30 秒だけ、開けない件数）、Codes（毎回 Keystore の確認、60 秒で隠して施錠、QR か Base32 で追加、ドメインがなければ「この端末で作る」「ほかの端末から受け取る」）、Passkeys（一覧と削除）、Devices（一覧、Sync now、失効）、Settings（復旧キット、マスターパスワードの変更、Lock now、この端末の金庫の削除）。コピーは機密の印つきで 30 秒後に消す。リリースビルドは `FLAG_SECURE`。アプリの画面はどの自動入力サービスにも渡さない（`IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS`）。アプリが裏に回って 10 秒で TOTP・パスキーを施錠（確認画面が覆っている間は除く）。
+  - **エミュレータ（Android 16、2026-11-23、adb からテストタグで操作）**: 作成（PIN の確認 2 回）→ ログインの追加（生成したパスワード）・詳細・表示 → ワンタイムコードの追加と表示（そのたびに PIN）→ パスキーの一覧（空）→ 端末の一覧 → 復旧キット（両方のドメインの確認のあと、復旧鍵を 1 回だけ表示。作り直しは確かめてから）→ 検索 → Lock now → 解錠、まで通した。作業中に直したもの: ワンタイムコードを UI のスレッドで読んでいた（`VaultBinding` の検査で失敗した）、PIN の確認画面でアプリが止まったと見なして TOTP・パスキーを施錠し、全ドメインの要る操作が失敗した、エミュレータの Google の自動入力がアプリのマスターパスワードの欄に出た。
+  - **未確認（実機で確かめること）**: QR コードの読み取りから BLE での参加（エミュレータは BLE とカメラがない）、指紋・顔での確認、小さい画面・横向き。
+
 - [ ] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
 - [ ] **P6-05** Android: Autofill Service と Credential Manager プロバイダ（パスワード + パスキー）（依存: P6-03, P5-03）
 - [ ] **P6-06** iOS: Xcode プロジェクト、Secure Enclave + LocalAuthentication の `HardwareKeyStore`（**要 Mac**）（依存: P6-01）

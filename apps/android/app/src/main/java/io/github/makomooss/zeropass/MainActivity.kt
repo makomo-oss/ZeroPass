@@ -2,112 +2,50 @@ package io.github.makomooss.zeropass
 
 import android.Manifest
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.text.InputType
-import android.util.Log
 import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import android.view.WindowManager
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.fragment.app.FragmentActivity
-import java.io.File
-import java.util.concurrent.Executors
-import uniffi.zp_ffi.Domain
-import uniffi.zp_ffi.ItemContent
-import uniffi.zp_ffi.DeviceState
-import uniffi.zp_ffi.VaultClient
-import uniffi.zp_ffi.announcesPairing
-import uniffi.zp_ffi.bleUuids
-import uniffi.zp_ffi.offerInfo
+import io.github.makomooss.zeropass.ui.App
+import io.github.makomooss.zeropass.ui.Tab
+import io.github.makomooss.zeropass.ui.VaultModel
 
 /**
- * The test app of the proximity-sync proof of concept (plan task P2-16): joins
- * a vault by scanning the code a desktop shows, and syncs with it, over
- * Bluetooth LE only. One plain screen; not the product UI.
- *
- * The vault itself is in the isolated vault process ([VaultService],
- * ADR-0012); this screen talks to it through [Vault].
+ * The app's one screen (docs/spec/android.md §4). The vault itself is in the
+ * isolated vault process ([VaultService], ADR-0012); [VaultModel] talks to it.
  */
 class MainActivity : FragmentActivity() {
-    /** Everything that blocks (the Rust core, Bluetooth) runs here, in order. */
-    private val worker = Executors.newSingleThreadExecutor()
-    private val uuids = bleUuids()
-
-    private lateinit var status: TextView
-    private lateinit var deviceName: EditText
-    private lateinit var password: EditText
-    private lateinit var title: EditText
-    private lateinit var username: EditText
-    private lateinit var secret: EditText
-    private lateinit var logView: TextView
-    private val buttons = mutableListOf<Button>()
-
-    private val vaultFile: File
-        get() = Vault.file(this)
-
-    private val vault: VaultClient
-        get() = Vault.client(this)
+    private val model: VaultModel by viewModels()
+    private var onScanned: ((String) -> Unit)? = null
 
     private val scanCode = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val code = result.data?.getStringExtra(QrScanActivity.EXTRA_CODE)
-        if (result.resultCode == RESULT_OK && code != null) join(code) else log("no code was scanned")
+        val then = onScanned
+        onScanned = null
+        if (result.resultCode == RESULT_OK && code != null) then?.invoke(code)
     }
 
     private val askPermissions =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-            val refused = granted.filterValues { !it }.keys
-            if (refused.isNotEmpty()) log("not granted: ${refused.joinToString { it.substringAfterLast('.') }}")
-        }
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 32)
+        // Nothing of the vault in screenshots or in the list of recent apps.
+        // Debug builds allow screenshots for the tests on the emulator.
+        if (!BuildConfig.DEBUG) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        // No autofill service (ZeroPass's own included) reads or fills the vault's screens.
+        window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        setContent {
+            App(model) { prefix, then ->
+                onScanned = then
+                scanCode.launch(Intent(this, QrScanActivity::class.java).putExtra(QrScanActivity.EXTRA_PREFIX, prefix))
+            }
         }
-        fun text(size: Float = 14f) = TextView(this).apply { textSize = size }.also(column::addView)
-        fun field(hint: String, secret: Boolean = false) = EditText(this).apply {
-            this.hint = hint
-            inputType = InputType.TYPE_CLASS_TEXT or
-                if (secret) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        }.also(column::addView)
-        fun button(label: String, action: () -> Unit) = Button(this).apply {
-            text = label
-            isAllCaps = false
-            setOnClickListener { action() }
-        }.also(column::addView).also(buttons::add)
-
-        status = text(16f)
-        deviceName = field("Name of this phone").apply { setText(Build.MODEL) }
-        password = field("Master password of this phone (12+ characters)", secret = true)
-        button("Scan a pairing code and join") { startScan() }
-        button("Create a vault on this phone") { create() }
-        button("Sync (Wi-Fi if there is one, else Bluetooth)") { sync() }
-        button("Unlock and list logins") { list() }
-        button("Show one-time codes") { codes() }
-        title = field("Title of a new login")
-        username = field("User name")
-        secret = field("Password to store", secret = true)
-        button("Add the login") { addLogin() }
-        button("Delete this phone's vault file") { deleteVault() }
-        logView = text(12f).apply { setTextIsSelectable(true) }
-
-        setContentView(
-            ScrollView(this).apply {
-                addView(column, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            },
-        )
-        refreshStatus()
         requestPermissions()
         runFromIntent(intent)
     }
@@ -117,34 +55,14 @@ class MainActivity : FragmentActivity() {
         runFromIntent(intent)
     }
 
-    /**
-     * Debug builds can be driven from a computer, so that the radio path can be
-     * tested without hands:
-     * `adb shell am start -n <package>/.MainActivity -e do sync -e password …`.
-     * Release builds ignore all of it.
-     */
-    private fun runFromIntent(intent: Intent?) {
-        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        val action = intent?.getStringExtra("do")
-        if (!debuggable || intent == null || action == null) return
-        intent.getStringExtra("password")?.let(password::setText)
-        intent.getStringExtra("name")?.let(deviceName::setText)
-        when (action) {
-            "join" -> intent.getStringExtra("code")?.let(::join)
-            "create" -> create()
-            "add-totp" -> intent.getStringExtra("uri")?.let(::addTotp)
-            "codes" -> codes()
-            "sync" -> sync()
-            "list" -> list()
-            "add" -> {
-                title.setText(intent.getStringExtra("title") ?: "From the tablet")
-                username.setText("tablet")
-                secret.setText(intent.getStringExtra("secret") ?: "tablet-secret")
-                addLogin()
-            }
-            "delete" -> deleteVault()
-            else -> log("unknown debug action: $action")
-        }
+    override fun onStart() {
+        super.onStart()
+        model.onForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        model.onBackground()
     }
 
     private fun requestPermissions() {
@@ -160,236 +78,35 @@ class MainActivity : FragmentActivity() {
         if (wanted.isNotEmpty()) askPermissions.launch(wanted.toTypedArray())
     }
 
-    private fun refreshStatus() {
-        status.text = if (vaultFile.exists()) {
-            "This phone has a vault file."
-        } else {
-            "No vault yet. Create one, or on the PC run `zp-cli pair` and scan the code."
-        }
-    }
-
-    private fun log(line: String) {
-        Log.i("ZeroPass", line)
-        runOnUiThread { logView.text = "$line\n${logView.text}" }
-    }
-
-    /** Runs [task] on the worker thread with the buttons disabled meanwhile. */
-    private inline fun work(what: String, crossinline task: () -> Unit) {
-        buttons.forEach { it.isEnabled = false }
-        log("— $what")
-        worker.execute {
-            val started = System.currentTimeMillis()
-            try {
-                task()
-                log("done in ${System.currentTimeMillis() - started} ms")
-            } catch (error: Exception) {
-                log("failed: ${error.message ?: error.javaClass.simpleName}")
-            }
-            runOnUiThread {
-                buttons.forEach { it.isEnabled = true }
-                refreshStatus()
-            }
-        }
-    }
-
-    private fun create() {
-        if (vaultFile.exists()) return log("this phone already has a vault")
-        if (password.text.length < 12) return log("choose a master password of at least 12 characters first")
-        val masterPassword = password.text.toString()
-        work("creating a vault") {
-            // The TOTP and passkey keys are wrapped with the Keystore (the user confirms).
-            Prompts.reason = "Protect the one-time codes and passkeys"
-            val status = vault.create(masterPassword, false)
-            vault.lock(null)
-            log("created vault ${status.vaultId.take(8)}…; the vault process keeps it, the app stores the file")
-        }
-    }
-
-    /** Debug builds: stores a TOTP entry (the Keystore prompt opens the domain). */
-    private fun addTotp(uri: String) {
-        work("adding a one-time code") {
-            Prompts.reason = "Add a one-time code"
-            vault.unlock(Domain.TOTP)
-            vault.addTotp(uri, null)
-            vault.lock(Domain.TOTP)
-            log("added a one-time code")
-        }
-    }
-
-    /** Shows the one-time codes: the Keystore prompt opens the domain each time. */
-    private fun codes() {
-        work("showing one-time codes") {
-            Prompts.reason = "Show the one-time codes"
-            vault.lock(Domain.TOTP)
-            vault.unlock(Domain.TOTP)
-            try {
-                val items = vault.list(Domain.TOTP, "").items
-                log("${items.size} one-time code(s)")
-                items.forEach { log("  ${it.title} / ${it.username}: ${vault.totpCode(it.id).code}") }
-            } finally {
-                vault.lock(Domain.TOTP)
-            }
-        }
-    }
-
-    private fun startScan() {
-        if (vaultFile.exists()) return log("this phone already has a vault; delete it first to join again")
-        if (password.text.length < 12) return log("choose a master password of at least 12 characters first")
-        if (deviceName.text.isBlank()) return log("give this phone a name first")
-        scanCode.launch(Intent(this, QrScanActivity::class.java))
-    }
-
-    private fun join(code: String) {
-        val masterPassword = password.text.toString()
-        val name = deviceName.text.toString().trim()
-        work("joining over Bluetooth") {
-            val offer = offerInfo(code)
-            val scanStarted = System.currentTimeMillis()
-            val desktops = scanForDesktops(this, uuids, 4_000)
-            log("${desktops.size} ZeroPass device(s) nearby (scan ${System.currentTimeMillis() - scanStarted} ms)")
-            val (session, _) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
-                if (announcesPairing(tag, offer.pairingTag)) Unit else null
-            } ?: throw BleException("the device showing the code was not found nearby")
-            try {
-                log("confirm \"$name\" on the PC")
-                val link = GattLink(session)
-                // The TOTP and passkey keys are wrapped with the Keystore (the user confirms).
-                Prompts.reason = "Keep the one-time codes and passkeys on this phone"
-                val outcome = vault.join(code, name, masterPassword, false, link)
-                log("joined vault ${outcome.vaultId.take(8)}… as device ${outcome.deviceId.take(8)}…")
-                outcome.firstSync?.let { log("first sync: sent ${it.sent}, received ${it.received}") }
-                outcome.firstSyncError?.let { log("first sync did not complete: $it") }
-                log("Bluetooth: ${link.traffic()}")
-            } finally {
-                session.close()
-            }
-        }
-    }
-
     /**
-     * Whether this device is on a Wi-Fi network (the local network of
-     * docs/spec/lan.md).
+     * Debug builds can be driven from a computer, for the tests on the
+     * emulator and over Bluetooth without hands
+     * (`adb shell am start -n <package>/.MainActivity -e do sync`). Release
+     * builds ignore all of it.
      */
-    private fun onWifi(): Boolean {
-        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return false
-        val network = connectivity.activeNetwork ?: return false
-        return connectivity.getNetworkCapabilities(network)
-            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-    }
-
-    /**
-     * Syncs with the devices found on the local network. Android drops
-     * multicast packets (mDNS) unless an app holds a multicast lock.
-     */
-    private fun syncOnWifi(): Set<String> {
-        val wifi = applicationContext.getSystemService(WifiManager::class.java)
-        val lock = wifi?.createMulticastLock("zeropass-discovery")
-        lock?.acquire()
-        try {
-            val synced = mutableSetOf<String>()
-            for (result in vault.syncOnLan(2_500u)) {
-                val outcome = result.outcome
-                if (outcome != null) {
-                    synced += result.peer.deviceId
-                    log("Wi-Fi: synced with \"${result.peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
-                } else {
-                    log("Wi-Fi: \"${result.peer.name}\" did not answer: ${result.error}")
-                }
+    private fun runFromIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent == null) return
+        val action = intent.getStringExtra("do") ?: return
+        val password = intent.getStringExtra("password") ?: ""
+        val name = intent.getStringExtra("name") ?: VaultModel.defaultName
+        when (action) {
+            "create" -> model.create(password, password, name)
+            "join" -> intent.getStringExtra("code")?.let { model.join(it, name, password, password) }
+            "unlock" -> model.unlock(password)
+            "lock" -> model.lock()
+            "sync" -> {
+                model.select(Tab.DEVICES)
+                model.syncNow()
             }
-            return synced
-        } finally {
-            lock?.release()
-        }
-    }
-
-    /**
-     * One round of sync (plan task P2-17): the local network first, Bluetooth
-     * for the devices that were not reached there, and never both for the same
-     * device.
-     */
-    private fun sync() {
-        if (!vaultFile.exists()) return log("join a vault first")
-        work("syncing") {
-            val others = vault.otherDevices()
-            if (others.isEmpty()) throw IllegalStateException("this vault has no other device")
-            val synced = if (onWifi()) syncOnWifi() else emptySet<String>().also { log("no Wi-Fi: Bluetooth only") }
-            if (others.all { it.deviceId in synced }) return@work
-
-            val scanStarted = System.currentTimeMillis()
-            val desktops = scanForDesktops(this, uuids, 4_000)
-            log("Bluetooth: ${desktops.size} ZeroPass device(s) nearby (scan ${System.currentTimeMillis() - scanStarted} ms)")
-            val (session, peer) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
-                vault.recognisePeer(tag)?.takeIf { it.deviceId !in synced }
-            } ?: throw BleException(
-                if (synced.isEmpty()) {
-                    "no device of this vault was found nearby (is zp-syncd running on the PC?)"
-                } else {
-                    "the remaining devices of this vault are not nearby"
-                },
-            )
-            try {
-                val link = GattLink(session)
-                val outcome = vault.syncWith(peer.deviceId, link)
-                log("Bluetooth: synced with \"${peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
-                log("Bluetooth: ${link.traffic()}")
-            } finally {
-                session.close()
+            "codes" -> {
+                model.select(Tab.CODES)
+                model.showCodes()
             }
-        }
-    }
-
-    private fun <T> withVault(action: (VaultClient) -> T): T {
-        if (!vaultFile.exists()) throw IllegalStateException("join a vault first")
-        vault.unlockPassword(password.text.toString())
-        try {
-            return action(vault)
-        } finally {
-            vault.lock(null)
-        }
-    }
-
-    private fun list() {
-        work("unlocking") {
-            val lines = withVault { vault ->
-                val logins = vault.list(Domain.PASSWORD, "").items.map {
-                    val secret = (vault.get(it.id) as? ItemContent.Login)?.password ?: ""
-                    "  ${it.title} / ${it.username} / $secret"
-                }
-                val devices = vault.devices().map {
-                    val what = when (it.state) {
-                        DeviceState.THIS_DEVICE -> " (this phone)"
-                        DeviceState.REVOKED -> " (revoked)"
-                        DeviceState.ACTIVE -> ""
-                    }
-                    "  ${it.name}$what"
-                }
-                listOf("${logins.size} login(s):") + logins + listOf("${devices.size} device(s):") + devices
+            "add-code" -> intent.getStringExtra("uri")?.let {
+                model.select(Tab.CODES)
+                model.addCode(it, "", "")
             }
-            log(lines.joinToString("\n"))
+            "tab" -> intent.getStringExtra("tab")?.let { model.select(Tab.valueOf(it.uppercase())) }
         }
-    }
-
-    private fun addLogin() {
-        val (newTitle, newUser, newSecret) = Triple(title.text.toString(), username.text.toString(), secret.text.toString())
-        if (newTitle.isBlank()) return log("give the login a title")
-        work("adding a login") {
-            withVault { it.addLogin(newTitle, newUser, newSecret, emptyList(), "") }
-            log("added \"$newTitle\"; sync to send it to the PC")
-            runOnUiThread { listOf(title, username, secret).forEach { it.text.clear() } }
-        }
-    }
-
-    private fun deleteVault() {
-        work("deleting the vault file") {
-            // The vault process lets go of the vault first.
-            Vault.close()
-            listOf("", ".tmp", "-wal", "-shm", "-journal").forEach { File(vaultFile.path + it).delete() }
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        worker.shutdown()
-        status.visibility = View.GONE
     }
 }

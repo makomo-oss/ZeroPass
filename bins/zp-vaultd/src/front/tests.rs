@@ -51,6 +51,7 @@ impl Fixture {
         self.call(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware: false,
+            device_name: String::new(),
         }))
         .unwrap();
     }
@@ -136,6 +137,7 @@ fn a_vault_is_created_used_locked_and_unlocked() {
         fixture.code(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware: false,
+            device_name: String::new(),
         })),
         ErrorCode::VaultExists
     );
@@ -526,6 +528,7 @@ fn the_sync_daemon_reads_and_writes_ops_through_the_ipc() {
         request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware: false,
+            device_name: String::new(),
         }),
     );
     assert!(matches!(created, response::Body::Status(_)));
@@ -1071,6 +1074,7 @@ fn without_windows_hello_a_vault_is_made_only_if_the_user_says_so() {
         request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware,
+            device_name: String::new(),
         })
     };
     assert_eq!(fixture.code(create(false)), ErrorCode::HardwareUnavailable);
@@ -1109,6 +1113,7 @@ fn a_domain_is_set_up_later_and_served_by_its_worker() {
         .call(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware: true,
+            device_name: String::new(),
         }))
         .unwrap();
     let set_up = |domain: D| {

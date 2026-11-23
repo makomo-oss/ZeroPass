@@ -513,11 +513,16 @@ impl Service {
             return Err(vault_error(VaultError::AlreadyExists));
         }
         let hardware = self.hardware_for_new_vault(request.without_hardware)?;
+        let options = CreateOptions {
+            device_name: Some(request.device_name.trim().to_owned())
+                .filter(|name| !name.is_empty()),
+            ..CreateOptions::default()
+        };
         let created = Vault::create_in(
             self.place(),
             &request.master_password,
             hardware.as_deref(),
-            CreateOptions::default(),
+            options,
         );
         match created {
             Ok(vault) => state.vault = Some(vault),
