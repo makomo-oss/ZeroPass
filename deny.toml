@@ -21,6 +21,12 @@ ignore = [
     # ZeroPass does not handle GVariant values, and the fix exists only in
     # glib versions the GTK 3 bindings do not use (ADR-0009).
     { id = "RUSTSEC-2024-0429", reason = "Linux only, via Tauri's GTK 3 bindings; the affected iterator is not used" },
+    # `cookie` 0.18.2: the nonces of private (encrypted) cookies can repeat in
+    # processes that fork. Private cookies are behind the crate's `private`
+    # feature, which nothing here enables: Tauri uses the crate only for the
+    # cookie types of its webview (`cargo tree -i cookie -e features` shows
+    # only `default`). The fix (0.18.3) was published the day the advisory was.
+    { id = "RUSTSEC-2026-0594", reason = "the affected private cookie jar is not compiled (no `private` feature), via Tauri" },
 ]
 
 [licenses]
