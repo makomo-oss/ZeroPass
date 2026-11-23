@@ -170,7 +170,9 @@ envelope  = §4 の形式。鍵 = KEK-HW、AAD = context
 
 - 鍵 `K_hw` は `KeyProperties.KEY_ALGORITHM_HMAC_SHA256`（目的は `PURPOSE_SIGN`）、別名 `zeropass-hardware-v1`。端末（Android の利用者）ごとに 1 つで、すべての金庫で共有する（Windows Hello と同じ）。鍵は Keystore の外に出ない。
 - **使うたびに利用者の認証**: Android 11（API 30）以上は `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL)`。HMAC の操作（`Mac`）を `BiometricPrompt` の `CryptoObject` に渡し、認証のあとで同じ操作を終える。生体認証（クラス 3）か、端末の PIN・パターン・パスワードで通る。
-- Android 9〜10（API 28〜29）は `CryptoObject` で端末の PIN を使えないので、クラス 3 の生体認証が登録されていればそれだけで（`setUserAuthenticationValidityDurationSeconds(-1)`）、なければ認証の後 5 秒だけ使える鍵（`setUserAuthenticationValidityDurationSeconds(5)`）にし、端末の PIN などで認証した直後に 1 回だけ使う。どちらにするかは鍵を作るときに決まる。
+- Android 9〜10（API 28〜29）は `CryptoObject` で端末の PIN を使えないので、クラス 3 の生体認証が登録されていればそれだけで（`setUserAuthenticationValidityDurationSeconds(-1)`）、なければ認証の後 5 秒だけ使える鍵（`setUserAuthenticationValidityDurationSeconds(5)`）にし、端末の PIN などで認証した直後に使う。どちらにするかは鍵を作るときに決まる。
+  - 5 秒の鍵の確認画面は、生体認証（クラス 2）と端末の PIN の両方を許す（`BIOMETRIC_WEAK | DEVICE_CREDENTIAL`）。Android 10 以下の `androidx.biometric` は、端末の PIN だけの確認画面を受け付けない（2026-11-24、Fire HD 10・Android 9 の実機で、PIN だけを指定すると例外で落ちることを確認）。クラス 2 の生体認証では鍵が開かないので、そのときは PIN で確認するよう伝える。
+  - 1 回の確認のあと 3 秒の間に続けて鍵を使うときは、確認を繰り返さない（参加は TOTP とパスキーのドメインで鍵を 2 回使う。確認が 2 回続くと、相手の端末が待ちきれずに切れた）。
 - 画面ロック（PIN・パターン・パスワード）が設定されていない端末では鍵を作れない（`KeyguardManager.isDeviceSecure`）。鍵ストアは「使えない」と答え、TOTP・パスキーのドメインは作られない（ADR-0011 で、後から作る・受け取る）。
 - 生体認証の登録を変えても鍵は無効にしない（`setInvalidatedByBiometricEnrollment(false)`）。端末の PIN でも通るので、無効にしても守りは強くならない。画面ロックを外すと Android が鍵を消し、それでラップしたスロットは開けなくなる。
 - 鍵は StrongBox があればその中に作り（`setIsStrongBoxBacked(true)`）、なければ TEE に作る。どちらもない（ソフトウェアの Keystore しかない）端末でも作るが、保護は OS のプロセス分離だけになる（TPM のない PC と同じ。`android.md` §3）。

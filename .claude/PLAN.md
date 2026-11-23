@@ -349,6 +349,11 @@ docs/    threat-model.md  adr/  spec/
   - **エミュレータ（Android 16、Chrome 133、2026-11-23）**: Chrome で webauthn.io に、Credential Manager の「ZeroPass に保存」でパスキーを登録（PIN の確認 1 回）→ サーバーが登録を検証 →「Authenticate」で「Unlock ZeroPass」→ PIN の確認 1 回でアカウントが並び、選ぶと尋ね直さずに署名して「You're logged in!」。ZeroPass の「Passkeys」に webauthn.io のパスキーが出た。自動入力は、ログインの画面だけの試験用のアプリ（`apps/android/autofilltest`、配布しない）で、保存（OS の確認 → 保存）、開いているときの候補から入力、施錠中の「Unlock ZeroPass」→ マスターパスワード → 候補から入力、まで通した。作業中に直したもの: 自動入力などで変わった金庫が、アプリに戻っても一覧に映らなかった。
   - **未確認（実機で確かめること）**: Chrome の自動入力（ほかのサービスでの自動入力は Chrome 135 以上。エミュレータの Chrome 133 は更新できなかった）、Credential Manager でのパスワードの取得と保存、Firefox・Edge・Samsung Internet、実際のサイトのアカウント。
 
+- **実機（Fire HD 10、Fire OS・Android 9、2026-11-24）**: PC（開発用のソフトウェアの鍵の金庫）と Bluetooth でペアリング（端末の PIN の確認 1 回、最初の同期で 3 件）→ 解錠と一覧 → ワンタイムコードの表示（PIN の確認、PC と同じコード）→ PC で足したログインを Wi-Fi と Bluetooth（Wi-Fi を切って）のそれぞれで受け取る → 試験用アプリで自動入力（候補の選択で入力）と保存（OS の確認の後に保存、PC に届く）。金庫のプロセスは `u0_i110` で動き、ネットワークのグループを持たない。Keystore の鍵はセキュアハードウェアにある。
+  - 実機で見つけて直したもの: Android 9〜10 の 5 秒の鍵で、PIN だけの確認画面が `androidx.biometric` の例外でアプリを落としていた（`BIOMETRIC_WEAK | DEVICE_CREDENTIAL` に変更）。参加で確認画面が 2 回続き、その間に PC が待ちきれず切れていた（3 秒以内の続けての使用は確認を繰り返さない）。`crypto.md` §7.2。PC の側では、ペアリングのコードが期限切れになると「同期デーモンが同期していない」と誤って報告していた（期限切れとして答える）。
+  - 実機で分かった制約: Android 9 では位置情報がオフだと BLE の機器が見つからない（アプリは理由を表示する）。Fire OS には Google Play 開発者サービスがなく、Android 14 未満なので Credential Manager（パスキー）は試せない。保存したログインの題名がパッケージ名になる（アプリ名のほうがよい。小さな改善として残す）。
+  - **未確認（実機）**: 指紋・顔の生体認証、StrongBox、QR コードの読み取り（今回は adb でコードを渡した）、背面の同期を Doze の下で長時間、mAh の計測、Chrome での自動入力、パスキー（Android 14 以上の端末が要る）。
+
 - [ ] **P6-06** iOS: Xcode プロジェクト、Secure Enclave + LocalAuthentication の `HardwareKeyStore`（**要 Mac**）（依存: P6-01）
   - **保留（2026-11-23、所有者の判断）**: Mac がないため。
 - [ ] **P6-07** iOS: SwiftUI UI、CoreBluetooth セントラル（バックグラウンド復元）、Network.framework + Bonjour（ローカルネットワーク権限）（依存: P6-06）

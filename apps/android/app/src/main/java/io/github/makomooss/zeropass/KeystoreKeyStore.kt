@@ -4,14 +4,17 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import android.security.keystore.UserNotAuthenticatedException
 import android.util.Log
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -114,8 +117,22 @@ class KeystoreKeyStore(context: Context) : PlatformKeyStore {
         val timeBound = info(key).userAuthenticationValidityDurationSeconds > 0
         if (timeBound) {
             // Android 9–10 without strong biometrics: the screen lock first,
-            // then the key works for a few seconds.
-            prompt(null, DEVICE_CREDENTIAL)
+            // then the key works for a few seconds. Before Android 11 the
+            // prompt does not take the screen lock alone, only together with
+            // the weak biometrics, which do not open the key (then it says so
+            // below).
+            val authenticators = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                DEVICE_CREDENTIAL
+            } else {
+                BIOMETRIC_WEAK or DEVICE_CREDENTIAL
+            }
+            // One confirmation covers the uses right after it (joining uses the
+            // key once for each domain), as long as the key is still open.
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastConfirmed > REUSE_MILLIS) {
+                prompt(null, authenticators)
+                lastConfirmed = SystemClock.elapsedRealtime()
+            }
             initialise(mac, key)
             return mac.doFinal(challenge)
         }
@@ -135,6 +152,8 @@ class KeystoreKeyStore(context: Context) : PlatformKeyStore {
             mac.init(key)
         } catch (error: KeyPermanentlyInvalidatedException) {
             throw HardwareException.Unavailable("the key was invalidated (was the screen lock removed?)")
+        } catch (error: UserNotAuthenticatedException) {
+            throw HardwareException.Failed("confirm with the screen lock (PIN, pattern or password); face unlock does not open the key")
         } catch (error: Exception) {
             throw HardwareException.Failed("the key cannot be used: ${error.message}")
         }
@@ -203,6 +222,11 @@ class KeystoreKeyStore(context: Context) : PlatformKeyStore {
         /** The first byte of the key slots it protects (crypto.md §7). */
         val IMPLEMENTATION_ID: UByte = 0x04u
         private const val TIME_BOUND_SECONDS = 5
+        /** How long after a confirmation the time-bound key is used without another: within its validity. */
+        private const val REUSE_MILLIS = 3_000L
+        /** When the user last confirmed for the time-bound key (elapsed realtime). */
+        @Volatile
+        private var lastConfirmed = Long.MIN_VALUE / 2
         private const val PROMPT_SECONDS = 180L
     }
 }
