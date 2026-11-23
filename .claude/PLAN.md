@@ -353,6 +353,7 @@ docs/    threat-model.md  adr/  spec/
   - 実機で見つけて直したもの: Android 9〜10 の 5 秒の鍵で、PIN だけの確認画面が `androidx.biometric` の例外でアプリを落としていた（`BIOMETRIC_WEAK | DEVICE_CREDENTIAL` に変更）。参加で確認画面が 2 回続き、その間に PC が待ちきれず切れていた（3 秒以内の続けての使用は確認を繰り返さない）。`crypto.md` §7.2。PC の側では、ペアリングのコードが期限切れになると「同期デーモンが同期していない」と誤って報告していた（期限切れとして答える）。
   - 実機で分かった制約: Android 9 では位置情報がオフだと BLE の機器が見つからない（アプリは理由を表示する）。Fire OS には Google Play 開発者サービスがなく、Android 14 未満なので Credential Manager（パスキー）は試せない。保存したログインの題名がパッケージ名になる（アプリ名のほうがよい。小さな改善として残す）。
   - **未確認（実機）**: 指紋・顔の生体認証、StrongBox、QR コードの読み取り（今回は adb でコードを渡した）、背面の同期を Doze の下で長時間、mAh の計測、Chrome での自動入力、パスキー（Android 14 以上の端末が要る）。
+  - **保留（2026-11-24、所有者の判断）**: パスキー（Credential Manager）の実機での確認。Android 14 以上の端末がないため。エミュレータ（Android 16）での確認は済んでいる（P6-05）。
 
 - [ ] **P6-06** iOS: Xcode プロジェクト、Secure Enclave + LocalAuthentication の `HardwareKeyStore`（**要 Mac**）（依存: P6-01）
   - **保留（2026-11-23、所有者の判断）**: Mac がないため。
