@@ -22,20 +22,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 import java.util.concurrent.Executors
-import uniffi.zp_ffi.MobileVault
+import uniffi.zp_ffi.Domain
+import uniffi.zp_ffi.ItemContent
+import uniffi.zp_ffi.DeviceState
+import uniffi.zp_ffi.VaultClient
 import uniffi.zp_ffi.announcesPairing
 import uniffi.zp_ffi.bleUuids
-import uniffi.zp_ffi.joinVault
 import uniffi.zp_ffi.offerInfo
-import uniffi.zp_ffi.otherDevices
-import uniffi.zp_ffi.recognisePeer
-import uniffi.zp_ffi.syncOnLan
-import uniffi.zp_ffi.syncWith
 
 /**
  * The test app of the proximity-sync proof of concept (plan task P2-16): joins
  * a vault by scanning the code a desktop shows, and syncs with it, over
  * Bluetooth LE only. One plain screen; not the product UI.
+ *
+ * The vault itself is in the isolated vault process ([VaultService],
+ * ADR-0012); this screen talks to it through [Vault].
  */
 class MainActivity : ComponentActivity() {
     /** Everything that blocks (the Rust core, Bluetooth) runs here, in order. */
@@ -52,7 +53,10 @@ class MainActivity : ComponentActivity() {
     private val buttons = mutableListOf<Button>()
 
     private val vaultFile: File
-        get() = File(filesDir, "vault.zpvault")
+        get() = Vault.file(this)
+
+    private val vault: VaultClient
+        get() = Vault.client(this)
 
     private val scanCode = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val code = result.data?.getStringExtra(QrScanActivity.EXTRA_CODE)
@@ -87,6 +91,7 @@ class MainActivity : ComponentActivity() {
         deviceName = field("Name of this phone").apply { setText(Build.MODEL) }
         password = field("Master password of this phone (12+ characters)", secret = true)
         button("Scan a pairing code and join") { startScan() }
+        button("Create a vault on this phone") { create() }
         button("Sync (Wi-Fi if there is one, else Bluetooth)") { sync() }
         button("Unlock and list logins") { list() }
         title = field("Title of a new login")
@@ -125,6 +130,7 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("name")?.let(deviceName::setText)
         when (action) {
             "join" -> intent.getStringExtra("code")?.let(::join)
+            "create" -> create()
             "sync" -> sync()
             "list" -> list()
             "add" -> {
@@ -155,7 +161,7 @@ class MainActivity : ComponentActivity() {
         status.text = if (vaultFile.exists()) {
             "This phone has a vault file."
         } else {
-            "No vault yet. On the PC run `zp-cli pair`, then scan the code."
+            "No vault yet. Create one, or on the PC run `zp-cli pair` and scan the code."
         }
     }
 
@@ -183,6 +189,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun create() {
+        if (vaultFile.exists()) return log("this phone already has a vault")
+        if (password.text.length < 12) return log("choose a master password of at least 12 characters first")
+        val masterPassword = password.text.toString()
+        work("creating a vault") {
+            // No hardware key store yet (P6-02): the password domain only.
+            val status = vault.create(masterPassword, true)
+            vault.lock(null)
+            log("created vault ${status.vaultId.take(8)}…; the vault process keeps it, the app stores the file")
+        }
+    }
+
     private fun startScan() {
         if (vaultFile.exists()) return log("this phone already has a vault; delete it first to join again")
         if (password.text.length < 12) return log("choose a master password of at least 12 characters first")
@@ -204,7 +222,8 @@ class MainActivity : ComponentActivity() {
             try {
                 log("confirm \"$name\" on the PC")
                 val link = GattLink(session)
-                val outcome = joinVault(vaultFile.path, masterPassword, name, code, link)
+                // No hardware key store yet (P6-02): the password domain only.
+                val outcome = vault.join(code, name, masterPassword, true, link)
                 log("joined vault ${outcome.vaultId.take(8)}… as device ${outcome.deviceId.take(8)}…")
                 outcome.firstSync?.let { log("first sync: sent ${it.sent}, received ${it.received}") }
                 outcome.firstSyncError?.let { log("first sync did not complete: $it") }
@@ -236,7 +255,7 @@ class MainActivity : ComponentActivity() {
         lock?.acquire()
         try {
             val synced = mutableSetOf<String>()
-            for (result in syncOnLan(vaultFile.path, 2_500u)) {
+            for (result in vault.syncOnLan(2_500u)) {
                 val outcome = result.outcome
                 if (outcome != null) {
                     synced += result.peer.deviceId
@@ -259,7 +278,7 @@ class MainActivity : ComponentActivity() {
     private fun sync() {
         if (!vaultFile.exists()) return log("join a vault first")
         work("syncing") {
-            val others = otherDevices(vaultFile.path)
+            val others = vault.otherDevices()
             if (others.isEmpty()) throw IllegalStateException("this vault has no other device")
             val synced = if (onWifi()) syncOnWifi() else emptySet<String>().also { log("no Wi-Fi: Bluetooth only") }
             if (others.all { it.deviceId in synced }) return@work
@@ -268,7 +287,7 @@ class MainActivity : ComponentActivity() {
             val desktops = scanForDesktops(this, uuids, 4_000)
             log("Bluetooth: ${desktops.size} ZeroPass device(s) nearby (scan ${System.currentTimeMillis() - scanStarted} ms)")
             val (session, peer) = connectToDesktop(this, uuids, desktops, ::log) { tag ->
-                recognisePeer(vaultFile.path, tag)?.takeIf { it.deviceId !in synced }
+                vault.recognisePeer(tag)?.takeIf { it.deviceId !in synced }
             } ?: throw BleException(
                 if (synced.isEmpty()) {
                     "no device of this vault was found nearby (is zp-syncd running on the PC?)"
@@ -278,7 +297,7 @@ class MainActivity : ComponentActivity() {
             )
             try {
                 val link = GattLink(session)
-                val outcome = syncWith(vaultFile.path, peer.deviceId, link)
+                val outcome = vault.syncWith(peer.deviceId, link)
                 log("Bluetooth: synced with \"${peer.name}\": sent ${outcome.sent}, received ${outcome.received}")
                 log("Bluetooth: ${link.traffic()}")
             } finally {
@@ -287,24 +306,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun <T> withVault(action: (MobileVault) -> T): T {
+    private fun <T> withVault(action: (VaultClient) -> T): T {
         if (!vaultFile.exists()) throw IllegalStateException("join a vault first")
-        return MobileVault.open(vaultFile.path).use { vault ->
-            vault.unlock(password.text.toString())
-            try {
-                action(vault)
-            } finally {
-                vault.lock()
-            }
+        vault.unlockPassword(password.text.toString())
+        try {
+            return action(vault)
+        } finally {
+            vault.lock(null)
         }
     }
 
     private fun list() {
         work("unlocking") {
             val lines = withVault { vault ->
-                val logins = vault.logins().map { "  ${it.title} / ${it.username} / ${vault.loginPassword(it.id)}" }
+                val logins = vault.list(Domain.PASSWORD, "").items.map {
+                    val secret = (vault.get(it.id) as? ItemContent.Login)?.password ?: ""
+                    "  ${it.title} / ${it.username} / $secret"
+                }
                 val devices = vault.devices().map {
-                    "  ${it.name}${if (it.isThisDevice) " (this phone)" else ""}${if (it.revoked) " (revoked)" else ""}"
+                    val what = when (it.state) {
+                        DeviceState.THIS_DEVICE -> " (this phone)"
+                        DeviceState.REVOKED -> " (revoked)"
+                        DeviceState.ACTIVE -> ""
+                    }
+                    "  ${it.name}$what"
                 }
                 listOf("${logins.size} login(s):") + logins + listOf("${devices.size} device(s):") + devices
             }
@@ -316,7 +341,7 @@ class MainActivity : ComponentActivity() {
         val (newTitle, newUser, newSecret) = Triple(title.text.toString(), username.text.toString(), secret.text.toString())
         if (newTitle.isBlank()) return log("give the login a title")
         work("adding a login") {
-            withVault { it.addLogin(newTitle, newUser, newSecret) }
+            withVault { it.addLogin(newTitle, newUser, newSecret, emptyList(), "") }
             log("added \"$newTitle\"; sync to send it to the PC")
             runOnUiThread { listOf(title, username, secret).forEach { it.text.clear() } }
         }
@@ -324,7 +349,9 @@ class MainActivity : ComponentActivity() {
 
     private fun deleteVault() {
         work("deleting the vault file") {
-            listOf("", "-wal", "-shm", "-journal").forEach { File(vaultFile.path + it).delete() }
+            // The vault process lets go of the vault first.
+            Vault.close()
+            listOf("", ".tmp", "-wal", "-shm", "-journal").forEach { File(vaultFile.path + it).delete() }
         }
     }
 

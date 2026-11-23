@@ -431,8 +431,8 @@ pub(crate) mod tests {
     };
 
     use super::*;
-    use crate::service::KeyStoreChoice;
     use crate::front::Front;
+    use crate::service::KeyStoreChoice;
 
     pub(crate) const PASSWORD: &str = "correct horse battery staple";
     const OTHER_PASSWORD: &str = "an entirely different passphrase";

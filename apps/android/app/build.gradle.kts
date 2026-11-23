@@ -13,9 +13,15 @@ android {
         versionCode = 1
         versionName = "0.0.0"
         ndk {
-            // The Rust core is built for this ABI only (build-core.sh).
-            abiFilters += "arm64-v8a"
+            // The ABIs build-core.sh builds the Rust core for: phones and the
+            // emulator.
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
+    }
+
+    buildFeatures {
+        // The vault service's Binder interface (IVaultService.aidl).
+        aidl = true
     }
 
     compileOptions {

@@ -61,5 +61,16 @@
             android:exported="false"
             android:screenOrientation="portrait"
             tools:ignore="DiscouragedApi,LockedOrientationActivity" />
+
+        <!--
+            The vault process (ADR-0012): isolated, so it has no permission, no
+            access to the app's files and no network. The app process stores
+            the vault file for it and answers for the Android Keystore.
+        -->
+        <service
+            android:name=".VaultService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":vault" />
     </application>
 </manifest>

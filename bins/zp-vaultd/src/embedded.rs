@@ -95,7 +95,7 @@ impl Engine {
     /// its image host, and has no hardware key store until the app attaches
     /// its key agent. Idle domains lock themselves as in the daemon.
     pub fn new() -> Self {
-        let agent = Arc::new(AgentLink::default());
+        let agent = Arc::new(AgentLink::optional());
         let port: Arc<dyn KeyAgentPort> = agent.clone();
         let service = Service::new(Storage::Image, KeyStoreChoice::Platform, Scope::Whole, port)
             .unwrap_or_else(|error| {
