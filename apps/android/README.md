@@ -1,20 +1,21 @@
-# ZeroPass Android 検証アプリ（P2-16）
+# ZeroPass Android アプリ
 
-近接同期 PoC の検証用アプリ。PC が表示したペアリングコード（QR）を読み取って金庫に参加し、Bluetooth LE だけで同期する。製品の UI ではなく、1 画面の最小構成である。
+近接同期 PoC（P2-16）の検証アプリを、Phase 6 で製品のアプリにしていく途中のもの。いまの画面は PoC の 1 画面のままで、PC が表示したペアリングコード（QR）を読み取って金庫に参加し、Bluetooth LE だけで同期する（Compose の画面は P6-03）。構成は `docs/spec/android.md`。
 
+- **金庫は分離プロセス**（`VaultService`、`isolatedProcess`、プロセス名 `:vault`）で動く（ADR-0012）。権限・ファイル・ネットワークがなく、デスクトップの金庫デーモンと同じ Rust の処理が金庫をメモリ上に持つ。アプリのプロセスは `IVaultService.connect` でソケットの組を渡して要求を送り、金庫ファイル（`files/vault.zpvault`）を保管役として書く（`Vault.kt`、`VaultBinding.kt`）。ペアリングと同期のネットワークはアプリのプロセスで動く
 - 無線（スキャン、接続、バイト列の受け渡し）は Kotlin が受け持つ: `Ble.kt`（`docs/spec/ble.md` のセントラル側）
 - ペアリング、Noise チャネル、同期、金庫は PC と同じ Rust コアが受け持つ: `crates/zp-ffi`（UniFFI）
 - QR の読み取りは CameraX と ZXing で端末内で行う
 - 同期は、同じ Wi-Fi に相手がいれば LAN（mDNS + TCP、`docs/spec/lan.md`）で行い、届かなかった相手とだけ BLE で行う。同じ相手と両方で同期することはない
 - LAN での同期のために `INTERNET` 権限を持つ（Android には「ローカルネットワークだけ」の権限がなく、ソケットを開くだけで必要になる）。通信先をプライベート／リンクローカルアドレスに限り、ホップ数を 1 にする制限は Rust コア側で守る
-- PoC の制限: ハードウェア鍵ストアに未対応のため、スマートフォン側で開けるのはパスワードのドメインだけ（TOTP とパスキーは暗号文のまま同期される）
+- 制限（P6-02 まで）: ハードウェア鍵ストアに未対応のため、スマートフォン側で開けるのはパスワードのドメインだけ（TOTP とパスキーは暗号文のまま同期される）
 
 ## 必要なもの
 
 - Android Studio（同梱の JDK を使う）、Android SDK（platform 36、build-tools）、NDK
-- `rustup target add aarch64-linux-android` と `cargo install cargo-ndk`
+- `rustup target add aarch64-linux-android x86_64-linux-android` と `cargo install cargo-ndk`
 - 環境変数 `ANDROID_HOME`、`ANDROID_NDK_HOME`、`JAVA_HOME`（Android Studio の `jbr` フォルダ）
-- Android 8.0 以上の arm64 の実機（エミュレータは BLE を使えない）
+- Android 8.0 以上の arm64 の実機。エミュレータ（x86_64）でも動くが BLE は使えない（金庫の作成・解錠・一覧は試せる）
 - Android 11 以前の実機では、端末の「位置情報」をオンにしておく（オフだと OS が BLE のスキャン結果を返さない。アプリは位置を読まない）
 
 ## ビルド
@@ -57,4 +58,11 @@ adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do list -e p
 adb logcat -s ZeroPass:I      # アプリのログ
 ```
 
-`do` には `join`、`sync`、`list`、`add`、`delete` を指定できる。
+`do` には `join`、`create`（この端末で金庫を作る）、`sync`、`list`、`add`、`delete` を指定できる。`adb shell` は引数を空白で分けるので、パスワードに空白を入れない。
+
+金庫のプロセスが分離されていることは、次で確かめられる（`u0_i` で始まる利用者で動き、ネットワークの権限のグループ 3003 を持たない）。
+
+```sh
+adb shell ps -A -o USER,PID,NAME | grep zeropass
+adb shell cat /proc/<金庫のプロセスの PID>/status | grep Groups
+```

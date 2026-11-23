@@ -320,8 +320,12 @@ docs/    threat-model.md  adr/  spec/
 
 ### Phase 6: モバイル
 > 2026-11-23（所有者の判断）: Mac がないので、iOS（P6-06〜P6-08）と、それに依存し確認にも Mac が要る macOS（P6-09）は保留にし、Android（P6-01〜P6-05）と Linux（P6-10）を進める。
-- [ ] **P6-01** `zp-ffi`: UniFFI で公開 API を確定（モバイルは単一プロセス内でコアを動かし、Android は `isolatedProcess` サービスに金庫を分離）（依存: G-01）
+- [x] **P6-01** `zp-ffi`: UniFFI で公開 API を確定（モバイルは単一プロセス内でコアを動かし、Android は `isolatedProcess` サービスに金庫を分離）（依存: G-01）
   - **設計（2026-11-23）**: [ADR-0012](../docs/adr/0012-android-vault-process.md)、`docs/spec/android.md`、`ipc.md` §14。分離プロセスはアプリのファイルも Keystore も使えないので、金庫はそのプロセスのメモリ上で開き（デスクトップの金庫デーモンの処理をそのまま使う）、金庫ファイルの保存（変更のたび、答える前）と Keystore（鍵エージェント）はアプリのプロセスが受け持つ。プロセスの間は Binder で渡したソケットの組の上の IPC。
+  - 実装: `zp-vault` のメモリ上の金庫（`Place::Memory`、`open_image`・`image`、作成・参加・復旧）。`zp-ipc` の `StreamServer`・`Client::over`（つながったストリームの上の会話）とイメージの保管役のメッセージ（要求 112〜114、応答 32、エラー 25）。`zp-vaultd` をライブラリにし、`embedded::Engine`（すべてのドメインを 1 つの `Service` で持ち、変わったイメージを答える前に保管役へ送る。鍵エージェントは中継。ページのための TOTP・パスキーは毎回利用者を確かめる）。`zp-ffi` を作り直した: 金庫プロセスの入口 `serve_vault_connection(fd)`、アプリのプロセスの `VaultClient`（`VaultConnector` でソケットの組を開く、保管役として一時ファイル → `fsync` → `rename`、鍵エージェントとして `PlatformKeyStore` に聞き封をして返す、項目・TOTP・端末・復旧キット・参加・鍵の受け取り・BLE と LAN の同期）。PoC の API（金庫ファイルをアプリのプロセスで直接開くもの）は削除。Android: `IVaultService.aidl`、`VaultService`（`isolatedProcess`、`:vault`）、`VaultBinding`・`Vault`。PoC の画面を新しい API に移し、「この端末で金庫を作る」を加えた。コアは arm64 と x86_64（エミュレータ）向けにビルドする。CI に `android`（コアのビルド・バインディングの生成・APK のビルド）。
+  - 確認: `zp-vault` の `tests/image.rs`、`zp-vaultd` の `embedded/tests.rs`（8 件。保管役の前は答えない、変更は答える前に保存・読むだけでは保存しない、保存したイメージから開き直す、保存できなければ失敗、金庫でないものは拒む、保管役が離れたら閉じる、パスキーは毎回尋ねる、PC のデーモンに中継で参加）、`zp-ffi` の単体テスト（アプリのクライアントが埋め込みの金庫プロセスに接続し、PC の金庫に BLE の代わりのリンクで参加 → ファイルに平文なし → 解錠・TOTP（鍵ストアは毎回尋ねる）→ タグで PC を認識 → 同期 → 新しい金庫プロセスで開き直す。鍵ストアがなければ作成を断る、壊れたファイルは金庫と見なさず書き換えない）。
+  - **エミュレータ（Android 16、2026-11-23）**: 金庫のプロセスが `u0_i9000`（分離された UID）で動き、ネットワークの権限のグループ（3003）を持たないこと（アプリのプロセスは持つ）、金庫の作成・ログインの追加 → 両方のプロセスを止める → 開き直して同じログインが読めること、保存されたファイルに平文がないことを確かめた。
+  - **未確認（実機で確かめること）**: タブレット（Android 9）での BLE の参加・同期（P2-16 の手順。アプリの中の流れが変わった）。
 - [ ] **P6-02** Android: Keystore(StrongBox) + BiometricPrompt による `HardwareKeyStore`（依存: P6-01）
 - [ ] **P6-03** Android: Compose UI（解錠・一覧・詳細・QR ペアリング）（依存: P6-02）
 - [ ] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
