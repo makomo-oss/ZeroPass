@@ -20,7 +20,7 @@ mod nearby;
 
 pub use client::{
     DeviceInfo, DeviceState, DomainState, ItemContent, ItemKind, ItemList, ItemSummary,
-    KeyStoreError, PlatformKeyStore, TotpCode, VaultClient, VaultConnector, VaultStatus,
+    HardwareError, PlatformKeyStore, TotpCode, VaultClient, VaultConnector, VaultStatus,
 };
 pub use engine::serve_vault_connection;
 pub use error::{Problem, ZpError};

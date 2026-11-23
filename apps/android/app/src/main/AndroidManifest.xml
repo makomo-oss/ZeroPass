@@ -42,8 +42,9 @@
         android:required="false" />
 
     <application
+        android:name=".ZeroPassApp"
         android:allowBackup="false"
-        android:label="ZeroPass PoC"
+        android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         tools:ignore="DataExtractionRules,MissingApplicationIcon">
         <activity

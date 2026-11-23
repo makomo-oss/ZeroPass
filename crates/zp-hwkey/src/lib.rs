@@ -9,7 +9,7 @@
 //! |---|---|---|
 //! | Windows | Windows Hello ([`windows_hello`]) | available |
 //! | macOS / iOS | Secure Enclave | planned (P6-06, P6-09) |
-//! | Android | Android Keystore | planned (P6-02, lives in the app) |
+//! | Android | Android Keystore (HMAC, `crypto.md` §7.2) | in the app (`apps/android`, `KeystoreKeyStore`), through the key agent |
 //! | Linux | TPM / fprintd | planned (P6-10) |
 
 use zeroize::Zeroizing;

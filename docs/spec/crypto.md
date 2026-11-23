@@ -1,6 +1,6 @@
 # ZeroPass 暗号仕様（crypto.md）
 
-- 版: 1.0（2026-11-14、G-01 で凍結。互換性のない変更は、形式またはプロトコルのバージョンを上げて行う）
+- 版: 1.0（2026-11-14、G-01 で凍結。互換性のない変更は、形式またはプロトコルのバージョンを上げて行う）。2026-11-23: 予約していた実装 ID 0x04 の形式（§7.2）を加えた（既存の形式は変えない）
 - 関連: [ADR-0002 鍵階層](../adr/0002-key-hierarchy.md)、[脅威モデル](../threat-model.md) §5.3・§5.5
 - 実装: `crates/zp-crypto`（プリミティブと鍵型）、`crates/zp-vault`（保存形式）
 
@@ -156,6 +156,25 @@ envelope  = §4 の形式。鍵 = KEK-HW、AAD = context
 - 署名値は Windows の API が返すバッファを経由するため、プロセス内のコピーはゼロ化するが、OS 側のバッファの消去までは保証できない。
 
 この構成（署名専用鍵の決定的署名から鍵を導出する）はプラットフォーム非依存の `SignatureKeyStore` として実装し、プラットフォーム側は「利用者を検証して署名する」操作だけを提供する。
+
+### 7.2 Android Keystore
+
+Android Keystore の HMAC の鍵で、§7.1 と同じ構成（`SignatureKeyStore`）を使う。HMAC は決定的なので、チャレンジの HMAC を「署名」とする。
+
+```
+blob      = 0x04 ‖ challenge(32) ‖ envelope
+signature = HMAC-SHA256(K_hw, challenge)          -- Android Keystore の中で計算。利用者の認証のあと
+KEK-HW    = HKDF-SHA256(salt = challenge, ikm = signature, info = "zeropass/v1/kek/hardware", 出力長 = 32)
+envelope  = §4 の形式。鍵 = KEK-HW、AAD = context
+```
+
+- 鍵 `K_hw` は `KeyProperties.KEY_ALGORITHM_HMAC_SHA256`（目的は `PURPOSE_SIGN`）、別名 `zeropass-hardware-v1`。端末（Android の利用者）ごとに 1 つで、すべての金庫で共有する（Windows Hello と同じ）。鍵は Keystore の外に出ない。
+- **使うたびに利用者の認証**: Android 11（API 30）以上は `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL)`。HMAC の操作（`Mac`）を `BiometricPrompt` の `CryptoObject` に渡し、認証のあとで同じ操作を終える。生体認証（クラス 3）か、端末の PIN・パターン・パスワードで通る。
+- Android 9〜10（API 28〜29）は `CryptoObject` で端末の PIN を使えないので、クラス 3 の生体認証が登録されていればそれだけで（`setUserAuthenticationValidityDurationSeconds(-1)`）、なければ認証の後 5 秒だけ使える鍵（`setUserAuthenticationValidityDurationSeconds(5)`）にし、端末の PIN などで認証した直後に 1 回だけ使う。どちらにするかは鍵を作るときに決まる。
+- 画面ロック（PIN・パターン・パスワード）が設定されていない端末では鍵を作れない（`KeyguardManager.isDeviceSecure`）。鍵ストアは「使えない」と答え、TOTP・パスキーのドメインは作られない（ADR-0011 で、後から作る・受け取る）。
+- 生体認証の登録を変えても鍵は無効にしない（`setInvalidatedByBiometricEnrollment(false)`）。端末の PIN でも通るので、無効にしても守りは強くならない。画面ロックを外すと Android が鍵を消し、それでラップしたスロットは開けなくなる。
+- 鍵は StrongBox があればその中に作り（`setIsStrongBoxBacked(true)`）、なければ TEE に作る。どちらもない（ソフトウェアの Keystore しかない）端末でも作るが、保護は OS のプロセス分離だけになる（TPM のない PC と同じ。`android.md` §3）。
+- HMAC を計算するのはアプリのプロセス（画面を出せるプロセス）で、結果は §7.1 と同じく、金庫のプロセスが 1 回ごとに作った鍵に封をして渡す（`ipc.md` §13.2・§13.3、ADR-0012）。
 
 ## 8. 復旧鍵（リカバリーキット）
 

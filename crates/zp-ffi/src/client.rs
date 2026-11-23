@@ -40,7 +40,7 @@ pub trait VaultConnector: Send + Sync {
 ///
 /// The app raises it and Rust receives it, so it must not be a flat error.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-pub enum KeyStoreError {
+pub enum HardwareError {
     /// This device cannot protect keys this way (no secure lock screen, no
     /// biometrics, no hardware-backed store).
     #[error("no hardware key store: {reason}")]
@@ -59,7 +59,7 @@ pub enum KeyStoreError {
     },
 }
 
-impl From<uniffi::UnexpectedUniFFICallbackError> for KeyStoreError {
+impl From<uniffi::UnexpectedUniFFICallbackError> for HardwareError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         Self::Failed {
             reason: error.reason,
@@ -75,11 +75,11 @@ pub trait PlatformKeyStore: Send + Sync {
     /// Whether this device has the store; with `create`, its key is made if it
     /// is missing. Returns the implementation identifier, the first byte of
     /// the key slots it protects.
-    fn probe(&self, create: bool) -> Result<u8, KeyStoreError>;
+    fn probe(&self, create: bool) -> Result<u8, HardwareError>;
 
     /// The deterministic keyed hash of `challenge` with the hardware key,
     /// after the user is verified for this one use.
-    fn sign(&self, challenge: Vec<u8>) -> Result<Vec<u8>, KeyStoreError>;
+    fn sign(&self, challenge: Vec<u8>) -> Result<Vec<u8>, HardwareError>;
 }
 
 /// The domains of the vault (`docs/spec/crypto.md` §3).
@@ -382,12 +382,12 @@ fn failure(problem: KeyStoreProblem, message: impl Into<String>) -> Outcome {
 /// The key agent's answer (`docs/spec/ipc.md` §13.2): the signature goes back
 /// sealed to the key the vault process gave, never in the clear.
 pub(crate) fn answer(store: &dyn PlatformKeyStore, ask: Ask) -> Outcome {
-    let failed = |error: KeyStoreError| match error {
-        KeyStoreError::Unavailable { reason } => failure(KeyStoreProblem::Unavailable, reason),
-        KeyStoreError::Cancelled => {
+    let failed = |error: HardwareError| match error {
+        HardwareError::Unavailable { reason } => failure(KeyStoreProblem::Unavailable, reason),
+        HardwareError::Cancelled => {
             failure(KeyStoreProblem::UserCancelled, "the user did not confirm")
         }
-        KeyStoreError::Failed { reason } => failure(KeyStoreProblem::Platform, reason),
+        HardwareError::Failed { reason } => failure(KeyStoreProblem::Platform, reason),
     };
     match ask {
         Ask::Probe(probe) => match store.probe(probe.create) {

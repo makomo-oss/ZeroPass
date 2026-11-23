@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZeroPass</string>
+    <string name="prompt_title">Open the ZeroPass vault</string>
+    <string name="prompt_reason">One-time codes and passkeys</string>
+</resources>

@@ -20,7 +20,7 @@ object Vault {
         client?.let { return it }
         val app = context.applicationContext
         val binding = VaultBinding(app).also { binding = it }
-        return VaultClient.open(binding, file(app).path, null).also { client = it }
+        return VaultClient.open(binding, file(app).path, KeystoreKeyStore(app)).also { client = it }
     }
 
     /** Closes the vault: the vault process wipes its keys and ends. */
