@@ -1,6 +1,6 @@
 # ZeroPass Android アプリ
 
-近接同期 PoC（P2-16）の検証アプリを、Phase 6 で製品のアプリにしていく途中のもの。いまの画面は PoC の 1 画面のままで、PC が表示したペアリングコード（QR）を読み取って金庫に参加し、Bluetooth LE だけで同期する（Compose の画面は P6-03）。構成は `docs/spec/android.md`。
+近接同期 PoC（P2-16）の検証アプリを、Phase 6 で製品のアプリにしていく途中のもの。画面は Jetpack Compose（`ui/`、`docs/spec/android.md` §4）: 金庫の作成、QR コードによる参加（BLE）、解錠、ログインとノートの一覧・検索・詳細・編集・パスワード生成器、ワンタイムコード、パスキー、端末と同期、復旧キット・マスターパスワードの変更。構成は `docs/spec/android.md`。
 
 - **金庫は分離プロセス**（`VaultService`、`isolatedProcess`、プロセス名 `:vault`）で動く（ADR-0012）。権限・ファイル・ネットワークがなく、デスクトップの金庫デーモンと同じ Rust の処理が金庫をメモリ上に持つ。アプリのプロセスは `IVaultService.connect` でソケットの組を渡して要求を送り、金庫ファイル（`files/vault.zpvault`）を保管役として書く（`Vault.kt`、`VaultBinding.kt`）。ペアリングと同期のネットワークはアプリのプロセスで動く
 - 無線（スキャン、接続、バイト列の受け渡し）は Kotlin が受け持つ: `Ble.kt`（`docs/spec/ble.md` のセントラル側）
@@ -12,7 +12,7 @@
 
 ## 必要なもの
 
-- Android Studio（同梱の JDK を使う）、Android SDK（platform 36、build-tools）、NDK
+- Android Studio（同梱の JDK を使う）、Android SDK（platform 37.2。Compose のライブラリが求める。対象は 36 のまま。build-tools）、NDK
 - `rustup target add aarch64-linux-android x86_64-linux-android` と `cargo install cargo-ndk`
 - 環境変数 `ANDROID_HOME`、`ANDROID_NDK_HOME`、`JAVA_HOME`（Android Studio の `jbr` フォルダ）
 - Android 8.0 以上の arm64 の実機。エミュレータ（x86_64）でも動くが BLE は使えない（金庫の作成・解錠・一覧は試せる）
@@ -54,11 +54,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n io.github.makomooss.zeropass/.MainActivity \
     -e do join -e code "ZP1:…" -e password "<この端末のマスターパスワード>" -e name "<端末名>"
 adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do sync
-adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do list -e password "…"
+adb shell am start -n io.github.makomooss.zeropass/.MainActivity -e do unlock -e password "…"
 adb logcat -s ZeroPass:I      # アプリのログ
 ```
 
-`do` には `join`、`create`（この端末で金庫を作る）、`sync`、`list`、`add`、`delete` を指定できる。`adb shell` は引数を空白で分けるので、パスワードに空白を入れない。
+`do` には `create`（この端末で金庫を作る。`password`、`name`）、`join`、`unlock`、`lock`、`sync`、`codes`（ワンタイムコードを表示。確認画面が出る）、`add-code`（`uri` に `otpauth://`）、`tab`（`vault`・`codes`・`passkeys`・`devices`・`settings`）を指定できる。デバッグビルドでは、画面の部品のテストタグがリソース ID になる（`uiautomator dump` で探してタップできる）。`adb shell` は引数を空白で分けるので、パスワードに空白を入れない。
 
 金庫のプロセスが分離されていることは、次で確かめられる（`u0_i` で始まる利用者で動き、ネットワークの権限のグループ 3003 を持たない）。
 

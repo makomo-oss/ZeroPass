@@ -379,6 +379,10 @@ pub struct CreateVault {
     /// this, the request fails with `HARDWARE_UNAVAILABLE`.
     #[prost(bool, tag = "2")]
     pub without_hardware: bool,
+    /// The name of this device in the vault; the daemon's default (the
+    /// computer's name) if empty.
+    #[prost(string, tag = "3")]
+    pub device_name: String,
 }
 
 /// Restores access to the vault file with its recovery key.

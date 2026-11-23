@@ -151,6 +151,7 @@ pub(crate) async fn create_vault(
         let create = request::Body::CreateVault(proto::CreateVault {
             master_password: password.as_str().to_owned(),
             without_hardware,
+            device_name: String::new(),
         });
         status_of(state.daemon.call_with_key_agent(Start::Always, create)?)
     })

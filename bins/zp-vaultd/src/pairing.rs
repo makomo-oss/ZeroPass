@@ -632,6 +632,7 @@ pub(crate) mod tests {
             request::Body::CreateVault(proto::CreateVault {
                 master_password: PASSWORD.into(),
                 without_hardware: false,
+                device_name: String::new(),
             }),
         );
         assert!(matches!(created, response::Body::Status(_)));

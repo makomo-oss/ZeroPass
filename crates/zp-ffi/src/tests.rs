@@ -406,21 +406,38 @@ fn a_phone_makes_its_own_vault() {
     store.available.store(false, Ordering::SeqCst);
     let client = phone(&path, Some(store.clone()));
     assert_eq!(
-        problem(client.create(PHONE_PASSWORD.into(), false).unwrap_err()),
+        problem(
+            client
+                .create(PHONE_PASSWORD.into(), "Phone".into(), false)
+                .unwrap_err()
+        ),
         Problem::HardwareUnavailable
     );
     assert!(!path.exists());
     store.available.store(true, Ordering::SeqCst);
 
     assert_eq!(
-        problem(client.create("short".into(), false).unwrap_err()),
+        problem(
+            client
+                .create("short".into(), String::new(), false)
+                .unwrap_err()
+        ),
         Problem::WeakPassword
     );
-    let status = client.create(PHONE_PASSWORD.into(), false).unwrap();
+    let status = client
+        .create(PHONE_PASSWORD.into(), "Phone".into(), false)
+        .unwrap();
     assert!(status.domains.iter().all(|domain| domain.available));
     assert!(path.exists());
+    let devices = client.devices().unwrap();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].name, "Phone");
     assert_eq!(
-        problem(client.create(PHONE_PASSWORD.into(), false).unwrap_err()),
+        problem(
+            client
+                .create(PHONE_PASSWORD.into(), "Phone".into(), false)
+                .unwrap_err()
+        ),
         Problem::VaultExists
     );
 
@@ -447,10 +464,16 @@ fn a_phone_makes_its_own_vault() {
     let other = dir.path().join("other.zpvault");
     let client = phone(&other, None);
     assert_eq!(
-        problem(client.create(PHONE_PASSWORD.into(), false).unwrap_err()),
+        problem(
+            client
+                .create(PHONE_PASSWORD.into(), "Phone".into(), false)
+                .unwrap_err()
+        ),
         Problem::HardwareUnavailable
     );
-    let status = client.create(PHONE_PASSWORD.into(), true).unwrap();
+    let status = client
+        .create(PHONE_PASSWORD.into(), String::new(), true)
+        .unwrap();
     let available: Vec<Domain> = status
         .domains
         .iter()

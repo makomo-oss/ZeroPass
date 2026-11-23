@@ -581,18 +581,21 @@ impl VaultClient {
         Self::status_of(self.call(request::Body::Status(proto::Status {}))?)
     }
 
-    /// Creates the vault, protected by `master_password`. Unless
+    /// Creates the vault, protected by `master_password`, with this device
+    /// named `device_name` (the system's default if empty). Unless
     /// `without_hardware`, it fails with `HardwareUnavailable` if the key
     /// store cannot be used, rather than making a vault without the TOTP and
     /// passkey domains (ADR-0011).
     pub fn create(
         &self,
         master_password: String,
+        device_name: String,
         without_hardware: bool,
     ) -> Result<VaultStatus, ZpError> {
         Self::status_of(self.call(request::Body::CreateVault(proto::CreateVault {
             master_password,
             without_hardware,
+            device_name,
         }))?)
     }
 

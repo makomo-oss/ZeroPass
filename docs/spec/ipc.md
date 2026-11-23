@@ -118,7 +118,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | 要求 | 応答 | 内容 |
 |---|---|---|
 | `Status` | `StatusReply` | 金庫の有無、金庫 ID、端末 ID、ドメインごとの状態（あるか、解錠中か、この端末にないドメインならほかの端末にある兆し `elsewhere`。ADR-0011）、復旧キットの有無 |
-| `CreateVault` | `StatusReply` | マスターパスワードを受け取り、金庫ファイルを作る。プラットフォームの鍵ストアを使う設定で、鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` で断る。`without_hardware` があれば、TOTP・パスキーのドメインなしで作る（ADR-0011） |
+| `CreateVault` | `StatusReply` | マスターパスワードと、あれば端末名（`device_name`。空ならデーモンの既定のコンピューター名）を受け取り、金庫ファイルを作る。プラットフォームの鍵ストアを使う設定で、鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` で断る。`without_hardware` があれば、TOTP・パスキーのドメインなしで作る（ADR-0011） |
 | `RecoverVault` | `StatusReply` | 復旧鍵と新しいマスターパスワードで、金庫へのアクセスを取り戻す |
 | `Unlock` | `Done` | ドメインを解錠する。パスワードのドメインはマスターパスワードを添える。TOTP・パスキーのドメインは、デーモンが鍵エージェント（§13）を通じて生体認証を求める |
 | `Lock` | `Done` | 1 つのドメイン、またはすべてを施錠する |

@@ -232,6 +232,7 @@ impl Remote {
         let reply = match self.call(request::Body::CreateVault(proto::CreateVault {
             master_password: password.to_owned(),
             without_hardware,
+            device_name: String::new(),
         })) {
             Err(IpcError::Remote(error)) if error.code == ErrorCode::HardwareUnavailable as i32 => {
                 return Err(format!(

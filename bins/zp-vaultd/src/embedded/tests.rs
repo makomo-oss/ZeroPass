@@ -183,6 +183,7 @@ impl App {
             .call(request::Body::CreateVault(proto::CreateVault {
                 master_password: PASSWORD.into(),
                 without_hardware: false,
+                device_name: String::new(),
             }))
             .unwrap();
         assert!(matches!(created, response::Body::Status(_)));
@@ -255,6 +256,7 @@ fn nothing_is_answered_before_the_image_host_attaches() {
         code(app.call(request::Body::CreateVault(proto::CreateVault {
             master_password: PASSWORD.into(),
             without_hardware: true,
+            device_name: String::new(),
         }))),
         ErrorCode::NotReady
     );

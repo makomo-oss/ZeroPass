@@ -146,6 +146,19 @@ class KeystoreKeyStore(context: Context) : PlatformKeyStore {
      */
     private fun prompt(crypto: BiometricPrompt.CryptoObject?, authenticators: Int): BiometricPrompt.CryptoObject? {
         val activity = Prompts.foreground ?: throw HardwareException.Failed("open ZeroPass to confirm")
+        Prompts.showing = true
+        try {
+            return showPrompt(activity, crypto, authenticators)
+        } finally {
+            Prompts.showing = false
+        }
+    }
+
+    private fun showPrompt(
+        activity: androidx.fragment.app.FragmentActivity,
+        crypto: BiometricPrompt.CryptoObject?,
+        authenticators: Int,
+    ): BiometricPrompt.CryptoObject? {
         val done = CountDownLatch(1)
         var result: BiometricPrompt.AuthenticationResult? = null
         var failure: HardwareException? = null

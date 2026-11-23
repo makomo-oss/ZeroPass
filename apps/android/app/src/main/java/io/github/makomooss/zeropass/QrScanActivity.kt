@@ -37,6 +37,7 @@ class QrScanActivity : ComponentActivity() {
 
     @Volatile
     private var done = false
+    private val prefix: String by lazy { intent.getStringExtra(EXTRA_PREFIX) ?: PAIRING_PREFIX }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,7 +83,7 @@ class QrScanActivity : ComponentActivity() {
             } finally {
                 reader.reset()
             }
-            if (text != null && text.startsWith(CODE_PREFIX)) {
+            if (text != null && text.startsWith(prefix, ignoreCase = true)) {
                 done = true
                 runOnUiThread {
                     setResult(RESULT_OK, Intent().putExtra(EXTRA_CODE, text))
@@ -99,6 +100,8 @@ class QrScanActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_CODE = "code"
-        private const val CODE_PREFIX = "ZP1:"
+        /** What the wanted code starts with: a pairing code (the default) or an otpauth:// address. */
+        const val EXTRA_PREFIX = "prefix"
+        private const val PAIRING_PREFIX = "ZP1:"
     }
 }
