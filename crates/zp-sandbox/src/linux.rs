@@ -234,6 +234,11 @@ fn restrict_files(grants: &[(PathBuf, Access)]) -> io::Result<bool> {
     Ok(status.ruleset != RulesetStatus::NotEnforced)
 }
 
+/// Whether this process was started by [`spawn`].
+pub(crate) fn is_requested() -> bool {
+    std::env::var_os(ENV).is_some()
+}
+
 /// What [`crate::enter_requested`] did.
 pub(crate) fn enter_requested(extra: &[(&Path, Access)]) -> io::Result<Option<bool>> {
     let Some(spec) = std::env::var_os(ENV) else {
