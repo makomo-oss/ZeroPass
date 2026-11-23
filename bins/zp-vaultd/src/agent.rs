@@ -35,8 +35,6 @@ pub(crate) struct AgentLink {
     attached: Mutex<Option<Arc<Attached>>>,
     generations: AtomicU64,
     questions: AtomicU64,
-    /// Whether no agent means no key store rather than a failure.
-    absent_is_unavailable: bool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -44,16 +42,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl AgentLink {
-    /// A link for a program whose key agent is optional: the Android app
-    /// attaches one only if the device has a key store, so without one the
-    /// store is unavailable rather than missing by mistake.
-    pub(crate) fn optional() -> Self {
-        Self {
-            absent_is_unavailable: true,
-            ..Self::default()
-        }
-    }
-
     /// Uses the key agent at the other end of `relay` until it goes away. A
     /// newer agent replaces an older one.
     pub(crate) fn attach(&self, relay: RelayEnd) -> response::Body {
@@ -96,7 +84,7 @@ impl KeyAgentPort for AgentLink {
             // error, so that a vault is not created without the TOTP and
             // passkey domains by mistake. Elsewhere there is no store to ask
             // yet (`zp-hwkey`).
-            let problem = if cfg!(windows) && !self.absent_is_unavailable {
+            let problem = if cfg!(windows) {
                 KeyStoreProblem::Platform
             } else {
                 KeyStoreProblem::Unavailable

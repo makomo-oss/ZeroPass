@@ -14,8 +14,7 @@ license.workspace = true
 crate-type = ["lib", "cdylib"]
 
 # The workspace lints, except that the code UniFFI generates needs `unsafe`
-# (`extern "C"` entry points), as does taking over the file descriptors the app
-# hands over (`engine.rs`, one place, with its justification).
+# (`extern "C"` entry points). Nothing hand-written in this crate uses it.
 [lints.rust]
 unsafe_code = "allow"
 missing_docs = "warn"
@@ -31,18 +30,14 @@ print_stdout = "warn"
 [dependencies]
 thiserror = "2.0.21"
 uniffi = "0.32.2"
-zeroize = "1.9.1"
 zp-crypto = { version = "0.0.0", path = "../zp-crypto" }
-zp-ipc = { version = "0.0.0", path = "../zp-ipc" }
 zp-pairing = { version = "0.0.0", path = "../zp-pairing" }
-zp-sandbox = { version = "0.0.0", path = "../zp-sandbox" }
 zp-sync = { version = "0.0.0", path = "../zp-sync" }
 zp-transport = { version = "0.0.0", path = "../zp-transport" }
-zp-vaultd = { version = "0.0.0", path = "../../bins/zp-vaultd" }
+zp-vault = { version = "0.0.0", path = "../zp-vault" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
-zp-vault = { version = "0.0.0", path = "../zp-vault" }
 
 [features]
 # Only for the bindings generator; the library itself does not need it.

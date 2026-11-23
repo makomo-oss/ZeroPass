@@ -6282,15 +6282,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "uniffi",
- "zeroize",
  "zp-crypto",
- "zp-ipc",
  "zp-pairing",
- "zp-sandbox",
  "zp-sync",
  "zp-transport",
  "zp-vault",
- "zp-vaultd",
 ]
 
 [[package]]

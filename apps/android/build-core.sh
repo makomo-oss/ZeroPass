@@ -5,15 +5,14 @@
 # aarch64-linux-android and cargo-ndk. Run it before the Gradle build and again
 # whenever crates/zp-ffi or anything below it changes. Its outputs are not
 # committed:
-#   app/src/main/jniLibs/{arm64-v8a,x86_64}/libzp_ffi.so
+#   app/src/main/jniLibs/arm64-v8a/libzp_ffi.so
 #   app/src/main/java/uniffi/zp_ffi/zp_ffi.kt
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 cd "$root"
 
-# Phones (arm64) and the emulator (x86_64).
-cargo ndk -t arm64-v8a -t x86_64 -o "$here/app/src/main/jniLibs" build -p zp-ffi --release
+cargo ndk -t arm64-v8a -o "$here/app/src/main/jniLibs" build -p zp-ffi --release
 
 # The bindings are read from a host build: the release library for Android is
 # stripped of the symbols that describe the interface.
@@ -27,6 +26,4 @@ cargo run -q -p zp-ffi --features cli --bin uniffi-bindgen -- generate \
     --library "$host_lib" --language kotlin --no-format \
     --out-dir "$here/app/src/main/java"
 
-for abi in arm64-v8a x86_64; do
-    echo "core built for $abi: $(wc -c < "$here/app/src/main/jniLibs/$abi/libzp_ffi.so") bytes"
-done
+echo "core built: $(wc -c < "$here/app/src/main/jniLibs/arm64-v8a/libzp_ffi.so") bytes"
