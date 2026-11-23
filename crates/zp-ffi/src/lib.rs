@@ -19,8 +19,8 @@ mod link;
 mod nearby;
 
 pub use client::{
-    DeviceInfo, DeviceState, DomainState, ItemContent, ItemKind, ItemList, ItemSummary,
-    HardwareError, PlatformKeyStore, TotpCode, VaultClient, VaultConnector, VaultStatus,
+    DeviceInfo, DeviceState, DomainState, HardwareError, ItemContent, ItemKind, ItemList,
+    ItemSummary, PlatformKeyStore, TotpCode, VaultClient, VaultConnector, VaultStatus,
 };
 pub use engine::serve_vault_connection;
 pub use error::{Problem, ZpError};

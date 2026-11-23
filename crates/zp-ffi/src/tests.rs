@@ -26,7 +26,7 @@ use zp_vaultd::embedded::Engine;
 
 use crate::client::{Connect, store_atomically};
 use crate::{
-    ByteLink, Domain, ItemContent, HardwareError, LinkError, PlatformKeyStore, Problem,
+    ByteLink, Domain, HardwareError, ItemContent, LinkError, PlatformKeyStore, Problem,
     VaultClient, ZpError, announces_pairing, ble_uuids, offer_info,
 };
 
