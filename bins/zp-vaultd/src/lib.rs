@@ -104,6 +104,27 @@ fn run(args: Args) -> Result<(), IpcError> {
         Some(_) => return run_worker(vault, key_store, Scope::Whole),
     }
     let endpoint = Endpoint::for_vault(&vault)?;
+    // Started in the Linux sandbox: restrict this process now, before it reads
+    // anything from a client (ipc.md §9.2). Its workers inherit it. Inside,
+    // it cannot read which program a client runs: a helper started before
+    // does that for it.
+    #[cfg(target_os = "linux")]
+    if zp_sandbox::is_requested() {
+        zp_ipc::look_up_executables_through(&std::env::current_exe()?, &[EXECUTABLE_LOOKUPS])?;
+    }
+    let directory = endpoint.directory()?;
+    let extra: Vec<(&std::path::Path, zp_sandbox::Access)> = directory
+        .iter()
+        .map(|directory| (directory.as_path(), zp_sandbox::Access::CreateFiles))
+        .collect();
+    match zp_sandbox::enter_requested(&extra) {
+        Ok(Some(true)) | Ok(None) => {}
+        Ok(Some(false)) => {
+            log("warning: the kernel has no Landlock: files are not limited (the network is)")
+        }
+        // Asked to run sandboxed and cannot: do not run at all.
+        Err(error) => return Err(IpcError::Io(error)),
+    }
     let policy = ClientPolicy::beside_current_exe()?;
     let server = Server::bind(&endpoint, policy, env!("CARGO_PKG_VERSION"))?;
 
@@ -137,17 +158,39 @@ fn run(args: Args) -> Result<(), IpcError> {
     Ok(())
 }
 
+/// The command line of the helper that tells the sandboxed daemon which
+/// programs its clients run (`zp_ipc::look_up_executables_through`).
+#[cfg(target_os = "linux")]
+const EXECUTABLE_LOOKUPS: &str = "--executable-lookups";
+
 /// Runs the daemon with the command line of this process: what the
 /// `zp-vaultd` executable does.
 pub fn daemon_main() -> ExitCode {
-    // Before anything else, and before any secret is in memory.
-    let hardening = zp_sandbox::harden_process();
+    // Before anything else, and before any secret is in memory. The other
+    // processes of the daemon (ADR-0007) hold keys too, and no client checks
+    // them: they can hide from other programs further.
+    let worker = std::env::args().any(|arg| arg == "--worker");
+    let hardening = if worker {
+        zp_sandbox::harden_worker_process()
+    } else {
+        zp_sandbox::harden_process()
+    };
     // A panic must not end in a crash report with the process's memory in it:
     // say what happened and leave.
     std::panic::set_hook(Box::new(|info| {
         log(&format!("internal error: {info}"));
         std::process::exit(EXIT_PANIC);
     }));
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some(EXECUTABLE_LOOKUPS) {
+        return match zp_ipc::serve_executable_lookups() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                log(&format!("executable lookups: {error}"));
+                ExitCode::FAILURE
+            }
+        };
+    }
     let args = Args::parse();
     for failure in hardening.failed() {
         log(&format!("warning: could not apply: {failure}"));

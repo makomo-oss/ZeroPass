@@ -49,10 +49,41 @@ impl Handler for Echo {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // On Linux, the helper that tells the sandboxed probe which program its
+    // client runs, as for the vault daemon.
+    #[cfg(target_os = "linux")]
+    if args.get(1).map(String::as_str) == Some("--executable-lookups") {
+        let served = zp_ipc::serve_executable_lookups();
+        std::process::exit(i32::from(served.is_err()));
+    }
     let [_, directory, loopback, lan, udp, client] = args.as_slice() else {
         std::process::exit(2);
     };
     let directory = PathBuf::from(directory);
+    // On Linux the probe restricts itself, as the vault daemon does, with the
+    // directory of its IPC endpoint.
+    let endpoint_directory = Endpoint::for_vault(&directory.join("probe.zpvault"))
+        .and_then(|endpoint| endpoint.directory())
+        .ok()
+        .flatten();
+    let extra: Vec<(&std::path::Path, zp_sandbox::Access)> = endpoint_directory
+        .iter()
+        .map(|path| (path.as_path(), zp_sandbox::Access::CreateFiles))
+        .collect();
+    #[cfg(target_os = "linux")]
+    if zp_sandbox::is_requested() {
+        let started = std::env::current_exe().and_then(|probe| {
+            zp_ipc::look_up_executables_through(&probe, &["--executable-lookups"])
+        });
+        if let Err(error) = started {
+            eprintln!("probe: cannot start the executable lookups: {error}");
+            std::process::exit(4);
+        }
+    }
+    if let Err(error) = zp_sandbox::enter_requested(&extra) {
+        eprintln!("probe: cannot enter the sandbox: {error}");
+        std::process::exit(4);
+    }
     let mut report = String::new();
     let mut note = |key: &str, value: String| {
         let _ = writeln!(report, "{key}={value}");

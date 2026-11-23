@@ -6,12 +6,16 @@
 mod windows;
 #[cfg(windows)]
 pub(crate) use windows::{
-    IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, spawn_detached,
+    IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, endpoint_directory,
+    spawn_detached,
 };
 
 #[cfg(unix)]
 mod unix;
+#[cfg(target_os = "linux")]
+pub(crate) use unix::executables;
 #[cfg(unix)]
 pub(crate) use unix::{
-    IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, spawn_detached,
+    IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, endpoint_directory,
+    spawn_detached,
 };

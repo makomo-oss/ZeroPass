@@ -5,7 +5,7 @@
 //! it. With a narrower target selection (`--test sandbox`), build it first:
 //! `cargo build -p zp-sandbox --examples`.
 
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "linux"))]
 #![allow(clippy::unwrap_used, reason = "test helpers may panic")]
 
 use std::collections::BTreeMap;
@@ -26,7 +26,9 @@ fn probe_exe() -> PathBuf {
     // target/<profile>/deps/<test>.exe -> target/<profile>/examples/probe.exe
     let test = std::env::current_exe().unwrap();
     let profile = test.parent().unwrap().parent().unwrap();
-    profile.join("examples").join("probe.exe")
+    profile
+        .join("examples")
+        .join(format!("probe{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// An address of this machine on its local network, if it has one.
@@ -239,8 +241,14 @@ fn a_sandboxed_process_opens_only_what_it_was_granted() {
         assert!(inside.ok(key), "{key}: {:?}", inside.report);
     }
     // ... but not with the other files there, and it cannot list the
-    // directory, let alone the user's profile.
-    for key in ["file_not_granted", "dir_list", "dir_list_home"] {
+    // directory (Windows; on Linux the granted directory is open in full:
+    // Landlock cannot tell its files apart), let alone the user's home.
+    let closed: &[&str] = if cfg!(windows) {
+        &["file_not_granted", "dir_list", "dir_list_home"]
+    } else {
+        &["dir_list_home"]
+    };
+    for key in closed {
         assert!(!inside.ok(key), "{key}: {:?}", inside.report);
     }
 }

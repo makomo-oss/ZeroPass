@@ -73,6 +73,13 @@ impl Endpoint {
     pub fn id(&self) -> &str {
         &self.id
     }
+
+    /// The directory the endpoint's socket is made in (Unix), which a
+    /// sandboxed daemon must be allowed to make sockets in; `None` on Windows,
+    /// where endpoints are not files.
+    pub fn directory(&self) -> io::Result<Option<std::path::PathBuf>> {
+        crate::sys::endpoint_directory()
+    }
 }
 
 #[cfg(test)]
