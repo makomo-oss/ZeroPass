@@ -40,6 +40,8 @@ fn create_request(request: &proto::PasskeyCreate) -> CreateRequest<'_> {
         challenge: &request.challenge,
         algorithms: &request.algorithms,
         exclude: &request.exclude,
+        client_data_hash: (!request.client_data_hash.is_empty())
+            .then_some(request.client_data_hash.as_slice()),
     }
 }
 
@@ -51,6 +53,9 @@ fn get_request(request: &proto::PasskeyGet) -> GetRequest<'_> {
         challenge: &request.challenge,
         allow: &request.allow,
         chosen: (!request.chosen.is_empty()).then_some(request.chosen.as_slice()),
+        client_data_hash: (!request.client_data_hash.is_empty())
+            .then_some(request.client_data_hash.as_slice()),
+        list_only: request.list_only,
     }
 }
 

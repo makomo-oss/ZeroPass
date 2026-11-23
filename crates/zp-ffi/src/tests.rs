@@ -518,3 +518,114 @@ fn the_uuids_are_those_of_the_specification() {
     assert_eq!(uuids.rx, "5a50c0de-0003-4b1d-9c5e-7a65726f7061");
     assert_eq!(uuids.tx, "5a50c0de-0004-4b1d-9c5e-7a65726f7061");
 }
+
+#[test]
+fn other_apps_get_logins_and_passkeys_through_the_vault_process() {
+    use crate::{PasskeyCreation, PasskeyRequest};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = FakeKeyStore::new(9);
+    let client = phone(&dir.path().join("vault.zpvault"), Some(store.clone()));
+    client
+        .create(PHONE_PASSWORD.into(), "Phone".into(), false)
+        .unwrap();
+
+    // An app's login, saved from the app and filled into it only.
+    let app = "androidapp://com.example.bank".to_owned();
+    let id = client
+        .save_page_login(
+            app.clone(),
+            String::new(),
+            "alice".into(),
+            "app-secret".into(),
+        )
+        .unwrap();
+    let logins = client.page_logins(app.clone()).unwrap();
+    assert_eq!(logins.len(), 1);
+    assert_eq!(logins[0].id, id);
+    assert!(
+        client
+            .page_logins("androidapp://com.evil".into())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        client
+            .page_credential(app.clone(), id.clone())
+            .unwrap()
+            .password,
+        "app-secret"
+    );
+    assert_eq!(
+        problem(
+            client
+                .page_credential("https://example.com".into(), id.clone())
+                .unwrap_err()
+        ),
+        Problem::Denied
+    );
+    let comparison = client
+        .compare_page_login(app.clone(), "alice".into(), "new-secret".into())
+        .unwrap();
+    assert_eq!(
+        (comparison.id.as_deref(), comparison.same),
+        (Some(id.as_str()), false)
+    );
+    client
+        .update_page_login(app.clone(), id.clone(), "new-secret".into())
+        .unwrap();
+    assert!(
+        client
+            .compare_page_login(app, "alice".into(), "new-secret".into())
+            .unwrap()
+            .same
+    );
+
+    // A passkey for a page whose browser makes the client data.
+    let hash = vec![7; 32];
+    let prompts = store.prompts();
+    let made = client
+        .create_passkey(PasskeyCreation {
+            origin: "https://login.example.com".into(),
+            rp_id: "example.com".into(),
+            rp_name: "Example".into(),
+            user_handle: b"alice".to_vec(),
+            user_name: "alice".into(),
+            user_display_name: "Alice".into(),
+            challenge: b"registration".to_vec(),
+            algorithms: vec![-7],
+            exclude: vec![],
+            client_data_hash: Some(hash.clone()),
+        })
+        .unwrap();
+    assert!(made.client_data_json.is_empty());
+    assert_eq!(store.prompts(), prompts + 1);
+
+    let request = PasskeyRequest {
+        origin: "https://login.example.com".into(),
+        rp_id: "example.com".into(),
+        challenge: b"sign in".to_vec(),
+        allow: vec![],
+        client_data_hash: Some(hash),
+    };
+    let choices = client.passkey_choices(request.clone()).unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].user_name, "alice");
+    assert_eq!(store.prompts(), prompts + 2);
+    let signed = client
+        .sign_with_passkey(request.clone(), choices[0].credential_id.clone())
+        .unwrap();
+    assert_eq!(signed.credential_id, made.credential_id);
+    assert!(signed.client_data_json.is_empty());
+    assert_eq!(store.prompts(), prompts + 2, "the pick is not asked again");
+
+    // A phishing page cannot use the site's relying party.
+    let phishing = PasskeyRequest {
+        origin: "https://example.com.evil.net".into(),
+        ..request
+    };
+    assert_eq!(
+        problem(client.passkey_choices(phishing).unwrap_err()),
+        Problem::Denied
+    );
+}

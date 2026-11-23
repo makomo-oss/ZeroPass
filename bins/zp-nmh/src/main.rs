@@ -294,6 +294,7 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                     .iter()
                     .map(|id| bytes(id))
                     .collect::<Result<_, _>>()?,
+                client_data_hash: Vec::new(),
             };
             // Windows Hello asks the user for every passkey (§9).
             let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
@@ -325,6 +326,8 @@ fn answer(daemon: &mut Daemon, request: Request) -> Result<Answer, Failure> {
                 challenge: bytes(&challenge)?,
                 allow: allow.iter().map(|id| bytes(id)).collect::<Result<_, _>>()?,
                 chosen: bytes(&chosen)?,
+                client_data_hash: Vec::new(),
+                list_only: false,
             };
             let _agent = zp_client::KeyAgent::start(&daemon.vault, KeyStoreChoice::Platform)
                 .map_err(|error| Failure::from_client(&error))?;

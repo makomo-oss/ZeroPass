@@ -137,7 +137,7 @@ Protocol Buffers で定義する。定義の正本は `crates/zp-ipc/src/proto.r
 | `ImportExport` | `ImportedItems` | 暗号化エクスポートを取り込む（`export.md`。要求 19・応答 28） |
 | `PasskeyCreate` | `PasskeyCreated` | ページのためにパスキーを作り、金庫に保存する（`passkey.md` §5・§9。要求 64・応答 29）。毎回 Windows Hello |
 | `SetUpDomain` | `StatusReply` | どの端末も持たない TOTP・パスキーのドメインを、この端末で作る（ADR-0011 §2。要求 66）。パスワードのドメインの解錠が要る（デバイス署名鍵）。Windows Hello が尋ねる。この端末が持っていれば `INVALID_INPUT`、ほかの端末にある兆しがあれば `DOMAIN_ELSEWHERE`、鍵ストアが使えなければ `HARDWARE_UNAVAILABLE` |
-| `PasskeyGet` | `PasskeyAssertion` または `PasskeyChoices` | ページのパスキーで署名する。候補が複数なら一覧を返す（`passkey.md` §6・§9。要求 65・応答 30・31）。毎回 Windows Hello（選んだ候補の送り直しを除く） |
+| `PasskeyGet` | `PasskeyAssertion` または `PasskeyChoices` | ページのパスキーで署名する。候補が複数なら一覧を返す（`passkey.md` §6・§9。要求 65・応答 30・31）。毎回 Windows Hello（選んだ候補の送り直しを除く）。`list_only` なら署名せず一覧だけ、`client_data_hash` があればブラウザが作ったクライアントデータのハッシュに署名する（`passkey.md` §11。`PasskeyCreate` も同じ） |
 
 失敗したときは、どの要求にも `Error`（`code`、`message`、該当すれば `domain`）を返す。
 

@@ -182,6 +182,11 @@ class VaultModel(application: Application) : AndroidViewModel(application) {
     fun onForeground() {
         backgroundLock?.cancel()
         showLastSync()
+        // Autofill, Credential Manager or a background sync may have changed it.
+        if (state.unlocked) {
+            loadItems()
+            loadDevices()
+        }
         if (System.currentTimeMillis() - SyncRecord.lastAt(app) > FOREGROUND_SYNC_MILLIS) quietSync()
         polling?.cancel()
         polling = viewModelScope.launch {

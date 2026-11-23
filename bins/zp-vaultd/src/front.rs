@@ -50,6 +50,7 @@ impl PendingChoice {
             && request.top_origin == pending.top_origin
             && request.rp_id == pending.rp_id
             && request.challenge == pending.challenge
+            && request.client_data_hash == pending.client_data_hash
             && request.allow == pending.allow
             && self.choices.contains(&request.chosen)
     }

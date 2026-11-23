@@ -17,6 +17,7 @@ mod engine;
 mod error;
 mod link;
 mod nearby;
+mod pages;
 
 pub use client::{
     DeviceInfo, DeviceState, DomainState, HardwareError, ItemContent, ItemKind, ItemList,
@@ -28,6 +29,10 @@ pub use link::{ByteLink, LinkError};
 pub use nearby::{
     BleUuids, JoinOutcome, LanSync, OfferInfo, Peer, SyncOutcome, announces_pairing, ble_uuids,
     offer_info, to_hex,
+};
+pub use pages::{
+    PageComparison, PageCredential, PageLogin, PasskeyChoice, PasskeyCreation, PasskeyMade,
+    PasskeyRequest, PasskeySignature,
 };
 
 use zp_ipc::proto;
