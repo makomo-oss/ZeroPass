@@ -157,6 +157,9 @@ pub struct CreateRequest<'a> {
     pub algorithms: &'a [i32],
     /// The identifiers of `excludeCredentials`.
     pub exclude: &'a [Vec<u8>],
+    /// The SHA-256 of the client data, when the browser makes the client data
+    /// itself (`docs/spec/passkey.md` §11). Then no client data is made here.
+    pub client_data_hash: Option<&'a [u8]>,
 }
 
 /// A new credential, as the relying party receives it.
@@ -166,7 +169,8 @@ pub struct Registration {
     pub item: ItemId,
     /// The credential identifier.
     pub credential_id: Vec<u8>,
-    /// The client data JSON.
+    /// The client data JSON; empty when the browser made it (the request's
+    /// `client_data_hash`).
     pub client_data_json: Vec<u8>,
     /// The authenticator data, with the attested credential data.
     pub authenticator_data: Vec<u8>,
@@ -191,6 +195,7 @@ pub fn check_create(request: &CreateRequest<'_>) -> Result<(String, Algorithm), 
     }
     caller.client_data(Ceremony::Create, request.challenge)?;
     check_listed(request.exclude)?;
+    check_hash(request.client_data_hash)?;
     Ok((rp_id, algorithm))
 }
 
@@ -204,7 +209,11 @@ pub fn make_credential(
 ) -> Result<Registration, PasskeyError> {
     let (rp_id, algorithm) = check_create(request)?;
     let caller = Caller::new(request.origin, request.top_origin)?;
-    let client_data_json = caller.client_data(Ceremony::Create, request.challenge)?;
+    let client_data_json = match request.client_data_hash {
+        // The browser made the client data, and returns it itself.
+        Some(_) => Vec::new(),
+        None => caller.client_data(Ceremony::Create, request.challenge)?,
+    };
     if !request.exclude.is_empty() && !find(vault, &rp_id, request.exclude)?.is_empty() {
         return Err(PasskeyError::Excluded);
     }
@@ -257,6 +266,11 @@ pub struct GetRequest<'a> {
     pub allow: &'a [Vec<u8>],
     /// The credential the user picked among several, if any.
     pub chosen: Option<&'a [u8]>,
+    /// Like [`CreateRequest::client_data_hash`].
+    pub client_data_hash: Option<&'a [u8]>,
+    /// Only list the credentials that fit, even if there is one: the user
+    /// picks among them first (Android's credential selector).
+    pub list_only: bool,
 }
 
 /// An assertion, as the relying party receives it.
@@ -264,7 +278,7 @@ pub struct GetRequest<'a> {
 pub struct Assertion {
     /// The credential that signed.
     pub credential_id: Vec<u8>,
-    /// The client data JSON.
+    /// The client data JSON; empty when the browser made it.
     pub client_data_json: Vec<u8>,
     /// The authenticator data.
     pub authenticator_data: Vec<u8>,
@@ -311,6 +325,7 @@ pub fn check_get(request: &GetRequest<'_>) -> Result<String, PasskeyError> {
             "a credential identifier is 1 to 1023 bytes",
         ));
     }
+    check_hash(request.client_data_hash)?;
     Ok(rp_id)
 }
 
@@ -331,7 +346,7 @@ pub fn get_assertion(
             .find(|(_, credential)| credential.credential_id == chosen)
             .map(|(_, credential)| credential)
             .ok_or(PasskeyError::NoCredential)?,
-        (None, 1) => candidates
+        (None, 1) if !request.list_only => candidates
             .into_iter()
             .map(|(_, credential)| credential)
             .next()
@@ -352,7 +367,13 @@ pub fn get_assertion(
     let key = key_of(&credential)?;
     let client_data_json = caller.client_data(Ceremony::Get, request.challenge)?;
     let authenticator_data = authenticator_data(&rp_id, ceremony_flags(vault)?, 0, None);
-    let signature = sign(&key, &authenticator_data, &client_data_json);
+    let (signature, client_data_json) = match request.client_data_hash {
+        Some(hash) => (sign_hash(&key, &authenticator_data, hash), Vec::new()),
+        None => (
+            sign(&key, &authenticator_data, &client_data_json),
+            client_data_json,
+        ),
+    };
     Ok(GetOutcome::Signed(Assertion {
         credential_id: credential.credential_id.clone(),
         client_data_json,
@@ -369,9 +390,28 @@ pub fn sign(
     authenticator_data: &[u8],
     client_data_json: &[u8],
 ) -> Vec<u8> {
+    sign_hash(key, authenticator_data, &Sha256::digest(client_data_json))
+}
+
+/// Like [`sign`], with the hash of client data the browser made.
+pub fn sign_hash(
+    key: &crate::CredentialKey,
+    authenticator_data: &[u8],
+    client_data_hash: &[u8],
+) -> Vec<u8> {
     let mut message = authenticator_data.to_vec();
-    message.extend_from_slice(&Sha256::digest(client_data_json));
+    message.extend_from_slice(client_data_hash);
     key.sign(&message)
+}
+
+/// A client data hash is a SHA-256.
+fn check_hash(hash: Option<&[u8]>) -> Result<(), PasskeyError> {
+    match hash {
+        Some(hash) if hash.len() != 32 => Err(PasskeyError::Invalid(
+            "the client data hash is a SHA-256 of 32 bytes",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Checks an assertion as a relying party would, with the public key it got

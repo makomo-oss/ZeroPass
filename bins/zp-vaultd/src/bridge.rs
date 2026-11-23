@@ -4,6 +4,10 @@
 //! The daemon decides which logins belong to the page whose origin the
 //! extension names (`zp-origin`), and hands out a password only for one login
 //! that does, in a frame of the same site as the tab's top frame.
+//!
+//! The Android app asks the same for apps (`docs/spec/android.md` §6): the
+//! "origin" is then `androidapp://<package>`, which matches only logins
+//! saved with exactly that address.
 
 use zp_crypto::Password;
 use zp_ipc::proto::{self, ErrorCode, response};
@@ -14,9 +18,71 @@ use zp_vault::model::{Content, Login};
 use crate::convert::{self, bad_request, vault_error};
 use crate::service::Reply;
 
+/// The address of an Android app, as logins and requests name it.
+const APP_SCHEME: &str = "androidapp://";
+
+/// The package an `androidapp://<package>` address names, in lower case;
+/// `None` for anything else.
+fn app_package(text: &str) -> Option<String> {
+    let text = text.trim();
+    let scheme = text.get(..APP_SCHEME.len())?;
+    if !scheme.eq_ignore_ascii_case(APP_SCHEME) {
+        return None;
+    }
+    let package = text[APP_SCHEME.len()..].trim_end_matches('/');
+    let valid = !package.is_empty()
+        && package.len() <= 255
+        && package.split('.').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+    valid.then(|| package.to_ascii_lowercase())
+}
+
+/// What asks to be filled: a web page, or an Android app.
+enum Page {
+    Web(Origin),
+    App(String),
+}
+
+impl Page {
+    /// How well one of a login's URLs matches. An app matches only its own
+    /// address, exactly: package names say nothing about who is behind them.
+    fn best_match<'a>(&self, urls: impl IntoIterator<Item = &'a str>) -> Option<Match> {
+        match self {
+            Page::Web(origin) => origin.best_match(urls),
+            Page::App(package) => urls
+                .into_iter()
+                .any(|url| app_package(url).as_deref() == Some(package.as_str()))
+                .then_some(Match::Exact),
+        }
+    }
+
+    /// What a new login for it is called by default.
+    fn title(&self) -> String {
+        match self {
+            Page::Web(origin) => origin.host().trim_start_matches("www.").to_owned(),
+            Page::App(package) => package.clone(),
+        }
+    }
+
+    /// The address a new login for it is saved with.
+    fn url(&self) -> String {
+        match self {
+            Page::Web(origin) => origin.to_string(),
+            Page::App(package) => format!("{APP_SCHEME}{package}"),
+        }
+    }
+}
+
 /// The page to fill: its origin, if it may be filled at all. A frame of
 /// another site than the tab's top frame may not (clickjacking).
-fn page(origin: &str, top: &str) -> Result<Option<Origin>, proto::Error> {
+fn page(origin: &str, top: &str) -> Result<Option<Page>, proto::Error> {
+    if let Some(package) = app_package(origin) {
+        if !top.is_empty() {
+            return Err(bad_request("an app has no top frame"));
+        }
+        return Ok(Some(Page::App(package)));
+    }
     let page = Origin::parse(origin).map_err(|error| bad_request(&error.to_string()))?;
     if !top.is_empty() {
         let top = Origin::parse(top).map_err(|error| bad_request(&error.to_string()))?;
@@ -24,7 +90,7 @@ fn page(origin: &str, top: &str) -> Result<Option<Origin>, proto::Error> {
             return Ok(None);
         }
     }
-    Ok(Some(page))
+    Ok(Some(Page::Web(page)))
 }
 
 /// The logins that match the page, best first: exact matches, then by title.
@@ -90,7 +156,7 @@ pub(crate) fn fill(vault: &mut Vault, request: &proto::BridgeFill) -> Reply {
 /// A login of the page: it must exist and match the page.
 fn page_login(
     vault: &mut Vault,
-    page: &Origin,
+    page: &Page,
     item_id: &[u8],
 ) -> Result<(zp_crypto::ItemId, Login), proto::Error> {
     let id = convert::item_id(item_id)?;
@@ -182,12 +248,12 @@ pub(crate) fn save(vault: &mut Vault, request: &proto::BridgeSave) -> Reply {
         return Err(bad_request("a login to save needs a password"));
     }
     let title = if request.title.trim().is_empty() {
-        page.host().trim_start_matches("www.").to_owned()
+        page.title()
     } else {
         request.title.trim().to_owned()
     };
-    let login = Login::new(title, request.username.trim(), request.password.as_str())
-        .with_url(page.to_string());
+    let login =
+        Login::new(title, request.username.trim(), request.password.as_str()).with_url(page.url());
     let id = vault.insert(login).map_err(vault_error)?;
     Ok(response::Body::ItemAdded(proto::ItemAdded {
         item_id: id.as_bytes().to_vec(),

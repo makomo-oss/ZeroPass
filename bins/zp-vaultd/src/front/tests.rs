@@ -886,6 +886,7 @@ fn passkeys_are_made_and_used_through_the_bridge_with_the_user_each_time() {
         challenge: b"registration challenge".to_vec(),
         algorithms: vec![-7],
         exclude: Vec::new(),
+        client_data_hash: Vec::new(),
     };
     let get = |chosen: &[u8]| proto::PasskeyGet {
         origin: "https://login.example.com".into(),
@@ -894,6 +895,8 @@ fn passkeys_are_made_and_used_through_the_bridge_with_the_user_each_time() {
         challenge: b"sign-in challenge".to_vec(),
         allow: Vec::new(),
         chosen: chosen.to_vec(),
+        client_data_hash: Vec::new(),
+        list_only: false,
     };
     let created = |reply: Reply| match reply.unwrap() {
         response::Body::PasskeyCreated(created) => created,

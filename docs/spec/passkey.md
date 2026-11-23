@@ -154,3 +154,12 @@ WebAuthn §5.8.1.1 の直列化。
 - **選択の 120 秒**: 選ぶ間に、同じ要求に別の候補を入れて送り直せば、尋ねずに署名する。尋ねたときに利用者が承認したのは、その RP の、その要求への署名である。
 - **署名カウンタ 0**: RP は、カウンタでクレデンシャルの複製を見つけられない（同期型パスキーの性質。ADR-0010）。
 - **範囲外**: RS256 などほかのアルゴリズム、attestation（"none" 以外）、拡張（`credProps` 以外。`extension.md` §11）、関連オリジン、ブラウザの Signal API による RP からの通知、パスキーの自動入力（条件付きの仲介）。
+
+## 11. ブラウザが clientDataJSON を作る場合（Android）
+
+Android の Credential Manager では、特権ブラウザ（Chrome など。`android.md` §6）が clientDataJSON を自分で作り、プロバイダにはその SHA-256（`clientDataHash`）だけを渡す。ブラウザは応答の clientDataJSON を自分のもので置き換える。
+
+- `PasskeyCreate`・`PasskeyGet` の `client_data_hash`（32 バイト）があれば、ZeroPass は clientDataJSON を作らず（応答の `client_data_json` は空）、署名は `authenticatorData ‖ client_data_hash` に対して行う。32 バイトでなければ断る。
+- オリジンと RP ID の検査（§8）は変わらない。オリジンは、ブラウザが Credential Manager に示し、OS が特権ブラウザの許可リストで確かめたもの（`CallingAppInfo.getOrigin`）である。ハッシュの中身（チャレンジとオリジン）を ZeroPass は確かめられないので、その正しさは許可リストのブラウザに任せる。
+- **一覧だけ**（`PasskeyGet` の `list_only`）: 候補が 1 件でも署名せず `PasskeyChoices` を返す。利用者の確認は署名と同じく求め、選んだ候補の送り直しは §9.2 と同じく 120 秒間尋ねない。Credential Manager の選択画面に、アカウントを並べるため。
+- 選択の照合（§9.2）は `client_data_hash` も比べる。

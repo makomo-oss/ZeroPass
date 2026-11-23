@@ -103,4 +103,27 @@ Jetpack Compose の 1 つの画面（`MainActivity`）で、金庫の状態に�
 
 ## 6. 自動入力とパスキー
 
-P6-05 で定める。
+アプリのプロセスが、Android の自動入力サービス（`ZeroPassAutofillService`）と Credential Manager のプロバイダ（`ZeroPassCredentialService`、Android 14 以上）になる。照合と秘密の受け渡しは、デスクトップのブラウザ拡張のブリッジと同じ要求（`extension.md` §4、`passkey.md` §9・§11）を金庫のプロセスに送って行う。
+
+### 6.1 誰のための要求か（ページ）
+
+- **ウェブ**: 許可リストのブラウザが示すドメインだけを信じる。許可リストは Google が公開している特権ブラウザの一覧（`gpm-passkeys-privileged-apps/apps.json`）の写しで、パッケージ名と署名証明書の SHA-256 を持つ（`app/src/main/assets/privileged_browsers.json`）。Credential Manager では `CallingAppInfo.getOrigin(一覧)`、自動入力では `ViewNode.getWebDomain()`・`getWebScheme()` を、要求元のパッケージが一覧のブラウザで署名も一致するときだけ使う。スキームがなければ `https`。
+- **アプリ**: `androidapp://<パッケージ名>`。パッケージは OS が示す要求元。ログインのアドレスに**完全に一致**して書かれたものだけを出す（ZeroPass がそのアプリから保存したものか、利用者が加えたもの）。パッケージ名からサイトを推測しない（誰でも似た名前を付けられる）。
+- 一覧にないアプリが示すドメイン（WebView を持つアプリなど）は信じず、そのアプリ自身（`androidapp://`）として扱う。
+- ZeroPass 自身の画面は扱わない（§4）。
+
+### 6.2 自動入力
+
+- **欄**: `autofillHints`（`username`・`emailAddress`・`password`・`newPassword` など）、`inputType`（パスワード）、HTML の `type`・`autocomplete`、id とヒントの語から、利用者名とパスワードの欄を探す。パスワードの欄がなければ何も出さない。新しいパスワードの欄だけの画面（登録）では候補を出さず、保存だけを提案する。
+- **候補**: パスワードのドメインが開いていれば、ページのログイン（`BridgeFind`。題名と利用者名だけ）を並べる。候補はどれも認証つきのデータセットで、選ばれてから ZeroPass の画面（`AutofillActivity`。前面に出てすぐ閉じる）がそのログインだけを取り（`BridgeFill`）、値を OS に返す。選ばれなかったログインのパスワードは金庫のプロセスから出ない。
+- **施錠中**: 「Unlock ZeroPass」の 1 件だけを出す。選ばれたら `AutofillActivity` でマスターパスワードを尋ねて解錠し、候補を返す。
+- **保存**: パスワードの欄を必須とする `SaveInfo` を付ける。送信の後に OS が「ZeroPass に保存しますか」を尋ね、利用者が承認したら `AutofillActivity` が開き（施錠中なら解錠）、`BridgeCompare` で同じなら何もせず、同じ利用者名で違うパスワードなら更新（`BridgeUpdate`）、なければ保存（`BridgeSave`）する。入力値はアプリのプロセスのメモリにだけ置き、Intent に載せない。
+
+### 6.3 Credential Manager（Android 14 以上）
+
+- 利用者が設定の「パスワード、パスキー、アカウント」で ZeroPass を有効にする。
+- **パスキーは許可リストのブラウザからの要求だけ**に出す。ほかのアプリの要求には何も出さない。アプリが RP の正当なアプリかを確かめるには、RP のサーバーの Digital Asset Links を取りに行く必要があり、ZeroPass はそれをしない（ネットワークに出ない）。
+- **取得**: 選択画面の準備（`onBeginGetCredentialRequest`）は画面を出せず、パスキーのドメインは開けない。パスキーの要求には「Unlock ZeroPass」（`AuthenticationAction`）を出し、選ばれたら `CredentialActivity` が Keystore の確認のあとに一覧だけ（`list_only`）を取って、アカウントの項目を返す。項目が選ばれたら、その候補で署名する（2 分以内なので尋ね直さない。`passkey.md` §11）。パスワードの要求には、パスワードのドメインが開いていればページのログインの項目を直接出し、施錠中なら解錠の項目を出す。項目が選ばれたらそのログインだけを取る（`BridgeFill`）。
+- **作成**: パスキーの作成（許可リストのブラウザ）とパスワードの保存に「ZeroPass」の保存先を出し、選ばれたら `CredentialActivity` で作る（パスキーは Keystore の確認、パスワードは施錠中なら解錠）。
+- 応答は WebAuthn の `RegistrationResponseJSON`・`AuthenticationResponseJSON`。ブラウザが `clientDataHash` を渡したときは、応答の clientDataJSON はブラウザが自分のもので置き換える（`passkey.md` §11）。`authenticatorAttachment` は `platform`、`transports` は `internal` と `hybrid`。
+- **範囲外**: 条件付きの仲介（入力欄でのパスキーの表示）、別の端末を QR で使うハイブリッド、ワンタイムコードの自動入力。
