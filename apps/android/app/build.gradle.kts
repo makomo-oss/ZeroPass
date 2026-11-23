@@ -56,6 +56,8 @@ dependencies {
     // The prompt that unlocks the Keystore key (docs/spec/android.md §3).
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.9.1")
+    // Sync in the background (docs/spec/android.md §5).
+    implementation("androidx.work:work-runtime:2.12.0")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")
     implementation("androidx.camera:camera-view:1.6.2")

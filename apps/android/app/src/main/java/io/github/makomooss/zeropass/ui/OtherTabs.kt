@@ -8,6 +8,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -143,6 +144,7 @@ fun DevicesTab(model: VaultModel) {
         Text("Devices", style = MaterialTheme.typography.headlineSmall)
         Button(onClick = model::syncNow, modifier = Modifier.testTag("sync-now")) { Text("Sync now") }
         Text("Syncs over Wi-Fi with the devices on the same network, and over Bluetooth with the others nearby.", style = MaterialTheme.typography.bodySmall)
+        Text(state.lastSync, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("last-sync"))
         Lines(state.log)
         state.devices.forEach { device ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -216,6 +218,12 @@ fun SettingsTab(model: VaultModel) {
             },
             enabled = current.isNotEmpty() && new.length >= 12,
         ) { Text("Change the master password") }
+
+        Text("Sync", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Sync in the background every 15 minutes or so, when the battery is not low", Modifier.weight(1f))
+            Switch(checked = state.backgroundSync, onCheckedChange = model::setBackgroundSync, modifier = Modifier.testTag("background-sync"))
+        }
 
         Text("This phone", style = MaterialTheme.typography.titleMedium)
         Text("The vault runs in an isolated process without network access; this app stores the encrypted vault file for it.", style = MaterialTheme.typography.bodySmall)

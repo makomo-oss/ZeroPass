@@ -104,6 +104,7 @@ object Nearby {
      * Bluetooth for the devices that were not reached there, never both for
      * the same device. Returns how many devices were synced with.
      */
+    @Synchronized
     fun sync(context: Context, vault: VaultClient, log: (String) -> Unit): Int {
         val others = vault.otherDevices()
         if (others.isEmpty()) {
@@ -113,7 +114,13 @@ object Nearby {
         val synced = if (onWifi(context)) syncOnWifi(context, vault, log) else emptySet<String>().also { log("no Wi-Fi: Bluetooth only") }
         if (others.all { it.deviceId in synced }) return synced.size
 
-        val desktops = scanForDesktops(context, uuids, SCAN_MILLIS)
+        // Bluetooth may be off: what the local network did still counts.
+        val desktops = try {
+            scanForDesktops(context, uuids, SCAN_MILLIS)
+        } catch (error: BleException) {
+            log("Bluetooth: ${error.message}")
+            return synced.size
+        }
         val found = connectToDesktop(context, uuids, desktops, log) { tag ->
             vault.recognisePeer(tag)?.takeIf { it.deviceId !in synced }
         }
