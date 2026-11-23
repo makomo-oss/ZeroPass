@@ -109,9 +109,7 @@ jobs:
           cargo install cargo-ndk --locked --version 4.1.2
       # The runner's Android SDK and NDK (apps/android/README.md).
       - name: Build the Rust core for Android and its Kotlin bindings
-        run: bash apps/android/build-core.sh
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" bash apps/android/build-core.sh
       - name: Build the app
         working-directory: apps/android
         run: ./gradlew --no-daemon assembleDebug
