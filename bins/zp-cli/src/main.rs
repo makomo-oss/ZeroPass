@@ -101,6 +101,16 @@ enum TopCommand {
         #[arg(long)]
         token: u32,
     },
+    /// Internal (Linux): copies the text read from standard input, keeps it
+    /// on the clipboard for the given time, then empties the clipboard if it
+    /// still holds it. Started by the commands that copy a secret: on Linux
+    /// the program that copied must stay to hand the text over.
+    #[command(hide = true)]
+    ClipboardServe {
+        /// How long to keep the text, in seconds.
+        #[arg(long)]
+        after: u64,
+    },
     #[command(flatten)]
     Session(Command),
 }
@@ -533,6 +543,9 @@ fn run(cli: Cli) -> CliResult<()> {
     if let TopCommand::ClipboardClear { after, token } = cli.command {
         return clipboard::clear_later(after, token);
     }
+    if let TopCommand::ClipboardServe { after } = cli.command {
+        return clipboard::serve(after);
+    }
     let vault_path = match cli.vault.clone() {
         Some(path) => path,
         None => zp_client::default_vault_path()?,
@@ -548,7 +561,9 @@ fn run(cli: Cli) -> CliResult<()> {
         TopCommand::Join { name } => nearby::join(choice, &vault_path, name, &mut out),
         TopCommand::Shell => shell(choice, &vault_path, &mut out),
         TopCommand::Daemon { action } => daemon(choice, &vault_path, &action, &mut out),
-        TopCommand::ClipboardClear { .. } => unreachable!("handled above"),
+        TopCommand::ClipboardClear { .. } | TopCommand::ClipboardServe { .. } => {
+            unreachable!("handled above")
+        }
         TopCommand::Session(command) if is_direct(&command) => {
             run_direct(choice, &vault_path, command, &mut out)
         }
