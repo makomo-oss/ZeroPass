@@ -48,6 +48,13 @@ windows = { version = "0.62.2", features = [
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
 
+# The Linux sandbox (`src/linux.rs`): a seccomp filter that denies network
+# sockets, and Landlock for the files.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+libc = "0.2.191"
+seccompiler = "0.5.0"
+
 [dev-dependencies]
 tempfile = "3.27.0"
 zp-ipc = { version = "0.0.0", path = "../zp-ipc" }

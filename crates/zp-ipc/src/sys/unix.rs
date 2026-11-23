@@ -38,6 +38,11 @@ fn runtime_dir() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// The directory the sockets are made in.
+pub(crate) fn endpoint_directory() -> io::Result<Option<PathBuf>> {
+    runtime_dir().map(Some)
+}
+
 fn socket_path(endpoint: &Endpoint) -> io::Result<PathBuf> {
     Ok(runtime_dir()?.join(format!("{}-{}.sock", endpoint.service(), endpoint.id())))
 }

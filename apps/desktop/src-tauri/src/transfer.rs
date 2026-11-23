@@ -46,6 +46,27 @@ fn dialog(app: &AppHandle) -> rfd::FileDialog {
     }
 }
 
+/// Shows a file dialog and waits for the user's choice. On Windows, here, on
+/// the worker thread of the command. Elsewhere on the main thread, the one
+/// GTK (Linux) and AppKit (macOS) run their windows on; this thread waits.
+fn ask<T: Send + 'static>(
+    app: &AppHandle,
+    show: impl FnOnce(rfd::FileDialog) -> T + Send + 'static,
+) -> CommandResult<T> {
+    if cfg!(windows) {
+        return Ok(show(dialog(app)));
+    }
+    let (answer, chosen) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = answer.send(show(dialog(&handle)));
+    })
+    .map_err(|error| CommandError::client(format!("cannot show the file dialog: {error}")))?;
+    chosen
+        .recv()
+        .map_err(|_| CommandError::client("the file dialog went away"))
+}
+
 /// What a chosen file holds, before anything is added.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -70,14 +91,16 @@ pub(crate) enum Preview {
 pub(crate) async fn import_choose(app: AppHandle) -> CommandResult<Preview> {
     let handle = app.clone();
     blocking(app, move |state| {
-        let Some(path) = dialog(&handle)
-            .set_title("Import into ZeroPass")
-            .add_filter(
-                "Exports (CSV, JSON, ZeroPass)",
-                &["csv", "json", "zpexport"],
-            )
-            .add_filter("All files", &["*"])
-            .pick_file()
+        let Some(path) = ask(&handle, |dialog| {
+            dialog
+                .set_title("Import into ZeroPass")
+                .add_filter(
+                    "Exports (CSV, JSON, ZeroPass)",
+                    &["csv", "json", "zpexport"],
+                )
+                .add_filter("All files", &["*"])
+                .pick_file()
+        })?
         else {
             return Ok(Preview::Cancelled);
         };
@@ -215,11 +238,13 @@ pub(crate) async fn export_vault(
         let today = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs() / 86_400);
-        let Some(path): Option<PathBuf> = dialog(&handle)
-            .set_title("Export the vault")
-            .set_file_name(format!("zeropass-{today}.zpexport"))
-            .add_filter("ZeroPass export", &["zpexport"])
-            .save_file()
+        let Some(path): Option<PathBuf> = ask(&handle, move |dialog| {
+            dialog
+                .set_title("Export the vault")
+                .set_file_name(format!("zeropass-{today}.zpexport"))
+                .add_filter("ZeroPass export", &["zpexport"])
+                .save_file()
+        })?
         else {
             return Ok(ExportResult {
                 path: None,

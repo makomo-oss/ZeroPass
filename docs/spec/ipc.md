@@ -213,8 +213,8 @@ UI は `KeyAgentAttach` を出せない。鍵エージェントの役割は、�
 | OS | サンドボックス | 状態 |
 |---|---|---|
 | Windows | capability を持たない AppContainer（名前 `ZeroPass.Vault`） | 実装済み |
-| macOS | App Sandbox | P6-09 |
-| Linux | seccomp / Landlock | P6-10 |
+| macOS | App Sandbox | 保留（P6-09） |
+| Linux | seccomp と Landlock（デーモンが自分に掛ける） | 実装済み（§9.2） |
 
 ### 9.1 Windows
 
@@ -232,6 +232,15 @@ UI は `KeyAgentAttach` を出せない。鍵エージェントの役割は、�
 - パイプのセキュリティ記述子には、利用者の SID に加えてコンテナの SID を載せる（デーモン自身が、停止のときに自分のパイプを開くため）。
 - デーモンは、自分がサンドボックスの中にいるかどうかを `Status` の応答（`sandboxed`）で答える。
 - 開発のために、`zp-cli --no-sandbox` はデーモンを通常のプロセスとして起動する。
+
+### 9.2 Linux
+
+Linux には、親が子を入れて起動できるコンテナがないので、デーモンが起動直後に自分を制限する（`zp_sandbox::enter_requested`）。クライアントは、Windows と同じ付与（§9.1 の表）を `zp_sandbox::allow` で集め、デーモンを起動するときに環境変数 `ZEROPASS_SANDBOX` で渡す（`zp_sandbox::spawn`）。デーモンは、IPC のエンドポイントを決めたら、クライアントから何かを読む前に、次を自分に掛ける。ワーカー（§13.1）は、起動したデーモンから受け継ぐ。
+
+- **seccomp**: `AF_UNIX` 以外のソケットの作成（`socket`）と `io_uring` を `EACCES` で断る。IPC（Unix ドメインソケット）は使えるが、TCP・UDP・raw・netlink などのソケットは作れない。
+- **Landlock**（Linux 5.13 以上）: 開けるのは、システムのライブラリと設定（`/usr`・`/lib`・`/lib64`・`/etc`・`/proc` の読み取りと実行）、`/dev/null`、付与されたもの（実行ファイルの読み取りと実行、金庫ファイルのディレクトリのすべて）、エンドポイントのディレクトリ（ソケットを作る）だけ。Windows と違い、金庫のディレクトリにすでにあるほかのファイルも開ける（Landlock はディレクトリの中のファイルを区別できない）。Landlock のないカーネルでは、ファイルは制限されず、デーモンは警告を記録する（ネットワークは制限される）。
+- 制限を求められて掛けられなければ、デーモンは起動しない。
+- 確認: `crates/zp-sandbox/tests/sandbox.rs`（Windows と Linux の CI。同じプローブを外と中で動かし、中では TCP の接続・UDP の送信・待ち受けができず、ホームディレクトリを読めず、IPC は使えることを確かめる）。
 
 ## 10. 同期の要求
 

@@ -583,3 +583,8 @@ pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<()> {
     drop(guards);
     spawned.map(drop)
 }
+
+/// Endpoints are named pipes, not files: there is no directory.
+pub(crate) fn endpoint_directory() -> io::Result<Option<std::path::PathBuf>> {
+    Ok(None)
+}

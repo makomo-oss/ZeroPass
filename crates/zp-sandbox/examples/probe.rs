@@ -53,6 +53,20 @@ fn main() {
         std::process::exit(2);
     };
     let directory = PathBuf::from(directory);
+    // On Linux the probe restricts itself, as the vault daemon does, with the
+    // directory of its IPC endpoint.
+    let endpoint_directory = Endpoint::for_vault(&directory.join("probe.zpvault"))
+        .and_then(|endpoint| endpoint.directory())
+        .ok()
+        .flatten();
+    let extra: Vec<(&std::path::Path, zp_sandbox::Access)> = endpoint_directory
+        .iter()
+        .map(|path| (path.as_path(), zp_sandbox::Access::CreateFiles))
+        .collect();
+    if let Err(error) = zp_sandbox::enter_requested(&extra) {
+        eprintln!("probe: cannot enter the sandbox: {error}");
+        std::process::exit(4);
+    }
     let mut report = String::new();
     let mut note = |key: &str, value: String| {
         let _ = writeln!(report, "{key}={value}");

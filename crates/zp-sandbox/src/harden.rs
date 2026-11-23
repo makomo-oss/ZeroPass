@@ -98,10 +98,26 @@ fn harden(network: bool) -> Hardening {
             setrlimit(Resource::Core, none).map_err(io::Error::from),
         );
     }
-    // Linux: making the process non-dumpable (`PR_SET_DUMPABLE`) would keep
-    // other programs of the user from reading its memory, but it also hides
-    // `/proc/<pid>/exe`, by which the two ends of the local IPC check each
-    // other. Both are settled together with the Linux sandbox (P6-10).
+    hardening
+}
+
+/// [`harden_process`] for a worker of the vault daemon that holds the keys of
+/// a hardware-bound domain (ADR-0007): on Linux, it is also made non-dumpable
+/// (`PR_SET_DUMPABLE`), so that other programs of the user cannot read its
+/// memory or attach to it. Clients never talk to a worker, so nobody needs
+/// its `/proc/<pid>/exe`, which this hides (`docs/spec/hardening.md` §2.2).
+pub fn harden_worker_process() -> Hardening {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(unused_mut, reason = "Linux adds a measure")
+    )]
+    let mut hardening = harden(false);
+    #[cfg(target_os = "linux")]
+    hardening.apply(
+        "no access to memory by other programs",
+        rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+            .map_err(io::Error::from),
+    );
     hardening
 }
 
