@@ -35,5 +35,18 @@ windows = { version = "0.62.2", features = [
     "Storage_Streams",
 ] }
 
+[features]
+# The Bluetooth LE peripheral on Linux (`src/ble_linux.rs`). It links the
+# system's libdbus, so it is left to the program that needs it: the sync
+# daemon. Elsewhere it changes nothing.
+linux-ble = ["dep:bluer", "dep:futures-util", "dep:tokio"]
+
+# The Bluetooth LE peripheral on Linux: BlueZ over D-Bus, which is
+# asynchronous; the peripheral runs its own Tokio runtime on a thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", default-features = false, features = ["bluetoothd"], optional = true }
+futures-util = { version = "0.3", default-features = false, optional = true }
+tokio = { version = "1.54.1", default-features = false, features = ["net", "rt", "sync"], optional = true }
+
 [dev-dependencies]
 tempfile = "3.27.0"

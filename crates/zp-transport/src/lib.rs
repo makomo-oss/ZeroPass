@@ -5,6 +5,8 @@
 //! never sends anything beyond the local link: see the individual transports.
 
 pub mod ble;
+#[cfg(all(target_os = "linux", feature = "linux-ble"))]
+pub mod ble_linux;
 #[cfg(windows)]
 pub mod ble_windows;
 pub mod capture;
