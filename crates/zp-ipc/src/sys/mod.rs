@@ -12,6 +12,8 @@ pub(crate) use windows::{
 
 #[cfg(unix)]
 mod unix;
+#[cfg(target_os = "linux")]
+pub(crate) use unix::executables;
 #[cfg(unix)]
 pub(crate) use unix::{
     IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, endpoint_directory,

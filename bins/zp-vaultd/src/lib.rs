@@ -105,7 +105,13 @@ fn run(args: Args) -> Result<(), IpcError> {
     }
     let endpoint = Endpoint::for_vault(&vault)?;
     // Started in the Linux sandbox: restrict this process now, before it reads
-    // anything from a client (ipc.md §9.2). Its workers inherit it.
+    // anything from a client (ipc.md §9.2). Its workers inherit it. Inside,
+    // it cannot read which program a client runs: a helper started before
+    // does that for it.
+    #[cfg(target_os = "linux")]
+    if zp_sandbox::is_requested() {
+        zp_ipc::look_up_executables_through(&std::env::current_exe()?, &[EXECUTABLE_LOOKUPS])?;
+    }
     let directory = endpoint.directory()?;
     let extra: Vec<(&std::path::Path, zp_sandbox::Access)> = directory
         .iter()
@@ -152,6 +158,11 @@ fn run(args: Args) -> Result<(), IpcError> {
     Ok(())
 }
 
+/// The command line of the helper that tells the sandboxed daemon which
+/// programs its clients run (`zp_ipc::look_up_executables_through`).
+#[cfg(target_os = "linux")]
+const EXECUTABLE_LOOKUPS: &str = "--executable-lookups";
+
 /// Runs the daemon with the command line of this process: what the
 /// `zp-vaultd` executable does.
 pub fn daemon_main() -> ExitCode {
@@ -170,6 +181,16 @@ pub fn daemon_main() -> ExitCode {
         log(&format!("internal error: {info}"));
         std::process::exit(EXIT_PANIC);
     }));
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some(EXECUTABLE_LOOKUPS) {
+        return match zp_ipc::serve_executable_lookups() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                log(&format!("executable lookups: {error}"));
+                ExitCode::FAILURE
+            }
+        };
+    }
     let args = Args::parse();
     for failure in hardening.failed() {
         log(&format!("warning: could not apply: {failure}"));

@@ -209,6 +209,19 @@ pub fn is_sandboxed() -> bool {
     }
 }
 
+/// Whether this process was started by [`spawn`] to restrict itself (Linux):
+/// [`enter_requested`] will restrict it.
+pub fn is_requested() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::is_requested()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// On Linux, if this process was started by [`spawn`]: restricts it to what
 /// it was granted, and to `extra` (what only the program knows, such as the
 /// directory of its IPC endpoint), and denies it the network. Call it first
