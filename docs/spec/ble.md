@@ -50,7 +50,7 @@ Linux では、BlueZ に D-Bus で頼む（`zp-transport` の `ble_linux`。`blu
 - サービスは `GattManager1`、広告は `LEAdvertisingManager1` に登録する。広告に載せるのは §3.1 のとおり。登録したプロセスが終わると（D-Bus の接続が切れると）、BlueZ は両方を取り下げる。§3.2 のような古いサービスは残らない。
 - Rx への書き込みは、BlueZ が 1 パケットごとに D-Bus の呼び出しで渡す。ペリフェラルは、呼び出しを 1 つのスレッドで届いた順に処理し、順序を保つ。
 - Tx の購読は、BlueZ が通知用のソケットを渡す（`AcquireNotify`）ことで始まる。そのソケットが閉じたら（購読の解除、切断）、リンクを閉じる。1 パケットの大きさは、BlueZ が伝える MTU から決める。
-- ビルドに `libdbus-1` の開発ファイルが要る。実行には BlueZ（`bluetoothd`）とシステムの D-Bus が要る。同期デーモンはサンドボックスに入らないので、D-Bus に届く。
+- ビルドに `libdbus-1` の開発ファイルが要る（`zp-transport` の機能 `linux-ble`。使うのは同期デーモンだけで、Android のコアは libdbus を使わない）。実行には BlueZ（`bluetoothd`）とシステムの D-Bus が要る。同期デーモンはサンドボックスに入らないので、D-Bus に届く。
 - 実機（Linux の PC とモバイル）では未確認（P6-10）。
 
 ## 4. Tag キャラクタリスティック
