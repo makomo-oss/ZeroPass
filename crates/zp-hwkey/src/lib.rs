@@ -10,7 +10,7 @@
 //! | Windows | Windows Hello ([`windows_hello`]) | available |
 //! | macOS / iOS | Secure Enclave | planned (P6-06, P6-09) |
 //! | Android | Android Keystore (HMAC, `crypto.md` §7.2) | in the app (`apps/android`, `KeystoreKeyStore`), through the key agent |
-//! | Linux | TPM / fprintd | planned (P6-10) |
+//! | Linux | none | on hold (P6-10, the owner's decision of 2026-11-23): no standard way to bind a TPM key to a fingerprint match, and no machine to try it on. Without it the TOTP and passkey domains are not created (passwords only) |
 
 use zeroize::Zeroizing;
 use zp_crypto::{HardwareKeyError, HardwareKeyStore, UserVerifyingSigner};
