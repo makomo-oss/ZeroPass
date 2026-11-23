@@ -26,7 +26,7 @@ use zp_vaultd::embedded::Engine;
 
 use crate::client::{Connect, store_atomically};
 use crate::{
-    ByteLink, Domain, ItemContent, KeyStoreError, LinkError, PlatformKeyStore, Problem,
+    ByteLink, Domain, HardwareError, ItemContent, LinkError, PlatformKeyStore, Problem,
     VaultClient, ZpError, announces_pairing, ble_uuids, offer_info,
 };
 
@@ -106,20 +106,20 @@ impl FakeKeyStore {
 }
 
 impl PlatformKeyStore for FakeKeyStore {
-    fn probe(&self, _create: bool) -> Result<u8, KeyStoreError> {
+    fn probe(&self, _create: bool) -> Result<u8, HardwareError> {
         if self.available.load(Ordering::SeqCst) {
             Ok(0x04)
         } else {
-            Err(KeyStoreError::Unavailable {
+            Err(HardwareError::Unavailable {
                 reason: "no secure lock screen".into(),
             })
         }
     }
 
-    fn sign(&self, challenge: Vec<u8>) -> Result<Vec<u8>, KeyStoreError> {
+    fn sign(&self, challenge: Vec<u8>) -> Result<Vec<u8>, HardwareError> {
         self.prompts.fetch_add(1, Ordering::SeqCst);
         if !self.user_present.load(Ordering::SeqCst) {
-            return Err(KeyStoreError::Cancelled);
+            return Err(HardwareError::Cancelled);
         }
         let mut out = self.secret;
         for (index, byte) in challenge.iter().enumerate() {

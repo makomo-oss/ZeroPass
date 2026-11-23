@@ -18,8 +18,8 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.fragment.app.FragmentActivity
 import java.io.File
 import java.util.concurrent.Executors
 import uniffi.zp_ffi.Domain
@@ -38,7 +38,7 @@ import uniffi.zp_ffi.offerInfo
  * The vault itself is in the isolated vault process ([VaultService],
  * ADR-0012); this screen talks to it through [Vault].
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     /** Everything that blocks (the Rust core, Bluetooth) runs here, in order. */
     private val worker = Executors.newSingleThreadExecutor()
     private val uuids = bleUuids()
@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
         button("Create a vault on this phone") { create() }
         button("Sync (Wi-Fi if there is one, else Bluetooth)") { sync() }
         button("Unlock and list logins") { list() }
+        button("Show one-time codes") { codes() }
         title = field("Title of a new login")
         username = field("User name")
         secret = field("Password to store", secret = true)
@@ -131,6 +132,8 @@ class MainActivity : ComponentActivity() {
         when (action) {
             "join" -> intent.getStringExtra("code")?.let(::join)
             "create" -> create()
+            "add-totp" -> intent.getStringExtra("uri")?.let(::addTotp)
+            "codes" -> codes()
             "sync" -> sync()
             "list" -> list()
             "add" -> {
@@ -194,10 +197,38 @@ class MainActivity : ComponentActivity() {
         if (password.text.length < 12) return log("choose a master password of at least 12 characters first")
         val masterPassword = password.text.toString()
         work("creating a vault") {
-            // No hardware key store yet (P6-02): the password domain only.
-            val status = vault.create(masterPassword, true)
+            // The TOTP and passkey keys are wrapped with the Keystore (the user confirms).
+            Prompts.reason = "Protect the one-time codes and passkeys"
+            val status = vault.create(masterPassword, false)
             vault.lock(null)
             log("created vault ${status.vaultId.take(8)}…; the vault process keeps it, the app stores the file")
+        }
+    }
+
+    /** Debug builds: stores a TOTP entry (the Keystore prompt opens the domain). */
+    private fun addTotp(uri: String) {
+        work("adding a one-time code") {
+            Prompts.reason = "Add a one-time code"
+            vault.unlock(Domain.TOTP)
+            vault.addTotp(uri, null)
+            vault.lock(Domain.TOTP)
+            log("added a one-time code")
+        }
+    }
+
+    /** Shows the one-time codes: the Keystore prompt opens the domain each time. */
+    private fun codes() {
+        work("showing one-time codes") {
+            Prompts.reason = "Show the one-time codes"
+            vault.lock(Domain.TOTP)
+            vault.unlock(Domain.TOTP)
+            try {
+                val items = vault.list(Domain.TOTP, "").items
+                log("${items.size} one-time code(s)")
+                items.forEach { log("  ${it.title} / ${it.username}: ${vault.totpCode(it.id).code}") }
+            } finally {
+                vault.lock(Domain.TOTP)
+            }
         }
     }
 
@@ -222,8 +253,9 @@ class MainActivity : ComponentActivity() {
             try {
                 log("confirm \"$name\" on the PC")
                 val link = GattLink(session)
-                // No hardware key store yet (P6-02): the password domain only.
-                val outcome = vault.join(code, name, masterPassword, true, link)
+                // The TOTP and passkey keys are wrapped with the Keystore (the user confirms).
+                Prompts.reason = "Keep the one-time codes and passkeys on this phone"
+                val outcome = vault.join(code, name, masterPassword, false, link)
                 log("joined vault ${outcome.vaultId.take(8)}… as device ${outcome.deviceId.take(8)}…")
                 outcome.firstSync?.let { log("first sync: sent ${it.sent}, received ${it.received}") }
                 outcome.firstSyncError?.let { log("first sync did not complete: $it") }

@@ -326,7 +326,12 @@ docs/    threat-model.md  adr/  spec/
   - 確認: `zp-vault` の `tests/image.rs`、`zp-vaultd` の `embedded/tests.rs`（8 件。保管役の前は答えない、変更は答える前に保存・読むだけでは保存しない、保存したイメージから開き直す、保存できなければ失敗、金庫でないものは拒む、保管役が離れたら閉じる、パスキーは毎回尋ねる、PC のデーモンに中継で参加）、`zp-ffi` の単体テスト（アプリのクライアントが埋め込みの金庫プロセスに接続し、PC の金庫に BLE の代わりのリンクで参加 → ファイルに平文なし → 解錠・TOTP（鍵ストアは毎回尋ねる）→ タグで PC を認識 → 同期 → 新しい金庫プロセスで開き直す。鍵ストアがなければ作成を断る、壊れたファイルは金庫と見なさず書き換えない）。
   - **エミュレータ（Android 16、2026-11-23）**: 金庫のプロセスが `u0_i9000`（分離された UID）で動き、ネットワークの権限のグループ（3003）を持たないこと（アプリのプロセスは持つ）、金庫の作成・ログインの追加 → 両方のプロセスを止める → 開き直して同じログインが読めること、保存されたファイルに平文がないことを確かめた。
   - **未確認（実機で確かめること）**: タブレット（Android 9）での BLE の参加・同期（P2-16 の手順。アプリの中の流れが変わった）。
-- [ ] **P6-02** Android: Keystore(StrongBox) + BiometricPrompt による `HardwareKeyStore`（依存: P6-01）
+- [x] **P6-02** Android: Keystore(StrongBox) + BiometricPrompt による `HardwareKeyStore`（依存: P6-01）
+  - 方式（`crypto.md` §7.2、`android.md` §3）: Android Keystore の HMAC-SHA256 の鍵（別名 `zeropass-hardware-v1`、StrongBox があればその中、なければ TEE）で、チャレンジの HMAC を「署名」とする。HMAC は決定的なので、Windows Hello と同じ `SignatureKeyStore` がそのまま使える（実装 ID `0x04`）。使うたびに利用者の認証: Android 11 以上は `BiometricPrompt` の `CryptoObject`（クラス 3 の生体認証か画面ロックの PIN など）。Android 9〜10 は、強い生体認証があればそれだけ、なければ画面ロックの認証の直後 5 秒だけ使える鍵。画面ロックがなければ使えない（TOTP・パスキーなしの作成を明示で選ぶ。ADR-0011）。生体認証の登録の変更では鍵を無効にしない。
+  - 実装: `KeystoreKeyStore`（Kotlin の `PlatformKeyStore`）。鍵エージェントとして金庫のプロセスの問いに答え、HMAC は Rust の側で金庫のプロセスの鍵に封をして返す（P6-01）。確認の画面は前面の画面（`Prompts`、`FragmentActivity`）から出す。`ZeroPassApp` は分離プロセスでは何もしない。PoC の画面: 作成・参加は TOTP・パスキーのドメインつき、「Show one-time codes」（毎回確認）と、デバッグビルドの `add-totp`・`codes`。
+  - **エミュレータ（Android 16、PIN 1234、2026-11-23）**: 金庫の作成で確認画面（PIN）が 2 回（TOTP とパスキーのラップ）出て、TOTP・パスキーのドメインつきで作られた。ワンタイムコードの追加とコードの表示は、そのたびに PIN を求め、正しいコードが出た。確認画面を戻るで閉じると `CANCELLED` で何も開かない。エミュレータの Keystore はソフトウェアだけ（記録に `software only`）。
+  - **未確認（実機で確かめること）**: 指紋・顔の生体認証での確認、StrongBox・TEE のある端末での鍵の作成、Android 9 のタブレット（強い生体認証がないので、画面ロックの直後 5 秒の鍵になる）。
+
 - [ ] **P6-03** Android: Compose UI（解錠・一覧・詳細・QR ペアリング）（依存: P6-02）
 - [ ] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
 - [ ] **P6-05** Android: Autofill Service と Credential Manager プロバイダ（パスワード + パスキー）（依存: P6-03, P5-03）

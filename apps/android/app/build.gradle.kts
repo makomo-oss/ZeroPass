@@ -39,6 +39,9 @@ dependencies {
     // Loads the Rust core (UniFFI's Kotlin bindings call it through JNA).
     implementation("net.java.dev.jna:jna:5.19.1@aar")
     implementation("androidx.activity:activity:1.13.0")
+    // The prompt that unlocks the Keystore key (docs/spec/android.md §3).
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.9.1")
     implementation("androidx.camera:camera-camera2:1.6.2")
     implementation("androidx.camera:camera-lifecycle:1.6.2")
     implementation("androidx.camera:camera-view:1.6.2")
