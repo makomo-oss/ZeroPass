@@ -319,15 +319,21 @@ docs/    threat-model.md  adr/  spec/
   - **未確認**: 「Hello が未設定なら作成・参加で止まる」画面（P5-07）は、Hello が設定済みの PC では再現できない（自動テストで確かめている）。
 
 ### Phase 6: モバイル
+> 2026-11-23（所有者の判断）: Mac がないので、iOS（P6-06〜P6-08）と、それに依存し確認にも Mac が要る macOS（P6-09）は保留にし、Android（P6-01〜P6-05）と Linux（P6-10）を進める。
 - [ ] **P6-01** `zp-ffi`: UniFFI で公開 API を確定（モバイルは単一プロセス内でコアを動かし、Android は `isolatedProcess` サービスに金庫を分離）（依存: G-01）
+  - **設計（2026-11-23）**: [ADR-0012](../docs/adr/0012-android-vault-process.md)、`docs/spec/android.md`、`ipc.md` §14。分離プロセスはアプリのファイルも Keystore も使えないので、金庫はそのプロセスのメモリ上で開き（デスクトップの金庫デーモンの処理をそのまま使う）、金庫ファイルの保存（変更のたび、答える前）と Keystore（鍵エージェント）はアプリのプロセスが受け持つ。プロセスの間は Binder で渡したソケットの組の上の IPC。
 - [ ] **P6-02** Android: Keystore(StrongBox) + BiometricPrompt による `HardwareKeyStore`（依存: P6-01）
 - [ ] **P6-03** Android: Compose UI（解錠・一覧・詳細・QR ペアリング）（依存: P6-02）
 - [ ] **P6-04** Android: フォアグラウンド／バックグラウンド同期（BLE セントラル + LAN、電池影響を計測）（依存: P6-03, P2-17）
 - [ ] **P6-05** Android: Autofill Service と Credential Manager プロバイダ（パスワード + パスキー）（依存: P6-03, P5-03）
 - [ ] **P6-06** iOS: Xcode プロジェクト、Secure Enclave + LocalAuthentication の `HardwareKeyStore`（**要 Mac**）（依存: P6-01）
+  - **保留（2026-11-23、所有者の判断）**: Mac がないため。
 - [ ] **P6-07** iOS: SwiftUI UI、CoreBluetooth セントラル（バックグラウンド復元）、Network.framework + Bonjour（ローカルネットワーク権限）（依存: P6-06）
+  - **保留（2026-11-23、所有者の判断）**: Mac がないため。
 - [ ] **P6-08** iOS: ASCredentialProviderExtension（パスワード + パスキー、App Group で金庫共有）（依存: P6-07, P5-03）
+  - **保留（2026-11-23、所有者の判断）**: Mac がないため。
 - [ ] **P6-09** macOS: デスクトップアプリ移植（App Sandbox でネット権限なしの vaultd、CoreBluetooth ペリフェラル、Touch ID）（依存: P6-06, P4-03）
+  - **保留（2026-11-23、所有者の判断）**: P6-06（Secure Enclave の鍵ストア）に依存し、Touch ID・CoreBluetooth の確認にも Mac が要るため。
   - 持ち越し（P4-07）: デスクトップアプリはファイルダイアログ（`rfd`）をワーカースレッドで開く。Windows では問題ないが、macOS ではメインスレッドで開く必要がある。
 - [ ] **P6-10** Linux: 移植（seccomp/Landlock、`bluer`、生体認証は TPM/fprintd のベストエフォート）（依存: P4-03）
   - 持ち越し（P4-07）: ファイルダイアログ（`rfd`、GTK 3）をワーカースレッドで開いている。GTK のスレッドの制約に合わせる必要がある（Tauri のメインスレッドで開くなど）。
