@@ -52,19 +52,24 @@ jobs:
       - uses: actions/checkout@v5
       # The desktop application (Tauri) links against WebKitGTK on Linux, and
       # the Bluetooth LE peripheral (BlueZ over D-Bus) against libdbus.
-      # The Ubuntu mirror is sometimes slow (once 11 minutes for these 63 MB):
-      # the downloaded packages are kept, per runner image. apt checks a kept
-      # package against the index before it installs it.
+      # The Ubuntu mirror is sometimes slow (once 13 minutes for these 63 MB):
+      # the downloaded packages are kept. apt checks a kept package against
+      # the index before it installs it, and downloads what is missing or
+      # different. Runners of one Ubuntu release run several image builds at
+      # once: one that finds none for its build takes those of another.
       - name: Name the runner image
         if: runner.os == 'Linux'
         id: image
-        run: echo "name=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "os=$ImageOS" >> "$GITHUB_OUTPUT"
+          echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
       - name: Keep the downloaded WebKitGTK and D-Bus packages
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
           path: ~/apt-archives
-          key: apt-${{ steps.image.outputs.name }}-webkitgtk-dbus
+          key: apt-webkitgtk-dbus-${{ steps.image.outputs.os }}-${{ steps.image.outputs.version }}
+          restore-keys: apt-webkitgtk-dbus-${{ steps.image.outputs.os }}-
       - name: Install the WebKitGTK and D-Bus development files
         if: runner.os == 'Linux'
         run: |
