@@ -4,24 +4,22 @@
 //! token and process APIs have no safe wrapper in the standard library.
 #![allow(unsafe_code)]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::ptr;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SUCCESS,
-    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HLOCAL, LocalFree,
-    SetHandleInformation, WIN32_ERROR,
+    ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, HANDLE, HLOCAL,
+    LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -45,9 +43,10 @@ use windows::Win32::System::Pipes::{
 };
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, GetCurrentProcess, GetCurrentProcessId,
-    OpenProcess, OpenProcessToken, PROCESS_NAME_NATIVE, PROCESS_QUERY_LIMITED_INFORMATION,
-    QueryFullProcessImageNameW,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_CREATION_FLAGS,
+    PROCESS_INFORMATION, PROCESS_NAME_NATIVE, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, STARTUPINFOW,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 
@@ -527,64 +526,140 @@ fn open_pipe(path: &str) -> io::Result<Option<File>> {
     }
 }
 
-/// A standard handle of this process whose "inheritable" flag is cleared for as
-/// long as this value lives.
-struct NotInherited(HANDLE);
-
-impl NotInherited {
-    /// Clears the flag; `None` if the handle is absent or was not inheritable.
-    fn new(handle: HANDLE) -> Option<Self> {
-        if handle.0.is_null() || handle.is_invalid() {
-            return None;
-        }
-        let mut flags = 0u32;
-        // SAFETY: `handle` is a standard handle of this process, which stays
-        // open for the life of the process; `flags` is a valid place for the result.
-        unsafe { GetHandleInformation(handle, &mut flags) }.ok()?;
-        if flags & HANDLE_FLAG_INHERIT.0 == 0 {
-            return None;
-        }
-        // SAFETY: as above.
-        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }.ok()?;
-        Some(Self(handle))
-    }
-}
-
-impl Drop for NotInherited {
-    fn drop(&mut self) {
-        // SAFETY: the handle was valid in `new` and standard handles are not
-        // closed while the process runs.
-        let _ = unsafe { SetHandleInformation(self.0, HANDLE_FLAG_INHERIT.0, HANDLE_FLAG_INHERIT) };
-    }
-}
-
-/// Starts `command` as a process that outlives this one and shares nothing
-/// with its console.
+/// Starts `command` as a process that outlives this one: no console, no
+/// standard streams, and none of this process's handles.
 pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<()> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags((DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP).0);
-    // A child inherits every inheritable handle of its parent, not only the
-    // three it is given. If this process's own output is a pipe, the daemon
-    // would keep that pipe open, and whoever reads it would wait for the daemon
-    // to exit. So the standard handles are not inheritable while spawning.
-    let standard = [
-        io::stdin().as_raw_handle(),
-        io::stdout().as_raw_handle(),
-        io::stderr().as_raw_handle(),
-    ];
-    let guards: Vec<NotInherited> = standard
-        .into_iter()
-        .filter_map(|handle| NotInherited::new(HANDLE(handle)))
-        .collect();
-    let spawned = command.spawn();
-    drop(guards);
-    spawned.map(drop)
+    create_detached(command, PROCESS_CREATION_FLAGS(0))
+}
+
+/// [`spawn_detached`], out of the job this process is in if the job allows it.
+pub(crate) fn spawn_detached_out_of_job(command: &mut Command) -> io::Result<()> {
+    // A job that does not allow breaking away refuses the first.
+    create_detached(command, CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| create_detached(command, PROCESS_CREATION_FLAGS(0)))
+}
+
+/// Creates the process of [`spawn_detached`]; `flags` are added to the
+/// creation flags.
+///
+/// `std::process::Command` lets the child inherit every inheritable handle of
+/// this process, not only the three it is given. Among them can be handles
+/// this process inherited itself without knowing, such as the output pipe of
+/// the program that started its parent: a long-lived child would keep that
+/// pipe open, and whoever reads it would wait for the child to exit. So the
+/// process is created here, inheriting nothing.
+fn create_detached(command: &Command, flags: PROCESS_CREATION_FLAGS) -> io::Result<()> {
+    let program = Path::new(command.get_program());
+    if !program.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a detached process is started from an absolute path",
+        ));
+    }
+    if command.get_envs().next().is_some() || command.get_current_dir().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a detached process gets the environment and directory of this one",
+        ));
+    }
+    let args: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+    let application: Vec<u16> = program.as_os_str().encode_wide().chain([0]).collect();
+    let mut line = command_line(program, &args);
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..STARTUPINFOW::default()
+    };
+    let mut information = PROCESS_INFORMATION::default();
+    // SAFETY: `application` and `line` are null-terminated wide strings (`line`
+    // is writable, as the API requires); `startup` is an initialised
+    // STARTUPINFOW; `information` receives the result. No handle is inherited.
+    unsafe {
+        CreateProcessW(
+            PCWSTR(application.as_ptr()),
+            Some(PWSTR(line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            flags | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            None,
+            PCWSTR::null(),
+            &raw const startup,
+            &mut information,
+        )
+    }?;
+    drop(owned(information.hThread));
+    drop(owned(information.hProcess));
+    Ok(())
+}
+
+/// Appends `arg` to a command line the way the C runtime (and Rust) parse it.
+/// The same as in `zp-sandbox`, which starts the sandboxed daemon this way.
+fn append_quoted(line: &mut Vec<u16>, arg: &OsStr) {
+    const QUOTE: u16 = b'"' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    let units: Vec<u16> = arg.encode_wide().collect();
+    let plain = !units.is_empty()
+        && !units
+            .iter()
+            .any(|&unit| unit == b' ' as u16 || unit == b'\t' as u16 || unit == QUOTE);
+    if plain {
+        line.extend_from_slice(&units);
+        return;
+    }
+    line.push(QUOTE);
+    let mut backslashes = 0;
+    for &unit in &units {
+        if unit == BACKSLASH {
+            backslashes += 1;
+        } else {
+            if unit == QUOTE {
+                // Backslashes before a quote are doubled, and the quote escaped.
+                line.extend(std::iter::repeat_n(BACKSLASH, backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        line.push(unit);
+    }
+    // Backslashes before the closing quote are doubled.
+    line.extend(std::iter::repeat_n(BACKSLASH, backslashes));
+    line.push(QUOTE);
+}
+
+/// The null-terminated command line that starts `program` with `args`.
+fn command_line(program: &Path, args: &[OsString]) -> Vec<u16> {
+    let mut line = Vec::new();
+    append_quoted(&mut line, program.as_os_str());
+    for arg in args {
+        line.push(b' ' as u16);
+        append_quoted(&mut line, arg);
+    }
+    line.push(0);
+    line
 }
 
 /// Endpoints are named pipes, not files: there is no directory.
 pub(crate) fn endpoint_directory() -> io::Result<Option<std::path::PathBuf>> {
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quoted(arg: &str) -> String {
+        let mut line = Vec::new();
+        append_quoted(&mut line, OsStr::new(arg));
+        String::from_utf16(&line).unwrap()
+    }
+
+    #[test]
+    fn arguments_are_quoted_as_the_c_runtime_expects() {
+        assert_eq!(quoted("plain"), "plain");
+        assert_eq!(quoted(r"C:\dir\file.exe"), r"C:\dir\file.exe");
+        assert_eq!(quoted(""), r#""""#);
+        assert_eq!(quoted("two words"), r#""two words""#);
+        assert_eq!(quoted(r"C:\my dir\"), r#""C:\my dir\\""#);
+        assert_eq!(quoted(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(quoted(r#"a\"b c"#), r#""a\\\"b c""#);
+    }
 }

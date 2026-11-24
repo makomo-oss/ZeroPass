@@ -70,8 +70,18 @@ pub fn wait_until_closed(endpoint: &Endpoint, timeout: std::time::Duration) -> b
 /// no standard streams, and none of this process's open handles.
 ///
 /// This is how a client starts the daemon when it is not running.
+///
+/// On Windows the program is an absolute path, and the command sets neither
+/// environment variables nor a directory: the process gets this process's.
 pub fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
     sys::spawn_detached(command)
+}
+
+/// [`spawn_detached`], out of the job object this process is in if the job
+/// allows it: a process started by a browser must outlive the browser's job.
+#[cfg(windows)]
+pub fn spawn_detached_out_of_job(command: &mut std::process::Command) -> std::io::Result<()> {
+    sys::spawn_detached_out_of_job(command)
 }
 
 /// On Linux: from now on, has the executables of connecting processes
