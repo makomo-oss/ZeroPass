@@ -7,7 +7,7 @@ mod windows;
 #[cfg(windows)]
 pub(crate) use windows::{
     IDENTIFIES_PEERS, Listener, comparable, connect, current_exe, endpoint_directory,
-    spawn_detached, spawn_detached_out_of_job,
+    spawn_detached,
 };
 
 #[cfg(unix)]

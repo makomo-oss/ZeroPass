@@ -369,11 +369,23 @@ fn open_app() -> io::Result<()> {
     spawn_app(&app)
 }
 
-/// Inheriting none of this program's handles: its standard input and output
-/// are the browser's pipes, which the application must not keep open.
 #[cfg(windows)]
 fn spawn_app(app: &Path) -> io::Result<()> {
-    zp_ipc::spawn_detached_out_of_job(&mut std::process::Command::new(app))
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let start = |flags: u32| {
+        Command::new(app)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+            .map(drop)
+    };
+    // A job that does not allow breaking away refuses the first.
+    start(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| start(DETACHED_PROCESS))
 }
 
 #[cfg(not(windows))]
